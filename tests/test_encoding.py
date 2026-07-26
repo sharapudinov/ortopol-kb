@@ -15,8 +15,7 @@ from paths import default_pdf_dir
 
 # paths.default_pdf_dir(), not Path(__file__).parents[N]: a hardcoded
 # ancestor depth silently resolved to the WRONG directory the moment this
-# tree moved (ortopol/lib/tools/corpus/tests/ -> <repo>/tests/, one of the
-# failures the extraction of this repository produced), and a
+# tree moved (a failure this repository has already produced once), and a
 # missing theory/iis/ shows up as "pdftotext: no such file" rather than as
 # the layout error it is. paths.py locates the data tree by walking up for
 # it, so it is correct under any checkout depth.

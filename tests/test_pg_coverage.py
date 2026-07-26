@@ -168,7 +168,7 @@ class AuxSourceTests(unittest.TestCase):
         self.assertGreater(int(hits), 0)
 
     def test_every_document_carries_its_source_blob(self):
-        # База самодостаточна: пакет (задача 031) разворачивается без theory/,
+        # База самодостаточна: пакет разворачивается без theory/,
         # и сверка транскрипции с изображением возможна на любой машине.
         # Целостность хеша диск<->база проверяет corpus_completeness.py.
         bad = self._scalar(
