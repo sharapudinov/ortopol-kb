@@ -6,6 +6,9 @@ Postgres 17 + pgvector, полнотекстовый поиск с русски�
 
 ## Развернуть базу
 
+Артефакт — в [Releases](https://github.com/sharapudinov/ortopol-kb/releases) этого
+репозитория (sha256 — в нотах релиза).
+
 ```bash
 tar --zstd -xf kb-public-<дата>.tar.zst -C kb-current
 cd kb-current
