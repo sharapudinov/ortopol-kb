@@ -1,0 +1,97 @@
+# Knowledge-base deploy package (ortopol task 031).
+#
+# Two services, no code: kb-pg carries the corpus+measurements schemas
+# restored from a build_package.py artifact, kb-ollama serves the bge-m3
+# embedding model those schemas were vectorised with. Nothing here reaches
+# the live ortopol-pg/ortopol-ollama instances (127.0.0.1:5470/5471) --
+# different ports, different named volumes, no shared state.
+#
+# Usage (see AGENT_GUIDE.md for the full walkthrough):
+#   tar --zstd -xf kb-<date>.tar.zst -C kb-current
+#   cp .pgenv.example .pgenv   # then fill in PGPASSWORD
+#   docker compose --env-file .pgenv up -d
+#
+# Ports are published on 127.0.0.1 only, by design: this package is meant
+# to run beside other tenants on the same host, never on a public interface.
+
+services:
+  kb-pg:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${PGUSER:-ortopol}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD in .pgenv, see .pgenv.example}
+      POSTGRES_DB: ${PGDATABASE:-ortopol}
+    ports:
+      - "127.0.0.1:${KB_PG_PORT:-5472}:5432"
+    volumes:
+      - kb-pg-data:/var/lib/postgresql/data
+      - ./init/00_extensions.sql:/docker-entrypoint-initdb.d/00_extensions.sql:ro
+      # Default "." -- the extracted artifact is self-contained (see
+      # build_package.py's artifact_bundle): 01_dump.sql.gz sits right next
+      # to this docker-compose.yml, not in a separate directory.
+      - ${KB_ARTIFACT_DIR:-.}/01_dump.sql.gz:/docker-entrypoint-initdb.d/01_dump.sql.gz:ro
+    healthcheck:
+      # -h 127.0.0.1 is load-bearing, not decoration: Postgres's own
+      # docker-entrypoint restores 01_dump.sql.gz against a TEMPORARY
+      # instance that listens on the Unix socket only (listen_addresses=''),
+      # then stops it and starts the real server listening on 0.0.0.0 only
+      # once every /docker-entrypoint-initdb.d/ script has finished. Plain
+      # `pg_isready` (no -h) defaults to the Unix socket and therefore goes
+      # "healthy" against that temporary instance WHILE THE RESTORE IS
+      # STILL RUNNING -- measured directly on this machine (kb-smoke run,
+      # 2026-07-25): unix-socket pg_isready went green at ~7.7s, while the
+      # dump (COPY of all rows) didn't finish until ~13.9s in and the real
+      # TCP-listening server didn't come up until ~23s in. `-h 127.0.0.1`
+      # forces the probe onto TCP, which nothing answers until the real
+      # server starts -- so "healthy" now means what it says, for free,
+      # with no dump-format change and no timeout guessing.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${PGUSER:-ortopol} -d ${PGDATABASE:-ortopol}"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  kb-ollama:
+    image: ollama/ollama
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      # Pins ollama-entrypoint.sh's pull to the exact model build
+      # manifest.json recorded from the live instance (see
+      # manifest_probe.fetch_model_digest), not whatever "bge-m3:latest"
+      # happens to resolve to in the registry today. Empty is fine --
+      # the entrypoint falls back to a plain tag pull, and
+      # smoke_checks.check_embedding_model_digest still hard-asserts the
+      # served digest against the manifest afterwards.
+      BGE_M3_DIGEST: ${BGE_M3_DIGEST:-}
+      # The bare model name (no tag) ollama-entrypoint.sh pulls and this
+      # healthcheck greps for -- a single source of truth so both stop
+      # matching the literal "bge-m3" the moment .pgenv overrides it (e.g.
+      # a pinned quantisation served under a different base name). Default
+      # matches corpus.embedding_model.model as recorded today; unrelated
+      # to BGE_M3_DIGEST above, which pins the BUILD of whatever model this
+      # names, not the name itself.
+      KB_EMBED_MODEL: ${KB_EMBED_MODEL:-bge-m3}
+    ports:
+      - "127.0.0.1:${KB_OLLAMA_PORT:-5473}:11434"
+    volumes:
+      - kb-ollama-data:/root/.ollama
+      - ./ollama-entrypoint.sh:/entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q \"^${KB_EMBED_MODEL:-bge-m3}\""]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    # GPU is optional: uncomment on a host with nvidia-container-toolkit.
+    # Without it ollama serves bge-m3 on CPU -- slower, still correct.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  kb-pg-data:
+  kb-ollama-data:

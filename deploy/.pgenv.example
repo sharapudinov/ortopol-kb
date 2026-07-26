@@ -1,0 +1,35 @@
+# Copy to .pgenv (same directory) and fill in a real password before
+# running docker compose. .pgenv itself is gitignored -- never commit it.
+# Same KEY=VALUE format as ../../../corpus/.pgenv upstream, sourced the
+# same way:  set -a; . .pgenv; set +a
+#
+# docker compose reads this file directly via --env-file .pgenv (its own
+# --env-file parser does plain KEY=VALUE, no shell expansion -- it only
+# ever looks at PGUSER/PGPASSWORD/PGDATABASE/KB_PG_PORT/KB_OLLAMA_PORT/
+# KB_ARTIFACT_DIR/BGE_M3_DIGEST/KB_EMBED_MODEL above, so it never touches
+# PGPORT below).
+PGUSER=ortopol
+PGDATABASE=ortopol
+PGPASSWORD=changeme
+KB_PG_PORT=5472
+KB_OLLAMA_PORT=5473
+# Bare model name (no tag) kb-ollama pulls and its healthcheck greps for.
+# Change this only if the package was built against a differently-named
+# model -- manifest.json's embedding_model.model records what it actually
+# was; this must match that value, not be guessed.
+KB_EMBED_MODEL=bge-m3
+# Directory holding the extracted artifact (01_dump.sql.gz + manifest.json,
+# docker-compose.yml, this file, ...) produced by build_package.py and
+# unpacked from corpus/deploy/kb-<date>.tar.zst. "." is correct as long as
+# you run `docker compose` from inside that extracted directory -- the
+# artifact is self-contained, everything sits together.
+KB_ARTIFACT_DIR=.
+
+# psql client settings below -- NOT read by docker compose (see above).
+# PGPORT is a shell reference to KB_PG_PORT, the single source of truth for
+# the published port: bash-sourcing this file (`set -a; . .pgenv; set +a`)
+# resolves it before psql ever sees it, so changing KB_PG_PORT alone (e.g.
+# to avoid colliding with another deployment on this host) keeps psql
+# pointed at the right port with no second edit to forget.
+PGHOST=127.0.0.1
+PGPORT=$KB_PG_PORT

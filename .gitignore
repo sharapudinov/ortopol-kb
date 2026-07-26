@@ -1,0 +1,15 @@
+# Python bytecode caches -- build byproducts, never artifact content.
+__pycache__/
+*.py[cod]
+
+# The corpus itself and anything derived from it never enters this repository
+# (see CLAUDE.md's CODE_ONLY invariant). These patterns are a second line of
+# defence behind test_build_corpus.py's git-layout test, not the guarantee.
+*.pdf
+*.djvu
+*.tar.zst
+*.sql.gz
+.pgenv
+text/
+coverage.*
+manifest.json
