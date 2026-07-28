@@ -39,13 +39,28 @@ class PredicateTests(unittest.TestCase):
         # rest of the module reasons about.
         for value in Distribution.FULL_CONTENT:
             self.assertIn(f"'{value}'", legal_profile.FULL_CONTENT_SQL)
+        for value in Distribution.SHIPPED:
+            self.assertIn(f"'{value}'", legal_profile.SHIPPED_SQL)
+
+    def test_shipped_sql_admits_metadata_only_and_refuses_excluded(self):
+        # The two predicates answer different questions: SHIPPED_SQL whether
+        # a row exists in the public artifact at all, FULL_CONTENT_SQL how
+        # much of it that row carries.
+        sql = legal_profile.SHIPPED_SQL
+        self.assertIn("'metadata-only'", sql)
+        self.assertNotIn("'excluded'", sql)
 
     def test_unclassified_query_rejects_nulls_and_unknown_values(self):
         sql = legal_profile.UNCLASSIFIED_SQL
         self.assertIn("legal_class IS NULL", sql)
         self.assertIn("public_distribution IS NULL", sql)
         self.assertIn("legal_note IS NULL", sql)
-        self.assertIn("NOT IN ('full-text', 'metadata-only', 'internal')", sql)
+        # 'excluded' is a KNOWN value: the owner deciding a document stays
+        # out is a classification, not the absence of one, and must not be
+        # reported as unclassified.
+        self.assertIn(
+            "NOT IN ('full-text', 'metadata-only', 'internal', 'excluded')", sql,
+        )
 
     def test_no_document_ids_or_filename_patterns_anywhere_in_the_module(self):
         # The whole point of task 033's revision: classification is DATA.
@@ -81,6 +96,7 @@ class RequireClassifiedTests(unittest.TestCase):
 class GroupingTests(unittest.TestCase):
     def test_documents_by_distribution_groups_and_keeps_every_known_key(self):
         rows = [
+            ("excluded", "2016_vmj598"),
             ("full-text", "2009_isu34"),
             ("full-text", "2015_demr1"),
             ("metadata-only", "1997_sm280"),
@@ -89,6 +105,9 @@ class GroupingTests(unittest.TestCase):
             grouped = legal_profile.documents_by_distribution({})
         self.assertEqual(grouped["full-text"], ["2009_isu34", "2015_demr1"])
         self.assertEqual(grouped["metadata-only"], ["1997_sm280"])
+        # The excluded document is listed too: the artifact must be able to
+        # say WHICH works it leaves out, not merely be silent about them.
+        self.assertEqual(grouped["excluded"], ["2016_vmj598"])
         # Present but empty, not absent: a consumer iterating the classes
         # should see "no internal documents", not KeyError.
         self.assertEqual(grouped["internal"], [])
@@ -117,14 +136,47 @@ class GroupingTests(unittest.TestCase):
 
 
 class LegalSummaryTests(unittest.TestCase):
-    def test_summary_carries_the_verify_query_and_its_answer(self):
+    GROUPED = {
+        "full-text": ["2009_isu34"],
+        "metadata-only": ["1997_sm280"],
+        "internal": ["INDEX"],
+        "excluded": ["2016_vmj598"],
+    }
+
+    def _summary(self, grouped=None):
         with mock.patch.object(legal_profile, "scalar", return_value="0"), \
              mock.patch.object(legal_profile, "class_counts", return_value=[]), \
-             mock.patch.object(legal_profile, "documents_by_distribution", return_value={}):
-            summary = legal_profile.legal_summary({})
+             mock.patch.object(legal_profile, "documents_by_distribution",
+                                return_value=dict(self.GROUPED if grouped is None else grouped)):
+            return legal_profile.legal_summary({})
+
+    def test_summary_carries_the_verify_query_and_its_answer(self):
+        summary = self._summary(grouped={})
         self.assertEqual(summary["verify_query"], legal_profile.UNCLASSIFIED_SQL)
         self.assertEqual(summary["unclassified_documents"], 0)
         self.assertEqual(summary["full_content_distributions"], ["full-text", "internal"])
+
+    def test_summary_says_which_classes_the_artifact_carries(self):
+        # documents_by_distribution describes the corpus; this field is the
+        # only thing separating the lists a public artifact contains from
+        # the ones it deliberately omits.
+        summary = self._summary()
+        self.assertEqual(
+            summary["shipped_distributions"], ["full-text", "metadata-only", "internal"],
+        )
+
+    def test_shipped_ids_is_every_listed_id_except_the_excluded_ones(self):
+        summary = self._summary()
+        self.assertEqual(
+            legal_profile.shipped_ids(summary), {"2009_isu34", "1997_sm280", "INDEX"},
+        )
+
+    def test_shipped_ids_of_a_summary_without_the_field_is_empty(self):
+        # An older summary must not be read as "everything ships": absence
+        # of the field is absence of the answer.
+        summary = self._summary()
+        del summary["shipped_distributions"]
+        self.assertEqual(legal_profile.shipped_ids(summary), set())
 
 
 if __name__ == "__main__":

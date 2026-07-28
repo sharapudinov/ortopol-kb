@@ -22,6 +22,13 @@ Two profiles:
                       page_number + embedding, no body and therefore no tsv
     internal       -- our own curated metadata documents (INDEX/THEMES),
                       shipped whole: nobody else's copyright is involved
+    excluded       -- nothing at all: no documents row, no pages, no
+                      vectors. The three cuts above all publish SOMETHING
+                      about a work (at minimum its bibliography and the
+                      fact that we hold it); this value exists for the
+                      documents whose regime the owner has not established,
+                      where publishing even that much would be the packager
+                      deciding an open legal question by default
 
 Anything else -- NULL, or a value added to the database that this module
 has not been taught -- FAILS the build (unclassified_documents(), called by
@@ -48,6 +55,7 @@ from pg_common import run_sql, scalar  # noqa: E402
 # build first.
 KNOWN_DISTRIBUTIONS = Distribution.ALL
 FULL_CONTENT_DISTRIBUTIONS = Distribution.FULL_CONTENT
+SHIPPED_DISTRIBUTIONS = Distribution.SHIPPED
 
 FIELD_SEP = "\x1f"
 
@@ -61,16 +69,19 @@ FIELD_SEP = "\x1f"
 
 def _sql_literals(values: tuple[str, ...]) -> str:
     """Module-owned constants only -- never caller input. Keeps the SQL
-    predicate below derived from KNOWN_DISTRIBUTIONS/FULL_CONTENT_
-    DISTRIBUTIONS instead of restating them as a second literal list that
-    can drift.
+    predicates below derived from KNOWN_DISTRIBUTIONS/FULL_CONTENT_
+    DISTRIBUTIONS/SHIPPED_DISTRIBUTIONS instead of restating them as a
+    second literal list that can drift.
     """
     return ", ".join(f"'{value}'" for value in values)
 
 
-# A SQL boolean over corpus.documents, used unqualified inside queries that
-# have exactly one documents row in scope (public_dump.py's COPY selects).
+# SQL booleans over corpus.documents, used unqualified inside queries that
+# have exactly one documents row in scope (public_dump.py's COPY selects):
+# SHIPPED_SQL decides whether a row exists in the public artifact at all,
+# FULL_CONTENT_SQL decides how much of it that row carries.
 FULL_CONTENT_SQL = f"public_distribution IN ({_sql_literals(FULL_CONTENT_DISTRIBUTIONS)})"
+SHIPPED_SQL = f"public_distribution IN ({_sql_literals(SHIPPED_DISTRIBUTIONS)})"
 
 # The manifest's verify_query for the classification: "is every document
 # classified, with a value the packager understands". Recorded in the
@@ -165,10 +176,33 @@ def class_counts(env: dict) -> list[dict]:
     return counts
 
 
+def shipped_ids(summary: dict) -> set[str]:
+    """The ids a public artifact built from this summary actually carries.
+
+    Pure, over legal_summary()'s own output rather than over the database:
+    the callers that need it (manifest_probe, deciding whether a probe names
+    a document the package contains) already hold the summary, and asking
+    Postgres a second time could answer about a different moment.
+    """
+    grouped = summary.get(Key.DOCUMENTS_BY_DISTRIBUTION, {})
+    return {
+        doc_id
+        for name in summary.get(Key.SHIPPED_DISTRIBUTIONS, ())
+        for doc_id in grouped.get(name, [])
+    }
+
+
 def legal_summary(env: dict) -> dict:
     """The manifest's `legal` block: the aggregate, the id lists per
     distribution, and the verify query with its answer against THIS build's
     data.
+
+    documents_by_distribution covers the whole corpus, excluded documents
+    included -- the artifact must be able to say WHICH works it deliberately
+    leaves out, not merely be silent about them. shipped_distributions is
+    what separates the lists it carries from the lists it does not, and
+    profile_checks.py reads exactly that to decide which ids it may find in
+    the dump.
     """
     return {
         Key.VERIFY_QUERY: UNCLASSIFIED_SQL,
@@ -176,4 +210,5 @@ def legal_summary(env: dict) -> dict:
         Key.CLASS_COUNTS: class_counts(env),
         Key.DOCUMENTS_BY_DISTRIBUTION: documents_by_distribution(env),
         Key.FULL_CONTENT_DISTRIBUTIONS: list(FULL_CONTENT_DISTRIBUTIONS),
+        Key.SHIPPED_DISTRIBUTIONS: list(SHIPPED_DISTRIBUTIONS),
     }

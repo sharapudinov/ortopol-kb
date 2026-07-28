@@ -84,6 +84,7 @@ class Key:
     CLASS_COUNTS = "class_counts"
     DOCUMENTS_BY_DISTRIBUTION = "documents_by_distribution"
     FULL_CONTENT_DISTRIBUTIONS = "full_content_distributions"
+    SHIPPED_DISTRIBUTIONS = "shipped_distributions"
 
 
 class Profile:
@@ -110,18 +111,32 @@ class Distribution:
     FULL_TEXT = "full-text"
     METADATA_ONLY = "metadata-only"
     INTERNAL = "internal"
-    ALL = (FULL_TEXT, METADATA_ONLY, INTERNAL)
+    EXCLUDED = "excluded"
+    ALL = (FULL_TEXT, METADATA_ONLY, INTERNAL, EXCLUDED)
     # Distributions whose documents ship with every byte in the public
     # profile: someone else's copyright is either not involved (internal) or
     # the licence/legal basis permits redistribution (full-text).
     FULL_CONTENT = (FULL_TEXT, INTERNAL)
+    # Distributions whose documents appear in the public artifact AT ALL.
+    # Everything outside this tuple is written nowhere: not as a documents
+    # row, not as a page row, not as a vector. metadata-only says "the work
+    # exists, here is where to buy/read it"; excluded says the owner has not
+    # established a right to say even that much from this package, so the
+    # packager must not turn the absence of a decision into a publication.
+    SHIPPED = (FULL_TEXT, METADATA_ONLY, INTERNAL)
 
 
-# 4: added profile/schemas/legal to the manifest (task 033's two-profile
-# packager). A profile-unaware artifact cannot be verified by
-# profile_checks.py at all, so an older manifest must fail the version gate
-# rather than be read with defaults.
-MANIFEST_SCHEMA_VERSION = 4
+# 4: added profile/schemas/legal to the manifest (two-profile packager). A
+# profile-unaware artifact cannot be verified by profile_checks.py at all,
+# so an older manifest must fail the version gate rather than be read with
+# defaults.
+# 5: added legal.shipped_distributions. Without it a reader cannot tell an
+# artifact that carries every classified document from one that leaves a
+# whole class out on purpose -- documents_by_distribution lists the corpus,
+# and only this field says which of those lists the package actually
+# contains. Read with a default it would silently turn a deliberate
+# exclusion into an unexplained gap, so a v4 manifest fails the gate.
+MANIFEST_SCHEMA_VERSION = 5
 
 # A paraphrase of "an algebraic polynomial bounded from its values on a
 # uniform grid" (the recurring theme of 1997_sm280 and related papers) with
