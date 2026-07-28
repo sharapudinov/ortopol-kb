@@ -16,7 +16,10 @@ from paths import default_corpus_dir, default_pdf_dir, kb_root
 from report import write_coverage_report
 
 EXPECTED_COUNTS = {
-    "clean": 40,
+    # clean went 40 -> 41 on 2026-07-26: 2012_vestnikdnc45.pdf (Vestnik DNC RAN
+    # 2012 no.45, the VP x p(x) x Sobolev intersection) was acquired and added
+    # to theory/iis/ deliberately; it carries a clean text layer.
+    "clean": 41,
     "mojibake_recovered": 21,
     "degraded": 2,
     "broken": 4,
