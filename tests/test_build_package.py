@@ -30,7 +30,7 @@ def _fake_manifest(**overrides) -> dict:
     tests below cannot drift apart.
     """
     manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "profile": "full",
         "schemas": ["corpus", "measurements"],
         "documents_count": 70,

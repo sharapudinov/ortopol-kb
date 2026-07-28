@@ -54,8 +54,13 @@ _LEGAL_SUMMARY = {
     "verify_query": "SELECT count(*) ...",
     "unclassified_documents": 0,
     "class_counts": [],
-    "documents_by_distribution": {"full-text": ["2009_isu34"], "metadata-only": ["1997_sm280"]},
+    "documents_by_distribution": {
+        "full-text": ["2009_isu34", "2015_demr1"],
+        "metadata-only": ["1997_sm280"],
+        "excluded": ["2016_vmj598"],
+    },
     "full_content_distributions": ["full-text", "internal"],
+    "shipped_distributions": ["full-text", "metadata-only", "internal"],
 }
 
 
@@ -195,6 +200,43 @@ class ProfileAwarenessTests(unittest.TestCase):
         sql = row_mock.call_args[0][1]
         self.assertIn("public_distribution IN ('full-text', 'internal')", sql)
         self.assertIn("JOIN corpus.documents", sql)
+
+    def test_public_counts_leave_out_the_documents_the_artifact_omits(self):
+        # Counting the live corpus would describe a package that does not
+        # exist: an excluded document contributes neither a documents row
+        # nor a page row to the public dump.
+        _manifest, row_mock, _classified = self._gather("public")
+        sql = row_mock.call_args[0][1]
+        shipped = "public_distribution IN ('full-text', 'metadata-only', 'internal')"
+        self.assertIn(f"FROM corpus.documents WHERE {shipped}", sql)
+        self.assertEqual(sql.count(shipped), 2)  # documents and pages alike
+
+    def test_full_counts_are_unrestricted(self):
+        _manifest, row_mock, _classified = self._gather("full")
+        sql = row_mock.call_args[0][1]
+        self.assertIn("FROM corpus.documents WHERE TRUE", sql)
+        self.assertNotIn("'metadata-only'", sql)
+
+    def test_public_refuses_a_vector_probe_naming_a_document_it_omits(self):
+        # Recording it would produce a manifest the artifact's own smoke
+        # test can never satisfy -- the page simply is not in the package.
+        excluded = dict(self.NEAREST, document_id="2016_vmj598")
+        with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)), \
+             mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
+             mock.patch.object(manifest_probe.legal_profile, "legal_summary",
+                                return_value=dict(_LEGAL_SUMMARY)), \
+             mock.patch.object(manifest_probe.legal_profile, "require_classified"), \
+             mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
+             mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=excluded), \
+             mock.patch.object(manifest_probe, "scalar", return_value=""):
+            with self.assertRaises(RuntimeError) as ctx:
+                manifest_probe.gather_manifest({}, "http://x/api/embed", profile="public")
+            self.assertIn("2016_vmj598", str(ctx.exception))
+            # The same probe is fine for the full profile, which ships it.
+            with mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance",
+                                    return_value=0.5):
+                manifest = manifest_probe.gather_manifest({}, "http://x/api/embed")
+        self.assertEqual(manifest["vector_probe"]["document_id"], "2016_vmj598")
 
     def test_unknown_profile_refused(self):
         with self.assertRaises(ValueError) as ctx:

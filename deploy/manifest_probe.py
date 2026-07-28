@@ -5,13 +5,14 @@ deploy. Split out of build_package.py to keep that file to its own job
 (CLI + artifact assembly) -- this one owns "what does the live DB currently
 say".
 
-Every probe is recorded for the profile being built, not for the live
-database as such: the public profile ships without the text of
-metadata-only documents, so its fulltext probe counts only the pages that
-artifact will actually contain, and its blob probe names a document whose
-blob it actually carries. A manifest that recorded the live numbers would
-make its own artifact fail its own smoke test -- and would describe content
-the package does not have.
+Every count and every probe is recorded for the profile being built, not
+for the live database as such: the public profile omits excluded documents
+entirely and ships without the text of metadata-only ones, so its
+documents/pages counts count only rows that artifact will contain, its
+fulltext probe counts only pages whose body it carries, and its blob and
+vector probes name documents it actually ships. A manifest that recorded
+the live numbers would make its own artifact fail its own smoke test -- and
+would describe content the package does not have.
 """
 from __future__ import annotations
 
@@ -73,15 +74,20 @@ def blob_probe_doc(profile: str) -> str:
 # with a bare Postgres "more than one row" error instead of naming which
 # model actually produced the vectors.
 #
-# The fulltext count is the one read that must respect the profile: the
-# public artifact carries no body (hence no tsv) for metadata-only
-# documents, so counting live matches would record a number its own smoke
-# test could never reproduce. {content} is a module-owned SQL predicate
-# ("TRUE", or legal_profile.FULL_CONTENT_SQL), never caller input.
+# Three reads must respect the profile. The row counts: the public artifact
+# has no row at all for an excluded document, nor for its pages, so live
+# counts would describe a package that does not exist. The fulltext count:
+# that artifact carries no body (hence no tsv) for metadata-only documents
+# either, so counting live matches would record a number its own smoke test
+# could never reproduce. {shipped} and {content} are module-owned SQL
+# predicates ("TRUE", or legal_profile.SHIPPED_SQL/FULL_CONTENT_SQL), never
+# caller input; the pages counts join corpus.documents because the
+# classification lives there, and the FK makes the join row-preserving.
 _MANIFEST_SCALARS_SQL = """
 SELECT
-    (SELECT count(*) FROM corpus.documents),
-    (SELECT count(*) FROM corpus.pages),
+    (SELECT count(*) FROM corpus.documents WHERE {shipped}),
+    (SELECT count(*) FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id
+      WHERE {shipped}),
     (SELECT model FROM corpus.embedding_model WHERE id = 1),
     (SELECT dims FROM corpus.embedding_model WHERE id = 1),
     (SELECT count(*) FROM measurements.run),
@@ -134,12 +140,14 @@ def gather_manifest(env: dict, ollama_url: str, profile: str = Profile.FULL) -> 
     if public:
         legal_profile.require_classified(env)
     content_predicate = legal_profile.FULL_CONTENT_SQL if public else "TRUE"
+    shipped_predicate = legal_profile.SHIPPED_SQL if public else "TRUE"
     probe_doc = blob_probe_doc(profile)
     (
         documents_count_str, pages_count_str, model, dims_str, runs_count_str,
         blob_len_str, blob_sha, fulltext_hits_str,
     ) = scalar_row(
-        env, _MANIFEST_SCALARS_SQL.format(content=content_predicate),
+        env,
+        _MANIFEST_SCALARS_SQL.format(content=content_predicate, shipped=shipped_predicate),
         variables={"doc": probe_doc, "q": FULLTEXT_PROBE_QUERY},
         expected_columns=8,
     )
@@ -160,6 +168,7 @@ def gather_manifest(env: dict, ollama_url: str, profile: str = Profile.FULL) -> 
     fulltext_hits = int(fulltext_hits_str)
 
     digest, size_bytes = served_model_digest(ollama_url, model)
+    legal = legal_profile.legal_summary(env)
 
     vec_json = pg_search.embed_query(VECTOR_PROBE_QUERY, env, ollama_url=ollama_url)
     if vec_json is None:
@@ -172,9 +181,23 @@ def gather_manifest(env: dict, ollama_url: str, profile: str = Profile.FULL) -> 
             "corpus.pages has no embedded rows -- cannot build the vector probe "
             "(run pg_embed.py against the corpus first)"
         )
-    # Profile-independent by construction: every page carries its embedding
-    # in both profiles (only body/blob are cut), so the nearest page, its
-    # rank and its distance are the same numbers either way. The overlap
+    # The nearest page is found over the LIVE corpus, which includes the
+    # documents the public profile omits. Recording one of those would name
+    # a page the artifact does not contain -- its own smoke test would then
+    # fail on a package that is otherwise correct. Refused at build time,
+    # like the blob probe above, rather than left to be discovered on
+    # deploy: the fix is a different probe query, and the builder is the one
+    # who can choose it.
+    if public and nearest["document_id"] not in legal_profile.shipped_ids(legal):
+        raise RuntimeError(
+            f"vector probe's nearest page belongs to {nearest['document_id']}, which the "
+            "public profile does not ship (public_distribution excludes it) -- pick a probe "
+            "query whose nearest page is in the artifact"
+        )
+    # Otherwise profile-independent by construction: every shipped page
+    # carries its embedding in both profiles (only body/blob are cut), so
+    # the nearest page, its rank and its distance are the same numbers
+    # either way for a document both profiles carry. The overlap
     # guard below reads the live body -- the strictest of the two cases,
     # since a metadata-only page ships with an empty body and could not
     # overlap anything.
@@ -212,7 +235,7 @@ def gather_manifest(env: dict, ollama_url: str, profile: str = Profile.FULL) -> 
         # package contains no measurements rows at all. Our own research
         # records ship separately.
         Key.MEASUREMENTS_RUN_COUNT: 0 if public else runs_count,
-        Key.LEGAL: legal_profile.legal_summary(env),
+        Key.LEGAL: legal,
         Key.BLOB_PROBE: {
             Key.DOCUMENT_ID: probe_doc,
             Key.BYTE_LENGTH: blob_len,
