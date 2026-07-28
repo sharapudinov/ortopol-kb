@@ -47,7 +47,7 @@ LOADERS_PRESERVE: загрузчики не трогают чужую работ
 Любая правка закрывается этим (из корня репозитория):
 
 ```bash
-python3 -m unittest discover -s tests -t tests            # 286 тестов, exit 0
+python3 -m unittest discover -s tests -t tests            # 300 тестов, exit 0
 set -a; . ../corpus/.pgenv; set +a
 python3 corpus_completeness.py                            # exit 0
 ```
