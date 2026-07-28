@@ -31,6 +31,7 @@ PAGE_COLUMNS = ["document_id", "page_number", "body", "embedding"]
 FULL_DOC = "2009_isu34"
 META_DOC = "1997_sm280"
 INTERNAL_DOC = "INDEX"
+EXCLUDED_DOC = "2016_vmj598"
 
 
 def _document_row(doc_id, distribution, blob):
@@ -52,7 +53,9 @@ def _copy_block(table, columns, rows):
 class ArtifactBuilder:
     """Writes a manifest + gzipped dump pair into a directory, defaulting to
     a well-formed public artifact: one full-text document with content, one
-    metadata-only document stripped, one internal document shipped whole.
+    metadata-only document stripped, one internal document shipped whole,
+    and one excluded document the manifest names but the dump does not
+    contain in any form.
     """
 
     def __init__(self, directory: Path):
@@ -73,7 +76,9 @@ class ArtifactBuilder:
         self.page_columns = list(PAGE_COLUMNS)
         self.by_distribution = {
             "full-text": [FULL_DOC], "metadata-only": [META_DOC], "internal": [INTERNAL_DOC],
+            "excluded": [EXCLUDED_DOC],
         }
+        self.shipped = ["full-text", "metadata-only", "internal"]
         self.unclassified = 0
         self.extra_sql = ""
 
@@ -88,19 +93,22 @@ class ArtifactBuilder:
         dump_path = self.directory / "01_dump.sql.gz"
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
+        legal = {
+            "verify_query": "SELECT count(*) ...",
+            "unclassified_documents": self.unclassified,
+            "class_counts": [],
+            "documents_by_distribution": self.by_distribution,
+            "full_content_distributions": ["full-text", "internal"],
+        }
+        if self.shipped is not None:
+            legal["shipped_distributions"] = self.shipped
         manifest = {
-            "schema_version": 4,
+            "schema_version": 5,
             "profile": self.profile,
             "schemas": self.schemas,
             "pages_count": len(self.pages),
             "dump": {"file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"},
-            "legal": {
-                "verify_query": "SELECT count(*) ...",
-                "unclassified_documents": self.unclassified,
-                "class_counts": [],
-                "documents_by_distribution": self.by_distribution,
-                "full_content_distributions": ["full-text", "internal"],
-            },
+            "legal": legal,
         }
         (self.directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False))
         return self.directory
@@ -242,6 +250,48 @@ class PublicProfileChecksTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("3 document row(s)", detail)
 
+    def test_excluded_document_is_counted_out_not_missing(self):
+        # The manifest lists four documents and the dump carries three: that
+        # is the excluded one, and it must read as correct rather than as an
+        # incomplete artifact.
+        with tempfile.TemporaryDirectory() as tmp:
+            results = _results(ArtifactBuilder(Path(tmp)))
+        ok, detail = results["правовая классификация полна"]
+        self.assertTrue(ok, detail)
+        self.assertIn("4 id(s)", detail)
+        self.assertIn("3 of them shipped", detail)
+
+    def test_a_leaked_row_for_an_excluded_document_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.documents.append(_document_row(EXCLUDED_DOC, "excluded", "\\N"))
+            results = _results(builder)
+        ok, detail = results["excluded: ни строки документа, ни страниц"]
+        self.assertFalse(ok)
+        self.assertIn(EXCLUDED_DOC, detail)
+
+    def test_a_leaked_page_for_an_excluded_document_fails(self):
+        # Even a body-less page row is a leak here: it carries the vector,
+        # which is what makes the work findable in the first place.
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.pages.append(_page_row(EXCLUDED_DOC, 1, ""))
+            results = _results(builder)
+        ok, detail = results["excluded: ни строки документа, ни страниц"]
+        self.assertFalse(ok)
+        self.assertIn(EXCLUDED_DOC, detail)
+
+    def test_a_manifest_without_shipped_distributions_is_refused(self):
+        # An artifact that cannot say which classes it carries cannot be
+        # verified at all -- and must not be read as carrying everything.
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.shipped = None
+            results = _results(builder)
+        ok, detail = results["правовая классификация полна"]
+        self.assertFalse(ok)
+        self.assertIn("shipped_distributions", detail)
+
 
 class FullProfileChecksTests(unittest.TestCase):
     def _full_builder(self, directory: Path) -> ArtifactBuilder:
@@ -250,17 +300,21 @@ class FullProfileChecksTests(unittest.TestCase):
         builder.schemas = ["corpus", "measurements"]
         builder.extra_sql = "CREATE SCHEMA measurements;\n"
         # The full artifact carries every blob and every body, whatever the
-        # class -- that is exactly the invariant asserted for it.
+        # class -- including the documents the public profile omits: it is
+        # the owner's own backup, and the legal cut is the public profile's
+        # job alone.
         builder.documents = [
             _document_row(FULL_DOC, "full-text", "\\x2550"),
             _document_row(META_DOC, "metadata-only", "\\x2552"),
             _document_row(INTERNAL_DOC, "internal", "\\x2551"),
+            _document_row(EXCLUDED_DOC, "excluded", "\\x2553"),
         ]
         builder.pages = [
             _page_row(FULL_DOC, 1, "текст"),
             _page_row(META_DOC, 1, "полный текст статьи"),
             _page_row(META_DOC, 2, "продолжение"),
             _page_row(INTERNAL_DOC, 1, "наш индекс"),
+            _page_row(EXCLUDED_DOC, 1, "текст статьи ВМЖ"),
         ]
         return builder
 
@@ -269,6 +323,13 @@ class FullProfileChecksTests(unittest.TestCase):
             results = _results(self._full_builder(Path(tmp)))
         for name, (ok, detail) in results.items():
             self.assertTrue(ok, f"{name}: {detail}")
+
+    def test_full_artifact_keeps_the_documents_the_public_one_omits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = _results(self._full_builder(Path(tmp)))
+        ok, detail = results["excluded: ни строки документа, ни страниц"]
+        self.assertTrue(ok, detail)
+        self.assertIn("0 excluded document(s)", detail)
 
     def test_full_artifact_missing_a_blob_fails_regardless_of_class(self):
         with tempfile.TemporaryDirectory() as tmp:

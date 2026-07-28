@@ -9,15 +9,21 @@ paper it may not ship" must be answerable before the artifact is restored
 anywhere, by anyone who has only the file, and it must be answered from the
 shipped bytes rather than from the packager's intentions.
 
-Checks, all four required by task 033 plus the two that make them meaningful:
+Checks:
 
   profile/manifest agreement   the declared profile's schemas are the ones
                                the dump actually contains (public: no
                                measurements schema at all, not merely no
                                measurements rows)
   classification is complete   manifest.legal.unclassified_documents == 0
-                               and every document in the dump appears in
-                               exactly one of the declared class lists
+                               and every document row in the dump appears in
+                               exactly one of the class lists the manifest
+                               declares this artifact to carry
+  excluded left no trace       a document classified outside
+                               legal.shipped_distributions has no documents
+                               row and no page row -- an omission asserted
+                               from the shipped bytes, not from the
+                               packager's WHERE clause
   metadata-only is stripped    no source_blob and no page body for ANY
                                metadata-only document
   full-text is intact          a source blob and a non-empty body for EVERY
@@ -54,30 +60,56 @@ DOCUMENTS_TABLE = "corpus.documents"
 PAGES_TABLE = "corpus.pages"
 
 
-def _classes(manifest: dict) -> tuple[dict[str, list[str]], list[str]]:
-    """(documents_by_distribution, full_content_distributions) from the
-    manifest's legal block.
+def _classes(manifest: dict) -> tuple[dict[str, list[str]], list[str], list[str]]:
+    """(documents_by_distribution, full_content_distributions,
+    shipped_distributions) from the manifest's legal block.
+
+    A manifest missing shipped_distributions yields an empty list, not the
+    vocabulary's default: read with a default, an artifact that silently
+    dropped a class would look exactly like one that carries it. The empty
+    list makes every content check fail, and
+    check_classification_complete() says why.
     """
     legal = manifest.get(Key.LEGAL, {})
     return (
         legal.get(Key.DOCUMENTS_BY_DISTRIBUTION, {}),
         legal.get(Key.FULL_CONTENT_DISTRIBUTIONS, []),
+        legal.get(Key.SHIPPED_DISTRIBUTIONS, []),
     )
 
 
+def _ids(by_distribution: dict[str, list[str]], names: list[str]) -> set[str]:
+    return {doc_id for name in names for doc_id in by_distribution.get(name, [])}
+
+
+def _expected_ids(manifest: dict) -> tuple[set[str], set[str]]:
+    """(ids the artifact must contain, ids it must not contain at all).
+
+    The FULL profile carries the whole corpus whatever the classification --
+    it is the owner's own backup, and the legal cut is the public profile's
+    job alone.
+    """
+    by_distribution, _full_content, shipped = _classes(manifest)
+    everything = {doc_id for ids in by_distribution.values() for doc_id in ids}
+    if manifest.get(Key.PROFILE) != Profile.PUBLIC:
+        return everything, set()
+    shipped_ids = _ids(by_distribution, shipped)
+    return shipped_ids, everything - shipped_ids
+
+
 def _content_expectation(manifest: dict) -> tuple[set[str], set[str]]:
-    """(ids that must carry full content, ids that must be stripped).
+    """(ids that must carry full content, ids that must ship stripped).
 
     For the FULL profile nothing is stripped -- the artifact carries
     everything regardless of class, and that is exactly what these checks
     then assert about it.
     """
-    by_distribution, full_content = _classes(manifest)
-    everything = {doc_id for ids in by_distribution.values() for doc_id in ids}
+    by_distribution, full_content, _shipped = _classes(manifest)
+    present, _absent = _expected_ids(manifest)
     if manifest.get(Key.PROFILE) != Profile.PUBLIC:
-        return everything, set()
-    full_ids = {doc_id for name in full_content for doc_id in by_distribution.get(name, [])}
-    return full_ids, everything - full_ids
+        return present, set()
+    full_ids = _ids(by_distribution, full_content) & present
+    return full_ids, present - full_ids
 
 
 def check_schemas(dump_path: Path, manifest: dict) -> tuple[bool, str]:
@@ -89,17 +121,40 @@ def check_schemas(dump_path: Path, manifest: dict) -> tuple[bool, str]:
 
 def check_classification_complete(manifest: dict, scans: dict) -> tuple[bool, str]:
     legal = manifest.get(Key.LEGAL, {})
+    if Key.SHIPPED_DISTRIBUTIONS not in legal:
+        return False, (
+            f"manifest.legal declares no {Key.SHIPPED_DISTRIBUTIONS} -- which classes this "
+            "artifact carries cannot be inferred; rebuild it with the current packager"
+        )
     unclassified = legal.get(Key.UNCLASSIFIED_DOCUMENTS)
-    by_distribution, _ = _classes(manifest)
-    listed = [doc_id for ids in by_distribution.values() for doc_id in ids]
-    duplicated = sorted({i for i in listed if listed.count(i) > 1})
+    by_distribution, _full_content, _shipped = _classes(manifest)
+    all_listed = [doc_id for ids in by_distribution.values() for doc_id in ids]
+    duplicated = sorted({i for i in all_listed if all_listed.count(i) > 1})
+    expected, _absent = _expected_ids(manifest)
     documents = scans.get(DOCUMENTS_TABLE)
     dumped = documents.rows if documents else 0
-    ok = unclassified == 0 and not duplicated and dumped == len(listed)
+    ok = unclassified == 0 and not duplicated and dumped == len(expected)
     return ok, (
-        f"unclassified={unclassified}, {len(listed)} id(s) across "
-        f"{len(by_distribution)} class(es) vs {dumped} document row(s) in the dump"
+        f"unclassified={unclassified}, {len(all_listed)} id(s) across "
+        f"{len(by_distribution)} class(es), {len(expected)} of them shipped by this profile, "
+        f"vs {dumped} document row(s) in the dump"
         + (f", listed twice: {duplicated}" if duplicated else "")
+    )
+
+
+def check_excluded_absent(manifest: dict, facts: dict) -> tuple[bool, str]:
+    """A document the manifest classifies outside shipped_distributions must
+    have no documents row and no page row. Asserted against the dump's own
+    bytes: "the SELECT filtered it out" is a claim about the packager, this
+    is a claim about the file.
+    """
+    _expected, absent = _expected_ids(manifest)
+    leaked_documents = sorted(absent & facts["documents"])
+    leaked_pages = sorted(absent & facts["page_documents"])
+    ok = not leaked_documents and not leaked_pages
+    return ok, (
+        f"{len(absent)} excluded document(s); rows present for "
+        f"{leaked_documents or 'none'}, pages present for {leaked_pages or 'none'}"
     )
 
 
@@ -108,23 +163,30 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dict, dict]:
     content checks need: which ids carry a blob, which carry page text, and
     whether every page row has an embedding.
     """
+    documents: set[str] = set()
+    page_documents: set[str] = set()
     with_blob: set[str] = set()
     with_body: set[str] = set()
     pages_seen = {"rows": 0, "no_embedding": 0}
 
     def on_document(row: dict) -> None:
+        documents.add(row[ID_COLUMN])
         if row.get(BLOB_COLUMN, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
             with_blob.add(row[ID_COLUMN])
 
     def on_page(row: dict) -> None:
         pages_seen["rows"] += 1
+        page_documents.add(row[DOCUMENT_ID_COLUMN])
         if row.get(EMBEDDING_COLUMN, dump_scan.NULL_FIELD) in (dump_scan.NULL_FIELD, ""):
             pages_seen["no_embedding"] += 1
         if row.get(BODY_COLUMN, "") not in ("", dump_scan.NULL_FIELD):
             with_body.add(row[DOCUMENT_ID_COLUMN])
 
     scans = dump_scan.scan(dump_path, {DOCUMENTS_TABLE: on_document, PAGES_TABLE: on_page})
-    facts = {"with_blob": with_blob, "with_body": with_body, "pages": pages_seen}
+    facts = {
+        "documents": documents, "page_documents": page_documents,
+        "with_blob": with_blob, "with_body": with_body, "pages": pages_seen,
+    }
     return scans, facts
 
 
@@ -180,6 +242,7 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
     return [
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(dump_path, manifest)),
         ("правовая классификация полна", *check_classification_complete(manifest, scans)),
+        ("excluded: ни строки документа, ни страниц", *check_excluded_absent(manifest, facts)),
         ("metadata-only: ни блоба, ни текста", *check_metadata_only_stripped(manifest, facts)),
         ("full-text: блоб и текст на месте", *check_full_content_intact(manifest, facts)),
         ("векторы у всех страниц", *check_pages_embedded(manifest, scans, facts)),
