@@ -24,6 +24,16 @@ legal_profile.py -- this module contains no legal knowledge and no id list):
   metadata-only        -- the documents row WITHOUT source_blob; pages keep
                           page_number + embedding, and body is written as
                           the empty string
+  excluded             -- no row is written at all, in either table: the
+                          COPY selects filter the document out (SHIPPED_SQL)
+                          instead of blanking its columns
+
+The difference between the last two is the whole reason `excluded` exists.
+Blanking columns still ships a row saying "this work is in our corpus, here
+is its bibliography"; for a document whose legal regime the owner has not
+established, that sentence is itself the decision the packager must not
+make. Filtering happens in the SELECT, so nothing about the document reaches
+the dump file even in a form a reader could count.
 
 body='' rather than "no page row" is deliberate and load-bearing: the pages
 row still exists, so the page's vector is still searchable (semantic search
@@ -51,7 +61,7 @@ from deploy_pathfix import ensure_corpus_importable
 ensure_corpus_importable()
 
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
-from legal_profile import FULL_CONTENT_SQL, require_classified  # noqa: E402
+from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL, require_classified  # noqa: E402
 from pg_common import run_sql  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
 
@@ -111,12 +121,16 @@ def _select_expression(table: str, column: str) -> str:
 def _copy_select(table: str, columns: list[str]) -> str:
     projection = ",\n       ".join(_select_expression(table, c) for c in columns)
     if table == "documents":
-        source = "FROM corpus.documents d ORDER BY d.id"
+        source = f"FROM corpus.documents d WHERE {SHIPPED_SQL} ORDER BY d.id"
     elif table == "pages":
-        # The join supplies public_distribution for the body CASE above: the
-        # class lives on the document, the cut applies to its pages.
+        # The join supplies public_distribution twice over: for the body
+        # CASE above and for the WHERE here. The class lives on the
+        # document, both the cut and the omission apply to its pages -- a
+        # page of an excluded document is dropped with it, so the artifact
+        # cannot carry an orphan vector for text it does not ship.
         source = (
             "FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id "
+            f"WHERE {SHIPPED_SQL} "
             "ORDER BY p.document_id, p.page_number"
         )
     else:
@@ -156,9 +170,12 @@ PREAMBLE = (
     "-- is deliberately absent). Data: COPY blocks filtered by\n"
     "-- corpus.documents.public_distribution -- documents classified\n"
     "-- 'metadata-only' carry no source_blob and their pages carry an empty body\n"
-    "-- (and therefore an empty tsv), only page_number and embedding. See\n"
-    "-- manifest.json's `legal` block for the classification this build used and\n"
-    "-- deploy/public_dump.py for how it was applied.\n"
+    "-- (and therefore an empty tsv), only page_number and embedding; documents\n"
+    "-- classified 'excluded' have no row here at all, in either table. See\n"
+    "-- manifest.json's `legal` block for the classification this build used\n"
+    "-- (documents_by_distribution names every document, shipped_distributions\n"
+    "-- says which of those lists this file carries) and deploy/public_dump.py\n"
+    "-- for how it was applied.\n"
     "--\n\n"
 )
 

@@ -68,6 +68,19 @@ class CopySelectTests(unittest.TestCase):
         self.assertIn("p.embedding", sql)
         self.assertIn("JOIN corpus.documents d ON d.id = p.document_id", sql)
 
+    def test_an_excluded_document_is_filtered_out_of_both_tables(self):
+        # Not blanked -- filtered: no documents row and no page row is
+        # written for a document whose regime the owner has not established.
+        shipped = "WHERE public_distribution IN ('full-text', 'metadata-only', 'internal')"
+        documents = public_dump._copy_select("documents", ["id", "source_blob"])
+        pages = public_dump._copy_select("pages", ["document_id", "page_number", "embedding"])
+        self.assertIn(shipped, documents)
+        self.assertIn(shipped, pages)
+
+    def test_the_filter_is_the_shared_predicate_not_a_second_list(self):
+        from legal_profile import SHIPPED_SQL
+        self.assertIn(SHIPPED_SQL, public_dump._copy_select("documents", ["id"]))
+
     def test_pages_are_ordered_so_the_reassigned_sequence_is_deterministic(self):
         sql = public_dump._copy_select("pages", ["document_id", "page_number"])
         self.assertIn("ORDER BY p.document_id, p.page_number", sql)
