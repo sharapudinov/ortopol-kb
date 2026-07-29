@@ -12,7 +12,12 @@ import unittest
 from pathlib import Path
 
 import _pathfix  # noqa: F401
-from paths import default_corpus_dir, default_pdf_dir
+from paths import (
+    EXTERNAL_SOURCE_DIR,
+    IIS_SOURCE_DIR,
+    default_corpus_dir,
+    default_pdf_dir,
+)
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
 FIELD_SEP = "\x1f"
@@ -28,10 +33,14 @@ class CorpusCoverageTests(unittest.TestCase):
         if not check_postgres_available(cls.env):
             raise unittest.SkipTest("Postgres not reachable")
         cls.pdf_dir = default_pdf_dir()
+        # Только корпус: имена файлов сверяются с theory/iis/, и документ
+        # другого каталога искался бы здесь по несуществующему пути —
+        # pdfinfo молча ничего не вернул бы, и покрытие мерилось бы не по
+        # тому множеству. Полнота по ВСЕМ каталогам — corpus_completeness.py.
         rows = run_sql(
             cls.env,
-            f"SELECT filename, pages_count, extraction_state FROM corpus.documents "
-            f"ORDER BY filename;",
+            "SELECT filename, pages_count, extraction_state FROM corpus.documents "
+            f"WHERE source_dir = '{IIS_SOURCE_DIR}' ORDER BY filename;",
             extra_args=["-t", "-A", "-F", FIELD_SEP],
         ).stdout
         cls.docs = [r.split(FIELD_SEP) for r in rows.splitlines() if r.strip()]
@@ -139,6 +148,62 @@ class CompletenessScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, f"полнота не доказана:\n{r.stdout}\n{r.stderr}")
 
 
+class ExternalLiteratureTests(unittest.TestCase):
+    """Живая база: внешняя литература лежит, ищется и заперта.
+
+    Формат реестра и невозможность отгрузки проверяются без базы
+    (test_external_registry.py); здесь — что на реальном корпусе это
+    выполняется, а не только на выдуманных строках.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.env = load_pgenv(default_corpus_dir() / ".pgenv")
+        except PostgresUnavailable as exc:
+            raise unittest.SkipTest(f"Postgres not configured: {exc}")
+        if not check_postgres_available(cls.env):
+            raise unittest.SkipTest("Postgres not reachable")
+        cls.where = f"source_dir = '{EXTERNAL_SOURCE_DIR}'"
+
+    def _scalar(self, sql):
+        return run_sql(self.env, sql, extra_args=["-t", "-A"]).stdout.strip()
+
+    def test_every_work_by_another_author_is_excluded_from_the_public_artifact(self):
+        # Реестр — наш собственный документ и идёт как internal; всё
+        # остальное под этим каталогом — чужой копирайт и не идёт никак.
+        leaking = self._scalar(
+            "SELECT coalesce(string_agg(id, ',' ORDER BY id), '') FROM corpus.documents "
+            f"WHERE {self.where} AND legal_class = 'external-literature' "
+            "AND public_distribution <> 'excluded';")
+        self.assertEqual(leaking, "", "чужая работа помечена к отгрузке наружу")
+        held = int(self._scalar(f"SELECT count(*) FROM corpus.documents WHERE {self.where};"))
+        self.assertGreater(held, 1, "внешних источников в базе нет — проверять нечего")
+
+    def test_external_pages_carry_a_semantic_key(self):
+        missing = self._scalar(
+            "SELECT count(*) FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id "
+            f"WHERE d.{self.where} AND p.embedding IS NULL AND btrim(p.body) <> '';")
+        self.assertEqual(missing, "0")
+
+    def test_external_pages_are_searchable_by_word(self):
+        # Полнотекст по-русски стеммит и латиницу: работа на английском
+        # обязана находиться так же, как русская.
+        hits = self._scalar(
+            "SELECT count(*) FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id "
+            f"WHERE d.{self.where} AND p.tsv @@ to_tsquery('russian', 'Vilenkin');")
+        self.assertGreater(int(hits), 0, "внешние страницы не находятся полнотекстом")
+
+    def test_a_bibliography_record_says_the_text_is_not_held(self):
+        # Запись без тела работы обязана называть это прямо: иначе читатель
+        # решит, что статья у нас есть, и не станет её искать.
+        silent = self._scalar(
+            "SELECT count(*) FROM corpus.documents "
+            f"WHERE {self.where} AND source_tier = 'publisher-paywalled' "
+            "AND note NOT LIKE '%тела работы у нас нет%';")
+        self.assertEqual(silent, "0")
+
+
 class AuxSourceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -177,18 +242,34 @@ class AuxSourceTests(unittest.TestCase):
             "OR source_sha256 IS NULL OR source_sha256 = '';")
         self.assertEqual(bad, "0", "документ без исходника-блоба или без хеша")
 
-    def test_metadata_files_are_indexed(self):
+    def test_metadata_files_of_the_corpus_are_indexed(self):
+        # Именно корпуса: theory/external/ ведёт свои курируемые записи
+        # (реестр и библиографические справки), и их число растёт — счёт по
+        # всей базе мерил бы не то, что этот тест утверждает.
         ids = self._scalar(
             "SELECT string_agg(id, ',' ORDER BY id) FROM corpus.documents "
-            "WHERE extraction_state = 'metadata';")
+            f"WHERE extraction_state = 'metadata' AND source_dir = '{IIS_SOURCE_DIR}';")
         self.assertEqual(ids, "INDEX,THEMES")
 
     def test_ordinary_reload_preserves_aux_documents(self):
         # Тот же класс дефекта ловили дважды: обычная перезагрузка не имеет права
-        # трогать документы чужих конвейеров (transcribed/ocr/metadata).
+        # трогать документы чужих конвейеров (transcribed/ocr/metadata) — и, с
+        # появлением theory/external/, документы чужого КАТАЛОГА. Внешние PDF
+        # несут обычное состояние 'clean': их защищает только ограничение
+        # удалений по source_dir, а не список состояний.
         from pg_load import load_corpus
+        aux = ("SELECT count(*) FROM corpus.documents "
+               "WHERE extraction_state IN ('transcribed', 'ocr', 'metadata');")
+        external = ("SELECT count(*) FROM corpus.documents "
+                    f"WHERE source_dir = '{EXTERNAL_SOURCE_DIR}'")
+        external_clean = external + " AND extraction_state = 'clean';"
+        external += ";"
+        before = (self._scalar(aux), self._scalar(external))
+        self.assertGreater(int(before[0]), 0, "нечего беречь: aux-документов нет")
+        self.assertGreater(int(self._scalar(external_clean)), 0,
+                           "нечего беречь: внешних документов с обычным состоянием нет")
+
         load_corpus(default_corpus_dir(), default_corpus_dir() / ".pgenv")
-        n = self._scalar(
-            "SELECT count(*) FROM corpus.documents "
-            "WHERE extraction_state IN ('transcribed', 'ocr', 'metadata');")
-        self.assertEqual(n, "7", "перезагрузка уничтожила aux-документы (4+1+2)")
+
+        self.assertEqual((self._scalar(aux), self._scalar(external)), before,
+                         "перезагрузка уничтожила документы чужого конвейера или каталога")
