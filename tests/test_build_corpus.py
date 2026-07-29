@@ -9,6 +9,7 @@ investigate (corpus changed, or the extractor broke), never to adjust.
 import json
 import subprocess
 import unittest
+from pathlib import Path
 
 import _pathfix  # noqa: F401
 from build_corpus import build_corpus, write_manifest
@@ -72,11 +73,16 @@ class FullCorpusRunTests(unittest.TestCase):
         # not "nothing else in the repository changed": other tasks legitimately edit
         # source and docs, and asserting otherwise would turn this into a test that
         # fails for reasons unrelated to what it is checking.
-        derived = ("text/", "coverage.", "manifest.", ".db", ".pgenv")
+        # Matched by NAME, not by substring: a substring rule flagged the
+        # ordinary source file tests/test_pg_coverage.py the moment it was
+        # edited (it contains "coverage."), which is a false accusation about
+        # the very guarantee this test exists to make credible.
+        derived_names = ("coverage.json", "coverage.md", "manifest.json", ".pgenv")
         offenders = [
             path for line in result.stdout.splitlines()
             if (path := line[3:])
-            and (path.startswith("corpus/") or any(m in path for m in derived))
+            and (path.startswith(("corpus/", "text/")) or "/text/" in path
+                 or Path(path).name in derived_names or path.endswith(".db"))
         ]
         self.assertEqual(offenders, [], f"derived corpus content inside {code_root}: {offenders}")
         self.assertFalse(str(self.output_dir).startswith(str(code_root)))
