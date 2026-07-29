@@ -38,8 +38,15 @@ MANIFEST_DESCRIBES_ARTIFACT: каждое число в manifest.json — про
 FILE_SIZE: код ≤300 строк, тесты ≤500. Превышение — делить по ответственности
   в том же коммите.
 LOADERS_PRESERVE: загрузчики не трогают чужую работу (pg_load.py не переписывает
-  transcribed/ocr/metadata; вектор обнуляется только при смене текста страницы).
-  Оба поведения — следствия реальных потерь, «упрощать» в truncate нельзя.
+  transcribed/ocr/metadata; вектор обнуляется только при смене текста страницы)
+  и ограничивают удаления собственным source_dir. Внешние PDF несут обычное
+  состояние clean — их защищает только это ограничение. Оба поведения —
+  следствия реальных потерь, «упрощать» в truncate нельзя.
+EXTERNAL_NEVER_SHIPS [HARD]: всё под theory/external/ — чужие авторы. Класс
+  external-literature, public_distribution='excluded', всегда; значение пишет
+  загрузчик, а не строка реестра, и corpus_completeness.py это проверяет
+  (external_checks.py). Реестр EXTERNAL_INDEX.md решает, ОТКУДА взято и ЗАЧЕМ,
+  но не «уезжает ли» — уезжать нечему.
 ```
 
 ## Предикат готовности
@@ -47,7 +54,7 @@ LOADERS_PRESERVE: загрузчики не трогают чужую работ
 Любая правка закрывается этим (из корня репозитория):
 
 ```bash
-python3 -m unittest discover -s tests -t tests            # 300 тестов, exit 0
+python3 -m unittest discover -s tests -t tests            # 322 теста, exit 0
 set -a; . ../corpus/.pgenv; set +a
 python3 corpus_completeness.py                            # exit 0
 ```
@@ -96,7 +103,13 @@ python3 deploy/profile_checks.py --artifact-dir <распакованный>   #
 
 - `kb_root()` — этот чекаут (только код);
 - `data_root()` — ближайший предок с `theory/iis/` внутри; оттуда `theory/iis/`
-  (источники) и `corpus/` (производные данные, `.pgenv`, `deploy/` с артефактами).
+  (корпус ИИШ), `theory/external/` (чужая литература, необязателен) и `corpus/`
+  (производные данные, `.pgenv`, `deploy/` с артефактами).
 
 Маркер — `theory/iis/`, а не наличие какого-либо соседнего каталога: код не
 должен знать раскладку чужих репозиториев рядом с деревом данных.
+
+Каталог источника — данные: `corpus.documents.source_dir`, из него выводится
+`source_path`. Каталог в коде называется один раз (`paths.IIS_SOURCE_DIR` /
+`EXTERNAL_SOURCE_DIR`), и загрузчик, забывший его выставить, получает дефолт
+`theory/iis` и падение полноты `BROKEN SOURCE PATH`, а не молча неверную ссылку.
