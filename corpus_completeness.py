@@ -25,6 +25,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from external_registry import REGISTRY_FILENAME
+from external_checks import external_problems
 from paths import data_root, default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
@@ -33,7 +35,8 @@ FIELD_SEP = "\x1f"
 # Правила классификации, в порядке применения. Первое совпавшее решает.
 # (предикат по относительному пути, вердикт, причина/вид)
 def classify(rel: str) -> tuple[str, str]:
-    """-> ('include-pdf'|'include-djvu'|'include-metadata'|'exclude', reason)"""
+    """-> ('include-pdf'|'include-djvu'|'include-metadata'|'include-external'
+           |'exclude'|'unclassified', reason)"""
     if rel.startswith("iis/wiki/"):
         return "exclude", "wiki side-branch (non-mathematical); theory/iis/wiki/GUIDE.md"
     if re.fullmatch(r"iis/[^/]+\.pdf", rel):
@@ -42,6 +45,15 @@ def classify(rel: str) -> tuple[str, str]:
         return "include-djvu", "source monograph (OCR layer)"
     if rel in ("iis/INDEX.md", "iis/THEMES.md"):
         return "include-metadata", "hand-curated corpus metadata"
+    # Внешняя литература: чужой автор, свой каталог, свой загрузчик и свой
+    # правовой режим (external_registry.py). Реестр обязателен — источник без
+    # ответа «зачем взят» база не хранит.
+    if rel == f"external/{REGISTRY_FILENAME}":
+        return "include-metadata", "hand-curated external sources registry"
+    if re.fullmatch(r"external/[^/]+\.pdf", rel):
+        return "include-external", f"external literature; must have a {REGISTRY_FILENAME} row"
+    if re.fullmatch(r"external/[^/]+\.md", rel):
+        return "include-external", f"external bibliography record; {REGISTRY_FILENAME} row"
     return "unclassified", "no rule matched — decide: include or exclude WITH a reason"
 
 
@@ -94,7 +106,8 @@ def main(argv: list[str] | None = None) -> int:
 
     problems: list[str] = []
     included_ids: set[str] = set()
-    counts = {"include-pdf": 0, "include-djvu": 0, "include-metadata": 0, "exclude": 0}
+    counts = {"include-pdf": 0, "include-djvu": 0, "include-metadata": 0,
+              "include-external": 0, "exclude": 0}
 
     for f in sorted(args.theory_dir.rglob("*")):
         if not f.is_file():
@@ -113,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         if did not in in_db:
             problems.append(f"NOT INDEXED: {rel} (ожидался документ id={did})")
             continue
-        if kind == "include-pdf":
+        if kind == "include-pdf" or (kind == "include-external" and f.suffix == ".pdf"):
             src = pdf_pages(f)
             if src is not None and src != in_db[did]:
                 problems.append(f"PAGE MISMATCH: {rel}: источник {src}, индекс {in_db[did]}")
@@ -121,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
             src = djvu_pages(f)
             if src != in_db[did]:
                 problems.append(f"PAGE MISMATCH: {rel}: источник {src}, индекс {in_db[did]}")
-        elif kind == "include-metadata" and in_db[did] < 1:
+        elif in_db[did] < 1:
+            # metadata и библиографические записи: одна страница минимум,
+            # иначе документ есть, а содержания у него нет.
             problems.append(f"EMPTY METADATA: {rel}")
 
     for did in sorted(set(in_db) - included_ids):
@@ -155,6 +170,11 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(f"NO SOURCE URL: {did} есть в INDEX.md, ссылки в базе нет "
                             f"(прогнать pg_source_urls.py)")
 
+    # Внешняя литература: реестр против диска, реестр против базы, и правовой
+    # режим класса как предикат (external_checks.py объясняет, почему это не
+    # противоречит LEGAL_IS_DATA).
+    problems += external_problems(args.theory_dir, env)
+
     dangling = run_sql(env,
         "SELECT r.spike || ' -> ' || e.doc_id "
         "FROM measurements.run r, unnest(r.evidence_docs) AS e(doc_id) "
@@ -175,7 +195,9 @@ def main(argv: list[str] | None = None) -> int:
     total_included = sum(counts[k] for k in counts if k.startswith("include"))
     print(f"опись: {total_included} включено "
           f"({counts['include-pdf']} pdf, {counts['include-djvu']} djvu, "
-          f"{counts['include-metadata']} metadata), {counts['exclude']} исключено с причиной")
+          f"{counts['include-metadata']} metadata, "
+          f"{counts['include-external']} external), "
+          f"{counts['exclude']} исключено с причиной")
     if problems:
         print(f"\nПОЛНОТА НЕ ДОКАЗАНА — {len(problems)} проблем(ы):")
         for p in problems:
