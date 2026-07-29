@@ -9,10 +9,12 @@
 -- complete corpus while a broken-font source (e.g. 2017_demr34) has
 -- vanished from it. extraction_state is the durable form of that guarantee.
 --
--- source_tier defaults to 'local_corpus' for everything today. It exists
--- now, before it has more than one value, because retrofitting it later
--- means re-labelling the whole corpus by hand once a second tier (e.g.
--- peer-reviewed vs. vendor-claimed) actually shows up.
+-- source_tier defaults to 'local_corpus' -- the Sharapudinov corpus itself.
+-- External literature carries the tier it actually came from ('arxiv-oa',
+-- 'publisher-paywalled', ...), written by pg_load_external.py from
+-- theory/external/EXTERNAL_INDEX.md. The column existed before it had a
+-- second value on purpose: retrofitting it would have meant re-labelling the
+-- whole corpus by hand.
 --
 -- pages: one row per extracted page, carrying BOTH retrieval keys.
 --   tsv       — 'russian' text search config (Snowball stemming + stopwords),
@@ -36,9 +38,13 @@ CREATE TABLE IF NOT EXISTS corpus.documents (
     note              TEXT,
     loaded_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- Прослеживаемость: находка ведёт к исходнику в один переход, не через
-    -- конвенцию. source_path generated — все источники лежат в theory/iis/
-    -- плоско (инвариант classify() в corpus_completeness.py, он это проверяет).
-    source_path       TEXT GENERATED ALWAYS AS ('theory/iis/' || filename) STORED,
+    -- конвенцию. Каталог — ДАННЫЕ (source_dir), путь по-прежнему выводится:
+    -- источники лежат плоско внутри своего каталога, и корпус перестал быть
+    -- одним каталогом, когда появилась внешняя литература (theory/external/).
+    -- Загрузчик, забывший про source_dir, получает дефолт theory/iis и падение
+    -- полноты BROKEN SOURCE PATH, а не молча неверную ссылку.
+    source_dir        TEXT NOT NULL DEFAULT 'theory/iis',
+    source_path       TEXT GENERATED ALWAYS AS (source_dir || '/' || filename) STORED,
     source_url        TEXT,  -- Math-Net.Ru из INDEX.md (pg_source_urls.py); NULL если нет
     -- Самодостаточность: сам исходник в базе (pg_load_blobs.py). Пакет
     -- разворачивается без theory/, сверка транскрипции с изображением возможна
@@ -61,6 +67,28 @@ CREATE TABLE IF NOT EXISTS corpus.documents (
     public_distribution  TEXT,
     legal_note           TEXT   -- основание одной строкой (цитата/норма/дата проверки)
 );
+
+-- Migration for a database created before source_dir existed (the corpus was
+-- one directory then). CREATE TABLE IF NOT EXISTS leaves an existing table
+-- alone, so the generalisation has to be applied here or the live instance
+-- keeps deriving every path from theory/iis/ -- silently wrong for external
+-- literature. A generated column's expression cannot be altered in place, so
+-- source_path is dropped and re-derived; nothing is lost, it is recomputed
+-- from source_dir + filename for every row.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = 'corpus.documents'::regclass
+          AND attname = 'source_dir' AND NOT attisdropped
+    ) THEN
+        ALTER TABLE corpus.documents DROP COLUMN IF EXISTS source_path;
+        ALTER TABLE corpus.documents
+            ADD COLUMN source_dir TEXT NOT NULL DEFAULT 'theory/iis';
+        ALTER TABLE corpus.documents ADD COLUMN source_path TEXT
+            GENERATED ALWAYS AS (source_dir || '/' || filename) STORED;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS corpus.pages (
     id           BIGSERIAL PRIMARY KEY,

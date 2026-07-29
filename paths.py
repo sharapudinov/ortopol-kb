@@ -18,6 +18,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# The two source directories under the data tree, named once. Both appear in
+# corpus.documents.source_dir, from which source_path is derived, so a typo
+# here is a broken path the completeness predicate reports rather than a
+# silently wrong string repeated in four loaders.
+IIS_SOURCE_DIR = "theory/iis"
+EXTERNAL_SOURCE_DIR = "theory/external"
+
 
 def kb_root() -> Path:
     """This repository's checkout root (paths.py's own directory)."""
@@ -39,7 +46,15 @@ def data_root() -> Path:
 
 
 def default_pdf_dir() -> Path:
-    return data_root() / "theory" / "iis"
+    return data_root() / IIS_SOURCE_DIR
+
+
+def default_external_dir() -> Path:
+    """Where sources by OTHER authors live -- never theory/iis/, which is the
+    Sharapudinov corpus itself. Kept apart because the two carry different
+    legal regimes and different loaders, not for tidiness.
+    """
+    return data_root() / EXTERNAL_SOURCE_DIR
 
 
 def default_corpus_dir() -> Path:
