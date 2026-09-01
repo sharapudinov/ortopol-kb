@@ -70,8 +70,10 @@ TARGETS = {
     "runs": (
         "measurements.run",
         # Смысл прогона — в вопросе, вердикте и в том, что он ИСКЛЮЧАЕТ.
-        "coalesce(question,'')||' '||coalesce(verdict,'')||' '"
-        "||coalesce(rules_out,'')||' '||coalesce(arbiter,'')",
+        # Переводы строк внутри полей вычищаются, как у pages: парсер ниже
+        # построчный, и многострочный вердикт иначе рвёт разбор id|text.
+        "replace(replace(coalesce(question,'')||' '||coalesce(verdict,'')||' '"
+        "||coalesce(rules_out,'')||' '||coalesce(arbiter,''), E'\n', ' '), E'\r', ' ')",
         "true",
     ),
 }
