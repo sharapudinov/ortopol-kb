@@ -37,5 +37,30 @@ class EmbedModelParameterizedTests(unittest.TestCase):
         self.assertIn("KB_EMBED_MODEL=bge-m3", text)
 
 
+class PgImageWithAgeAndPgvectorTests(unittest.TestCase):
+    """ortopol-pg:17-age1.7-pgvector (task 038.039.1) must carry both
+    extensions the kb schema needs (age for the citation graph, vector
+    already in production use) and the Dockerfile/README that build it must
+    agree on the image tag -- docker-compose.yml still names
+    pgvector/pgvector:pg17 on purpose (task 039.2 wires the switch), so this
+    only guards the new files against drifting from each other.
+    """
+
+    def test_pg_image_carries_both_extensions_in_init(self):
+        text = (_DEPLOY_DIR / "init" / "00_extensions.sql").read_text()
+        self.assertIn("CREATE EXTENSION IF NOT EXISTS vector;", text)
+        self.assertIn("CREATE EXTENSION IF NOT EXISTS age;", text)
+
+    def test_dockerfile_and_compose_name_same_image(self):
+        dockerfile = (_DEPLOY_DIR / "pg" / "Dockerfile").read_text()
+        readme = (_DEPLOY_DIR / "pg" / "README.md").read_text()
+        self.assertIn("FROM apache/age:release_PG17_1.7.0", dockerfile)
+        self.assertIn("ortopol-pg:17-age1.7-pgvector", readme)
+        # README's build/run commands must tag the image the Dockerfile
+        # produces -- a renamed tag on one side and not the other is exactly
+        # the drift this test exists to catch.
+        self.assertIn("docker build -t ortopol-pg:17-age1.7-pgvector", readme)
+
+
 if __name__ == "__main__":
     unittest.main()
