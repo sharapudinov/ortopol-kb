@@ -20,11 +20,22 @@ docs and are issued by each client (`pg_search.py`, `psql -c`), not baked
 into the image or `postgresql.conf` -- no `shared_preload_libraries` change
 is needed either; the base image's docker-entrypoint is untouched.
 
+## Live instance (ortopol-pg, 127.0.0.1:5470, volume ortopol-pg-data)
+
+Switched 2026-09-02 from `pgvector/pgvector:pg17` (17.10) to this image
+(17.11) on the same volume: stop + rename the old container to
+`ortopol-pg-old`, `docker run -d --name ortopol-pg --restart unless-stopped
+-p 127.0.0.1:5470:5432 -v ortopol-pg-data:/var/lib/postgresql/data:z` with
+the same POSTGRES_* env, then `CREATE EXTENSION IF NOT EXISTS age;`.
+
 ## Rollback
 
-Point `docker-compose.yml`'s `kb-pg.image` back at `pgvector/pgvector:pg17`
-and drop the `CREATE EXTENSION age` line from `00_extensions.sql` (compose
-itself is out of scope for this task -- see task 039.2).
+Live: `DROP EXTENSION age CASCADE;` FIRST -- the extension's catalog objects
+live in the data volume and the old image has no age.so to serve them --
+then remove the new container, rename `ortopol-pg-old` back and start it
+(17.11 -> 17.10 on one data directory is a supported minor downgrade).
+Artifact: `kb-pg.image` back to `pgvector/pgvector:pg17`, drop `build:`,
+drop the `CREATE EXTENSION age` line from `init/00_extensions.sql`.
 
 ## Licenses (first-party, checked 2026-09-02)
 

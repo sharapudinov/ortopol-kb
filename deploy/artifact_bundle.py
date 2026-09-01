@@ -21,6 +21,10 @@ CORPUS_DIR = DEPLOY_DIR.parent
 DEPLOY_FILES = [
     "docker-compose.yml",
     "init/00_extensions.sql",
+    # kb-pg is built, not pulled (see docker-compose.yml): the recipient
+    # needs the Dockerfile to get the same AGE+pgvector pairing.
+    "pg/Dockerfile",
+    "pg/README.md",
     "ollama-entrypoint.sh",
     ".pgenv.example",
     "AGENT_GUIDE.md",

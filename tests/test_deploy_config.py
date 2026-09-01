@@ -41,9 +41,8 @@ class PgImageWithAgeAndPgvectorTests(unittest.TestCase):
     """ortopol-pg:17-age1.7-pgvector (task 038.039.1) must carry both
     extensions the kb schema needs (age for the citation graph, vector
     already in production use) and the Dockerfile/README that build it must
-    agree on the image tag -- docker-compose.yml still names
-    pgvector/pgvector:pg17 on purpose (task 039.2 wires the switch), so this
-    only guards the new files against drifting from each other.
+    agree on the image tag, and docker-compose.yml must build that very
+    image from the bundled pg/ directory rather than pull pgvector's.
     """
 
     def test_pg_image_carries_both_extensions_in_init(self):
@@ -60,6 +59,15 @@ class PgImageWithAgeAndPgvectorTests(unittest.TestCase):
         # produces -- a renamed tag on one side and not the other is exactly
         # the drift this test exists to catch.
         self.assertIn("docker build -t ortopol-pg:17-age1.7-pgvector", readme)
+        compose = (_DEPLOY_DIR / "docker-compose.yml").read_text()
+        self.assertIn("build: ./pg", compose)
+        self.assertIn("image: ortopol-pg:17-age1.7-pgvector", compose)
+        self.assertNotIn("pgvector/pgvector:pg17", compose)
+
+    def test_bundle_ships_the_dockerfile_compose_builds_from(self):
+        import artifact_bundle
+        self.assertIn("pg/Dockerfile", artifact_bundle.DEPLOY_FILES)
+        self.assertIn("pg/README.md", artifact_bundle.DEPLOY_FILES)
 
 
 if __name__ == "__main__":
