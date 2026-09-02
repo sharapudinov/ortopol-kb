@@ -290,6 +290,40 @@ SELECT id, question, verdict, rules_out FROM measurements.run
 WHERE family && array['meixner'];
 ```
 
+## Граф цитирований
+
+Рядом со схемой `corpus`, в той же базе, живёт схема `citation`: узлы
+`citation.work` (заголовок, реферат, год, авторы, внешние идентификаторы) и рёбра
+`citation.cites` — скелет цитирований вокруг корпуса ИИШ, собранный из внешних
+источников (OpenAlex и т. п.), не полные тексты чужих работ. `kind` называет ярус
+доверия узла: `our-document` — документ этой базы (`document_id` указывает на
+`corpus.documents`), `external-skeleton` — только метаданные, `indexed` — внешний
+узел, прочитанный целиком отдельно, `excluded` — рассмотрен и отсеян
+(`exclusion_reason` называет причину). `source`/`evidence` на каждом узле и ребре
+называют, откуда взята запись, и несут сырую запись источника — не прозу.
+
+Схема спроецирована в граф Apache AGE `citation_graph`
+(`(:Work {key, kind, year, title})-[:CITES {source}]->(:Work)`); реляционные
+таблицы — источник истины, граф — производная проекция.
+
+Спросить граф:
+
+```bash
+python3 pg_graph.py citers <document_id> [--depth N]                       # кто (транзитивно, N ≤ 3) цитирует документ
+python3 pg_graph.py candidates [--top K] [--query "текст"] [--min-links N]  # внешние узлы, ближайшие по смыслу/связям к корпусу
+python3 pg_graph.py cocitation [--min-count M] [--export-vosviewer DIR]     # пары, процитированные вместе; экспорт в VOSviewer
+python3 pg_graph.py hybrid "вопрос" [--top K] [--show-sql]                  # ближайшие по эмбеддингу узлы + их соседи в графе
+```
+
+Граф — производная: после любой правки `citation.work`/`citation.cites`
+`python3 pg_graph.py project` пересобирает `citation_graph` с нуля, а
+`project --check` сверяет текущую проекцию с таблицами без пересборки.
+
+Схема `citation` пока не входит ни в один профиль `manifest.json` — команды выше
+читают ту же живую базу `corpus`, к которой подключён этот гайд, если граф
+развёрнут рядом; полных текстов внешних работ здесь нет и не будет ни в каком
+профиле — только заголовки, рефераты и связи.
+
 ## Чего в базе НЕТ
 
 В профиле `public` нет текста и исходников документов с
