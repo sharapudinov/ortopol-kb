@@ -41,6 +41,14 @@ from pg_search import EMBED_BATCH, embed_batch, resolve_model
 DEFAULT_MODEL = "bge-m3"
 DEFAULT_DIMS = 1024
 
+# Сколько строк берётся у БАЗЫ за один заход. Размер партии к ollama
+# (EMBED_BATCH = 16) для этого не годится: у psql на каждый вызов процесс,
+# временный скрипт и новое соединение, и цель `works` растёт с каждым
+# обходом. Та же пара размеров, что у citations/frontier.vectors_for
+# («~22 round trips вместо ~267»): страница из базы крупная, запрос к
+# ollama мелкий, и UPDATE'ы всей страницы уходят одним вызовом.
+FETCH_BATCH = 200
+
 
 def psql(sql: str, tuples_only: bool = True) -> str:
     """Выполняет SQL через psql. Возвращает stdout."""
@@ -145,14 +153,15 @@ def embed_target(name: str, model: str, dims: int) -> int:
     if total == 0:
         print(f"{name}: все записи уже несут семантический ключ")
         return 0
-    print(f"{name}: к обсчёту {total}, модель {model}, партиями по {EMBED_BATCH}")
+    print(f"{name}: к обсчёту {total}, модель {model}, страницами по {FETCH_BATCH}, "
+          f"партиями к ollama по {EMBED_BATCH}")
 
     done, started = 0, time.monotonic()
     while True:
         rows = psql(
             f"select id, left({text_expr}, {MAX_CHARS}) from {table} "
             f"where embedding is null and ({content_pred}) "
-            f"order by id limit {EMBED_BATCH};"
+            f"order by id limit {FETCH_BATCH};"
         ).strip()
         if not rows:
             break
@@ -165,6 +174,8 @@ def embed_target(name: str, model: str, dims: int) -> int:
             # Все оставшиеся записи с пустым текстом — вектор им не из чего строить.
             break
 
+        # Вся страница — один UPDATE-блок: embed() уже разбивает тексты на
+        # партии по EMBED_BATCH внутри себя (pg_search.embed_batch).
         vecs = embed([t for _, t in pairs], model, dims)
         updates = "\n".join(
             f"update {table} set embedding = '{json.dumps(v)}' where id = {pid};"
