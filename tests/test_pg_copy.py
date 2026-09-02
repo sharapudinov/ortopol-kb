@@ -128,5 +128,76 @@ class CopyCsvRowsTests(unittest.TestCase):
         self.assertFalse(seen["path"].exists())
 
 
+class CopyCsvIntoTests(unittest.TestCase):
+    """The form the corpus loaders use: CSV already built as a string.
+
+    Six of them go through it, and nothing exercised it -- neither the
+    quoting of the temp path spliced into the \\copy metacommand nor the
+    unlink when run_sql raises, which is the one path that leaks a file
+    per failed load.
+    """
+
+    def _run(self, csv_text: str, side_effect=None):
+        seen = {}
+
+        def capture(env, sql, **kwargs):
+            seen["sql"] = sql
+            seen["path"] = Path(sql.split("FROM '", 1)[1].split("' WITH", 1)[0]
+                                .replace("''", "'"))
+            seen["content"] = seen["path"].read_text(encoding="utf-8")
+            if side_effect is not None:
+                raise side_effect
+            return _completed("COPY 2\n")
+
+        with mock.patch.object(pg_copy, "run_sql", side_effect=capture):
+            if side_effect is None:
+                seen["result"] = pg_copy.copy_csv_into(
+                    {}, "corpus.pages (document_id, body)", csv_text)
+            else:
+                with self.assertRaises(type(side_effect)):
+                    pg_copy.copy_csv_into(
+                        {}, "corpus.pages (document_id, body)", csv_text)
+        return seen
+
+    def test_the_file_carries_exactly_what_the_caller_built(self):
+        text = ('2009_isu34,"тело, с запятой"\n'
+                '2009_isu34,"кавычка "" внутри"\n')
+        seen = self._run(text)
+        self.assertEqual(seen["content"], text)
+        # And it parses back as the same two rows the caller wrote.
+        self.assertEqual(list(csv.reader(io.StringIO(seen["content"]))),
+                         [["2009_isu34", "тело, с запятой"],
+                          ["2009_isu34", 'кавычка " внутри']])
+        self.assertEqual(seen["result"].stdout, "COPY 2\n")
+
+    def test_the_metacommand_names_the_table_and_the_csv_format(self):
+        seen = self._run("2009_isu34,текст\n")
+        self.assertTrue(seen["sql"].startswith("\\copy corpus.pages (document_id, body) "))
+        self.assertIn("WITH (FORMAT csv)", seen["sql"])
+
+    def test_a_quote_in_the_path_is_doubled_not_left_to_break_the_command(self):
+        """psql reads the path as a single-quoted literal, so an apostrophe
+        in the temp directory would end it early -- the load would then
+        fail, or worse, read a path nobody chose.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            odd = Path(tmp) / "don't"
+            odd.mkdir()
+            with mock.patch.object(pg_copy.tempfile, "tempdir", str(odd)):
+                seen = self._run("a,b\n")
+        self.assertIn("don''t", seen["sql"])
+        self.assertNotIn("don't", seen["sql"])
+
+    def test_the_temp_file_is_gone_even_when_the_load_fails(self):
+        seen = self._run("a,b\n", side_effect=RuntimeError("COPY failed"))
+        self.assertFalse(seen["path"].exists(),
+                         "провалившаяся загрузка оставила временный файл")
+
+    def test_the_temp_file_exists_while_psql_reads_it(self):
+        seen = self._run("a,b\n")
+        self.assertFalse(seen["path"].exists())
+        self.assertEqual(seen["content"], "a,b\n")
+
+
 if __name__ == "__main__":
     unittest.main()
