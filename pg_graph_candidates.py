@@ -160,7 +160,7 @@ def candidates(env, top: int = 20, query: str | None = None, min_links: int = 0)
 
     min_links cuts that top-K rather than the pool it is drawn from, so
     asking for links can return fewer than `top` rows -- see the shape note
-    on {links_join} above for the EXPLAIN measurement that decided it.
+    on {links_cut} above for the EXPLAIN measurement that decided it.
     """
     if query:
         vec = pg_search.embed_query(query, env)

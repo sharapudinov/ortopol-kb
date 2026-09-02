@@ -31,7 +31,7 @@ as; it is what a unit test with no tree sees.
 WHERE it sits: around the embedder, not inside frontier.vectors_for(). The
 embedder is the seam that costs money, its contract is exactly
 list[str] -> list[list[float]], and the crawl already binds it once from
-the model (pg_load_citations.make_embedder). So the memo is a decorator of
+the model (frontier.bound_embedder). So the memo is a decorator of
 that callable and the traversal does not learn a new argument.
 """
 from __future__ import annotations
