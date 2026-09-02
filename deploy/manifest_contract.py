@@ -138,6 +138,12 @@ class PolicySource:
     OVERRIDE: forced at the command line by --policy-override, which exists
     so the packaging and smoke pipeline can be exercised before that
     decision is made. Never publishable, and profile_checks.py fails on it.
+    NOT_APPLICABLE: this profile applies no citation policy at all. Only
+    the public profile has one to apply -- full carries the whole schema
+    whatever the owner's row says, and resolve_citation_mode() does not
+    even read citation.public_policy for it. Naming the owner there would
+    put a decision nobody made into the one field designed to be
+    non-fabricable.
 
     In the manifest rather than only in the filename because the filename
     is not part of the package: it is renamed by a copy, and it is not what
@@ -148,7 +154,8 @@ class PolicySource:
 
     OWNER = "owner"
     OVERRIDE = "override"
-    ALL = (OWNER, OVERRIDE)
+    NOT_APPLICABLE = "not-applicable"
+    ALL = (OWNER, OVERRIDE, NOT_APPLICABLE)
 
 
 class Distribution:
@@ -247,7 +254,12 @@ def schemas_for(profile: str, citation_mode: str) -> list[str]:
 # by --policy-override; read with a default, an override build would be
 # certified as owner-classified, which is the one thing the flag must never
 # be able to produce.
-MANIFEST_SCHEMA_VERSION = 7
+# 8: citation.policy_source gained a third value, "not-applicable", and a
+# full-profile manifest now carries THAT rather than "owner". A v7 full
+# artifact asserts an owner decision that was never read, and a v7 reader
+# would refuse the honest value as unknown, so the two must not meet: the
+# version gate separates them instead of either side guessing.
+MANIFEST_SCHEMA_VERSION = 8
 
 # A paraphrase of "an algebraic polynomial bounded from its values on a
 # uniform grid" (the recurring theme of 1997_sm280 and related papers) with

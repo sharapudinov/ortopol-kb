@@ -147,8 +147,16 @@ def main(argv: list[str] | None = None) -> int:
     # recipient who only ever reads manifest.json. profile_checks.py fails
     # on PolicySource.OVERRIDE, so an override build cannot be certified as
     # publishable by any consumer, however it arrived.
+    #
+    # Only the public profile applies a policy at all: full carries the
+    # whole citation schema whatever citation.public_policy says, and
+    # resolve_citation_mode() short-circuits before reading that row. So a
+    # full artifact says "not-applicable" -- claiming the owner chose
+    # full-skeleton would be this module inventing the one provenance
+    # CITATION_POLICY_IS_DATA exists to keep unfabricable.
     profile_tag = args.profile
-    policy_source = PolicySource.OWNER
+    policy_source = (PolicySource.OWNER if args.profile == Profile.PUBLIC
+                     else PolicySource.NOT_APPLICABLE)
     if args.policy_override:
         profile_tag = f"{args.profile}-override"
         policy_source = PolicySource.OVERRIDE

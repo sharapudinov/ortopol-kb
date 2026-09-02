@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
-from manifest_contract import CitationMode, Key, PolicySource
+from manifest_contract import CitationMode, Key, PolicySource, Profile
 
 WORK_TABLE = "citation.work"
 CITES_TABLE = "citation.cites"
@@ -140,6 +140,13 @@ def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:
     refusal is about the provenance of the decision, not about how much it
     let through.
 
+    WHICH source is required depends on the profile, because only the
+    public one applies a policy: public must name the owner, and anything
+    else must say "not-applicable" -- a full artifact claiming an owner
+    decision names one nobody made, since the packager never reads
+    citation.public_policy for that profile. The two are refused in each
+    other's place, not merely accepted loosely.
+
     A shipping artifact whose manifest names no source is refused too --
     that is a manifest written before the field existed, and reading it
     with a default is exactly how an override build would come to be
@@ -151,6 +158,7 @@ def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:
     citation = manifest.get(Key.CITATION, {})
     mode = citation.get(Key.CITATION_MODE)
     source = citation.get(Key.CITATION_POLICY_SOURCE)
+    public = manifest.get(Key.PROFILE) == Profile.PUBLIC
     if source == PolicySource.OVERRIDE:
         return False, (
             "артефакт собран с --policy-override, не по решению владельца; "
@@ -159,12 +167,17 @@ def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:
         )
     if not _ships_citation(manifest):
         return True, f"mode={mode!r} — граф не уезжает, политике неоткуда взяться"
-    if source != PolicySource.OWNER:
+    wanted = PolicySource.OWNER if public else PolicySource.NOT_APPLICABLE
+    if source != wanted:
         return False, (
-            f"citation.policy_source={source!r} — манифест не называет, чьё это "
-            f"решение (ожидалось одно из {PolicySource.ALL}); пересоберите "
-            "артефакт текущим сборщиком"
+            f"citation.policy_source={source!r} при профиле "
+            f"{manifest.get(Key.PROFILE)!r} — ожидалось {wanted!r} "
+            f"(значения: {PolicySource.ALL}); пересоберите артефакт "
+            "текущим сборщиком"
         )
+    if not public:
+        return True, (f"policy_source={source!r}, mode={mode!r} — профиль "
+                      "политики не применяет, решать было нечего")
     return True, f"policy_source={source!r}, mode={mode!r} — решение владельца"
 
 

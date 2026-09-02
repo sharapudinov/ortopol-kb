@@ -18,7 +18,7 @@ import citation_columns
 import citation_content_checks
 import dump_scan
 import profile_checks
-from manifest_contract import CitationMode, Key, PolicySource
+from manifest_contract import CitationMode, Key, PolicySource, Profile
 
 
 def _copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:
@@ -232,18 +232,58 @@ class PolicySourceTests(unittest.TestCase):
     its filename. An override build is otherwise indistinguishable from an
     owner-classified one to every consumer: same profile, same schemas,
     same counts, a consistent dump -- and the name is not part of the file.
+
+    The answer is profile-dependent: only public applies a policy, so only
+    public may name the owner, and a full artifact must say so rather than
+    assert a decision the packager never read.
     """
 
-    def _manifest(self, **citation):
+    def _manifest(self, profile=Profile.PUBLIC, **citation):
         base = {Key.CITATION_MODE: CitationMode.FULL_SKELETON,
                 Key.WORK_COUNT: 1, Key.CITES_COUNT: 0}
         base.update(citation)
-        return {Key.CITATION: base}
+        return {Key.PROFILE: profile, Key.CITATION: base}
 
-    def test_the_owners_decision_passes(self):
+    # (profile, policy_source) -> may this artifact be certified.
+    COMBINATIONS = {
+        (Profile.PUBLIC, PolicySource.OWNER): True,
+        (Profile.PUBLIC, PolicySource.OVERRIDE): False,
+        (Profile.PUBLIC, PolicySource.NOT_APPLICABLE): False,
+        (Profile.PUBLIC, None): False,
+        (Profile.PUBLIC, "somebody-else"): False,
+        (Profile.FULL, PolicySource.NOT_APPLICABLE): True,
+        (Profile.FULL, PolicySource.OWNER): False,
+        (Profile.FULL, PolicySource.OVERRIDE): False,
+        (Profile.FULL, None): False,
+        (Profile.FULL, "somebody-else"): False,
+    }
+
+    def test_every_profile_and_source_pair_is_judged(self):
+        for (profile, source), expected in self.COMBINATIONS.items():
+            with self.subTest(profile=profile, source=source):
+                citation = {} if source is None else {
+                    Key.CITATION_POLICY_SOURCE: source}
+                ok, detail = citation_content_checks.check_policy_is_the_owners(
+                    self._manifest(profile, **citation))
+                self.assertEqual(ok, expected, detail)
+
+    def test_a_full_artifact_does_not_claim_the_owner_decided(self):
+        """The packager never reads citation.public_policy for full, so
+        naming the owner there is a provenance nobody supplied.
+        """
         ok, detail = citation_content_checks.check_policy_is_the_owners(
-            self._manifest(**{Key.CITATION_POLICY_SOURCE: PolicySource.OWNER}))
-        self.assertTrue(ok, detail)
+            self._manifest(Profile.FULL,
+                           **{Key.CITATION_POLICY_SOURCE: PolicySource.OWNER}))
+        self.assertFalse(ok)
+        self.assertIn(PolicySource.NOT_APPLICABLE, detail)
+
+    def test_a_public_artifact_may_not_duck_the_question(self):
+        ok, detail = citation_content_checks.check_policy_is_the_owners(
+            self._manifest(Profile.PUBLIC,
+                           **{Key.CITATION_POLICY_SOURCE:
+                              PolicySource.NOT_APPLICABLE}))
+        self.assertFalse(ok)
+        self.assertIn(PolicySource.OWNER, detail)
 
     def test_an_override_build_is_refused_and_says_why(self):
         ok, detail = citation_content_checks.check_policy_is_the_owners(
@@ -257,6 +297,7 @@ class PolicySourceTests(unittest.TestCase):
         nothing leaked -- but the refusal is about whose decision it was.
         """
         ok, detail = citation_content_checks.check_policy_is_the_owners({
+            Key.PROFILE: Profile.PUBLIC,
             Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE,
                            Key.CITATION_POLICY_SOURCE: PolicySource.OVERRIDE}})
         self.assertFalse(ok)
@@ -270,11 +311,6 @@ class PolicySourceTests(unittest.TestCase):
         ok, detail = citation_content_checks.check_policy_is_the_owners(self._manifest())
         self.assertFalse(ok)
         self.assertIn("None", detail)
-
-    def test_an_unknown_source_is_refused_too(self):
-        ok, _detail = citation_content_checks.check_policy_is_the_owners(
-            self._manifest(**{Key.CITATION_POLICY_SOURCE: "somebody-else"}))
-        self.assertFalse(ok)
 
     def test_an_artifact_carrying_no_graph_has_no_policy_to_certify(self):
         ok, detail = citation_content_checks.check_policy_is_the_owners(
