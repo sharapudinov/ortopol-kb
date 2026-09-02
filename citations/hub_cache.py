@@ -33,8 +33,18 @@ CITES_MARKER = "works where it cites"
 HEAD_BYTES = 65536
 
 
+# Что уже прочитано В ЭТОМ ПРОЦЕССЕ, по (каталог кэша, имя страницы).
+# Сайдкар удешевляет СЛЕДУЮЩИЙ прогон, но под --dry-run кэш read-only и
+# писать сайдкар некуда (DRY_RUN_WRITES_NOTHING) — тогда единственное, что
+# спасает от повторного разбора десятков мегабайт, это память процесса.
+# Ключ с каталогом, а не одно имя: у двух кэшей страницы называются
+# одинаково (имя — хэш url), а лежат в них разные тела.
+_NOTES: dict[tuple[str, str], dict | None] = {}
+
+
 def batch_note(cache, name: str) -> dict | None:
-    """{filter, oql, count} страницы кэша: из сайдкара, иначе разбором.
+    """{filter, oql, count} страницы кэша: из памяти процесса, из сайдкара,
+    иначе разбором.
 
     Сайдкар пишет сам клиент рядом со страницей
     (openalex_client.page_index), но кэш долговечен и не стирается: 259
@@ -43,6 +53,13 @@ def batch_note(cache, name: str) -> dict | None:
     мегабайт, и разбирать её ради двух полей нечего), затем разбор и запись
     сайдкара, чтобы следующий прогон читал килобайты.
     """
+    key = (str(getattr(cache, "directory", id(cache))), name)
+    if key not in _NOTES:
+        _NOTES[key] = _read_note(cache, name)
+    return _NOTES[key]
+
+
+def _read_note(cache, name: str) -> dict | None:
     sidecar = openalex_client.sidecar_name(name)
     stored = cache.read(sidecar)
     if stored is not None:

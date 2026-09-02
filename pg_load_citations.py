@@ -29,7 +29,7 @@ from pathlib import Path
 from citations import calibration, frontier, hub_report, twin_pass
 from citations.crawl import HUB_CAP, Snowball
 from citations.http_cache import cache_for
-from citations.openalex_client import OpenAlexClient, QuotaExhausted
+from citations.openalex_client import OpenAlexClient, OpenAlexError, QuotaExhausted
 from citations.spike_runs import (
     DryRunMeasurementsWriter,
     MeasurementsWriter,
@@ -159,6 +159,13 @@ def do_crawl(env, snowball: Snowball, client, args) -> int:
     return graph_check(env)
 
 
+def _journal_error(writer, crawl_id: str, depth: int, exc: Exception) -> None:
+    """Одна строка журнала об оборванном прогоне -- через тот же шов, что и
+    всё остальное, поэтому под --dry-run её тоже никто не пишет."""
+    writer.journal([{"crawl_id": crawl_id, "depth": depth, "action": "error",
+                     "reason": str(exc)}])
+
+
 def main(argv: list[str] | None = None) -> int:
     """Флаги, а не подкоманды: форма CLI записана в провенансе.
 
@@ -266,10 +273,16 @@ def main(argv: list[str] | None = None) -> int:
             return do_calibrate(snowball, client, corpus_dir.parent, measurements)
         return do_crawl(env, snowball, client, args)
     except QuotaExhausted as exc:
-        writer.journal([{"crawl_id": crawl_id, "depth": args.depth, "action": "error",
-                         "reason": str(exc)}])
+        _journal_error(writer, crawl_id, args.depth, exc)
         print(f"квота OpenAlex исчерпана: {exc}", file=sys.stderr)
         return 2
+    except OpenAlexError as exc:
+        # Тот же журнальный след, что у исчерпанной квоты: обход остановился
+        # на полпути, и почему — знает только он сам. Код другой, потому что
+        # и ответ другой: квоту пережидают, а отказ источника разбирают.
+        _journal_error(writer, crawl_id, args.depth, exc)
+        print(f"OpenAlex не ответил: {exc}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

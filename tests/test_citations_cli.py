@@ -23,7 +23,7 @@ import _pathfix  # noqa: F401
 import pg_graph_common
 import pg_load_citations
 from citations import hub_cache, hub_report, seed_metadata, spike_runs, threshold_store
-from citations.openalex_client import QuotaExhausted
+from citations.openalex_client import OpenAlexError, QuotaExhausted
 from citations.store import DryRunWriter, PostgresWriter
 
 ENV = {"PGHOST": "test"}
@@ -184,20 +184,26 @@ class MainFailurePathTests(unittest.TestCase):
         # Stopped at the model check, i.e. well past the tau validation.
         self.assertEqual(code, 1)
 
+    @staticmethod
+    def _harness_for(stack) -> _MainHarness:
+        """Everything main() reaches before the crawl itself raises."""
+        harness = _MainHarness(stack)
+        stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
+                                              return_value=("bge-m3", 1024)))
+        stack.enter_context(mock.patch.object(pg_load_citations, "corpus_document_ids",
+                                              return_value=["doc_a"]))
+        stack.enter_context(mock.patch.object(pg_load_citations, "seed_matches",
+                                              return_value={"doc_a": "W1"}))
+        stack.enter_context(mock.patch.object(pg_load_citations, "zbmath_abstracts",
+                                              return_value={}))
+        stack.enter_context(mock.patch.object(pg_load_citations, "mathnet_names",
+                                              return_value={}))
+        return harness
+
     def test_an_exhausted_quota_is_journalled_before_the_non_zero_exit(self):
         message = "осталось 3 запросов OpenAlex, окно сбросится через 83942 с"
         with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
-            harness = _MainHarness(stack)
-            stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
-                                                  return_value=("bge-m3", 1024)))
-            stack.enter_context(mock.patch.object(pg_load_citations, "corpus_document_ids",
-                                                  return_value=["doc_a"]))
-            stack.enter_context(mock.patch.object(pg_load_citations, "seed_matches",
-                                                  return_value={"doc_a": "W1"}))
-            stack.enter_context(mock.patch.object(pg_load_citations, "zbmath_abstracts",
-                                                  return_value={}))
-            stack.enter_context(mock.patch.object(pg_load_citations, "mathnet_names",
-                                                  return_value={}))
+            harness = self._harness_for(stack)
             snowball = mock.Mock(seed=mock.Mock(side_effect=QuotaExhausted(message)))
             stack.enter_context(mock.patch.object(pg_load_citations, "Snowball",
                                                   return_value=snowball))
@@ -209,6 +215,28 @@ class MainFailurePathTests(unittest.TestCase):
         self.assertEqual([s["action"] for s in steps], ["error"])
         self.assertEqual(steps[0]["depth"], 2)
         self.assertIn("83942", steps[0]["reason"])
+
+    def test_a_failed_request_is_journalled_before_its_own_non_zero_exit(self):
+        """The other way a crawl stops mid-flight: OpenAlex answered with a
+        status or a body the client could not use, after every retry. Same
+        journal row as an exhausted quota -- the run's own record of why it
+        stopped -- and a different code, because the answer differs: a quota
+        is waited out, this is looked into.
+        """
+        message = "GET /works?filter=... -> 500 after 5 attempts"
+        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
+            harness = self._harness_for(stack)
+            snowball = mock.Mock(seed=mock.Mock(side_effect=OpenAlexError(message)))
+            stack.enter_context(mock.patch.object(pg_load_citations, "Snowball",
+                                                  return_value=snowball))
+            with mock.patch("sys.stderr"):
+                code = pg_load_citations.main(
+                    ["--tau", "0.5", "--depth", "2", "--dry-run", "--cache-dir", cache])
+        self.assertEqual(code, 3)
+        steps = harness.writers[0].steps_seen
+        self.assertEqual([s["action"] for s in steps], ["error"])
+        self.assertEqual(steps[0]["depth"], 2)
+        self.assertIn("500", steps[0]["reason"])
 
 
 class HubReportCliTests(unittest.TestCase):
