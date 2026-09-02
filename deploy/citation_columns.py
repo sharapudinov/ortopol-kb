@@ -11,7 +11,7 @@ that one reads the live database and stays behind with the builder, and a
 second hand-written copy of the classification on the artifact side is
 exactly the drift the checker exists to catch.
 
-The polarity matters. citation_dump.table_columns() reads the column list
+The polarity matters. citation_catalog.schema_columns() reads the column list
 from pg_attribute, so no column can silently vanish from the artifact --
 but the stripping used to be a hardcoded denylist, so any column not named
 in it SHIPPED by default. citation.work.embedding walked straight through

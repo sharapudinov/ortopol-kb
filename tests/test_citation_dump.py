@@ -154,20 +154,41 @@ class DumpCitationTests(unittest.TestCase):
         stream_mock.assert_not_called()
         self.assertEqual(buffer.getvalue(), b"")
 
-    def test_shipping_mode_writes_ddl_then_every_table(self):
-        buffer = io.BytesIO()
+    def _dump(self, buffer):
+        """dump_citation() over DUMPED_TABLES; returns the two catalog mocks."""
         with mock.patch.object(citation_dump, "citation_tables",
                                 return_value=list(DUMPED_TABLES)), \
-             mock.patch.object(citation_dump, "table_columns",
-                                side_effect=lambda env, table: self.COLUMNS[table]), \
-             mock.patch.object(citation_dump, "serial_columns", return_value=[]), \
+             mock.patch.object(citation_dump, "schema_columns",
+                                return_value=dict(self.COLUMNS)) as columns_mock, \
+             mock.patch.object(citation_dump, "schema_serial_columns",
+                                return_value={"work": ["id"]}) as serials_mock, \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
             citation_dump.dump_citation({}, buffer, CitationMode.FULL_SKELETON)
+        return columns_mock, serials_mock
+
+    def test_shipping_mode_writes_ddl_then_every_table(self):
+        buffer = io.BytesIO()
+        self._dump(buffer)
         text = buffer.getvalue().decode()
         self.assertIn("-- DDL", text)
         self.assertLess(text.index("-- DDL"), text.index("COPY citation.work"))
         for table in DUMPED_TABLES:
             self.assertIn(f"COPY citation.{table}", text)
+
+    def test_the_catalog_is_asked_twice_for_the_schema_not_twice_per_table(self):
+        """One psql process per COPY block is the work; one more per table
+        per catalog question was the loop pg_attribute answers in one read.
+        """
+        columns_mock, serials_mock = self._dump(io.BytesIO())
+        columns_mock.assert_called_once()
+        serials_mock.assert_called_once()
+
+    def test_only_the_tables_with_a_sequence_get_a_setval(self):
+        buffer = io.BytesIO()
+        self._dump(buffer)
+        text = buffer.getvalue().decode()
+        self.assertIn("pg_get_serial_sequence('citation.work', 'id')", text)
+        self.assertNotIn("pg_get_serial_sequence('citation.cites'", text)
 
     def test_ddl_excludes_age_owned_schemas(self):
         with mock.patch.object(citation_dump, "stream_stdout") as stream_mock:

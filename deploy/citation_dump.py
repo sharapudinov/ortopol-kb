@@ -32,7 +32,7 @@ left to the restore-side sequence): citation.cites references
 citation.work.id BY VALUE, and a column-list COPY has no id-remapping
 mechanism, so both the id and the BIGSERIAL sequence position must survive
 the round trip. WHICH columns need that fix-up is the catalog's answer too
-(serial_columns: pg_get_serial_sequence per column), and so is the ORDER
+(schema_serial_columns: pg_get_serial_sequence per column), and so is the ORDER
 the blocks are written in (restore_order over pg_constraint) -- both were
 hand-kept lists beside a classification guard that did not check them, so a
 table added later would have shipped in an order nothing verified and with
@@ -43,11 +43,12 @@ from __future__ import annotations
 from typing import IO
 
 from citation_catalog import (
+    columns_of,
     foreign_key_edges,
     present_tables,
     restore_order,
-    serial_columns,
-    table_columns,
+    schema_columns,
+    schema_serial_columns,
 )
 from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
@@ -123,7 +124,7 @@ def _select_expression(table: str, column: str, mode: str) -> str:
     Every column is classified, in every mode -- citation_columns.
     blanked_cast() raises on one that is not, so a column added to the
     schema and forgotten here stops the build instead of shipping by
-    default. The catalog is what says a column exists (table_columns), the
+    default. The catalog is what says a column exists (schema_columns), the
     classification is what says whether it may leave; both are consulted
     for every column, which is the point.
     """
@@ -193,6 +194,12 @@ def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
         return
     dump_ddl(env, dst)
     dst.write(b"\n")
+    # Both catalog questions are asked ONCE, for the whole schema, before
+    # the loop: pg_attribute answers them for every table in one read, and
+    # asking per table cost a psql process, a temp script and a connection
+    # per table per question on top of the (necessary) one process per COPY.
+    columns = schema_columns(env)
+    serials = schema_serial_columns(env)
     for table in citation_tables(env):
-        write_copy_block(env, dst, table, table_columns(env, table), mode,
-                         serials=serial_columns(env, table))
+        write_copy_block(env, dst, table, columns_of(columns, table), mode,
+                         serials=serials.get(table, ()))

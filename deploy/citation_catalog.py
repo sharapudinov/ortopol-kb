@@ -50,30 +50,38 @@ ORDER BY c.relname, f.relname;
 """
 
 # Which columns own a sequence, and therefore need a setval() after their
-# COPY block. Asked of the catalog per table rather than kept as a list of
-# table names: a table added later with a BIGSERIAL id passes every
+# COPY block. Asked of the catalog rather than kept as a list of table
+# names: a table added later with a BIGSERIAL id passes every
 # classification check there is, and a forgotten sequence is not a failed
 # restore but a successful one that hands the next crawl an id already
 # taken.
+#
+# Both column questions are asked of the WHOLE schema at once, and the
+# answer carries (relname, attname). pg_attribute holds every table's
+# columns in one relation, so a per-table WHERE turned one catalog read
+# into one psql process, one temp script and one connection PER TABLE, on
+# a loop that grows with every table the schema gains -- the cost
+# pg_graph_common.py's own docstring prices. The per-table helpers below
+# stay, as lookups over the map.
 _SERIAL_COLUMNS_SQL = """
-SELECT a.attname
+SELECT c.relname, a.attname
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'citation' AND c.relname = '{table}'
+WHERE n.nspname = 'citation' AND c.relkind IN ('r', 'p')
   AND a.attnum > 0 AND NOT a.attisdropped
   AND pg_get_serial_sequence('citation.' || c.relname, a.attname) IS NOT NULL
-ORDER BY a.attnum;
+ORDER BY c.relname, a.attnum;
 """
 
 _COLUMNS_SQL = """
-SELECT a.attname
+SELECT c.relname, a.attname
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'citation' AND c.relname = '{table}'
+WHERE n.nspname = 'citation' AND c.relkind IN ('r', 'p')
   AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
-ORDER BY a.attnum;
+ORDER BY c.relname, a.attnum;
 """
 
 
@@ -121,11 +129,44 @@ def foreign_key_edges(env: dict) -> list[tuple[str, str]]:
     return seen
 
 
+def _by_table(env: dict, sql: str) -> dict[str, list[str]]:
+    """{table: [column, ...]} out of one (relname, attname) catalog read."""
+    rows = run_sql(env, sql, extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
+    grouped: dict[str, list[str]] = {}
+    for line in rows.splitlines():
+        if line.strip():
+            table, column = line.split(FIELD_SEP)
+            grouped.setdefault(table.strip(), []).append(column.strip())
+    return grouped
+
+
+def schema_columns(env: dict) -> dict[str, list[str]]:
+    """Every dumpable column of every table in schema citation, in one read."""
+    return _by_table(env, _COLUMNS_SQL)
+
+
+def schema_serial_columns(env: dict) -> dict[str, list[str]]:
+    """Every sequence-owning column of the schema, in one read."""
+    return _by_table(env, _SERIAL_COLUMNS_SQL)
+
+
+def columns_of(columns: dict[str, list[str]], table: str) -> list[str]:
+    """`table`'s dumpable columns out of a schema-wide read, or a refusal.
+
+    The guard is here rather than at the read so that both the one-table
+    and the whole-schema caller get it: an empty list means the name does
+    not match anything the catalog holds, and a COPY block with no columns
+    is not something to write and find out about at the recipient's end.
+    """
+    found = columns.get(table) or []
+    if not found:
+        raise RuntimeError(f"citation.{table} has no dumpable columns -- wrong table name?")
+    return found
+
+
 def serial_columns(env: dict, table: str) -> list[str]:
     """The columns of `table` that own a sequence, per the catalog."""
-    rows = run_sql(env, _SERIAL_COLUMNS_SQL.format(table=table),
-                   extra_args=["-t", "-A"]).stdout
-    return [line.strip() for line in rows.splitlines() if line.strip()]
+    return schema_serial_columns(env).get(table, [])
 
 
 def present_tables(env: dict) -> list[str]:
@@ -138,8 +179,4 @@ def present_tables(env: dict) -> list[str]:
 
 
 def table_columns(env: dict, table: str) -> list[str]:
-    rows = run_sql(env, _COLUMNS_SQL.format(table=table), extra_args=["-t", "-A"]).stdout
-    columns = [line.strip() for line in rows.splitlines() if line.strip()]
-    if not columns:
-        raise RuntimeError(f"citation.{table} has no dumpable columns -- wrong table name?")
-    return columns
+    return columns_of(schema_columns(env), table)
