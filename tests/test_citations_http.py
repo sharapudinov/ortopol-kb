@@ -13,6 +13,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 import urllib.error
 from pathlib import Path
 
@@ -276,6 +277,26 @@ class EmbedTextsTests(unittest.TestCase):
 
         frontier.embed_texts(["Чебышёв"], self.MODEL, self.DIMS, opener=opener)
         self.assertEqual(sent, [{"model": self.MODEL, "input": ["Чебышёв"]}])
+
+
+class OneEmbeddingSeamTests(unittest.TestCase):
+    """frontier.py is the relevance filter, not a second HTTP client: the
+    request, the batching and both checks are pg_search's, and so is the
+    read of which model the corpus was embedded with.
+    """
+
+    def test_embed_texts_delegates_to_the_shared_batch_entry_point(self):
+        with mock.patch.object(frontier, "embed_batch",
+                                return_value=[[0.0]]) as batch_mock:
+            frontier.embed_texts(["a"], "bge-m3", 1024, batch=8)
+        self.assertEqual(batch_mock.call_args.args[:3], ("bge-m3", 1024, ["a"]))
+        self.assertEqual(batch_mock.call_args.kwargs["batch"], 8)
+
+    def test_the_package_reads_the_model_from_nowhere_of_its_own(self):
+        package = Path(frontier.__file__).parent
+        for module in sorted(package.glob("*.py")):
+            source = module.read_text(encoding="utf-8")
+            self.assertNotIn("FROM corpus.embedding_model", source, module.name)
 
 
 if __name__ == "__main__":

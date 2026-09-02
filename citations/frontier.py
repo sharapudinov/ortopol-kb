@@ -17,12 +17,11 @@ number.
 """
 from __future__ import annotations
 
-import json
 import math
 import urllib.request
 
-OLLAMA_URL = "http://127.0.0.1:5471/api/embed"
-EMBED_BATCH = 16
+from pg_search import EMBED_BATCH, OLLAMA_URL, embed_batch
+
 # Same bound pg_embed.py uses: bge-m3 holds 8192 tokens, the cut is by
 # characters with room to spare so a long abstract is truncated, not dropped.
 MAX_CHARS = 6000
@@ -43,24 +42,16 @@ def embed_texts(
     opener=urllib.request.urlopen,
     batch: int = EMBED_BATCH,
 ) -> list[list[float]]:
-    """Embeddings in input order, via the same local ollama pg_embed.py uses."""
-    out: list[list[float]] = []
-    for start in range(0, len(texts), batch):
-        chunk = texts[start:start + batch]
-        payload = json.dumps({"model": model, "input": chunk}).encode()
-        request = urllib.request.Request(
-            url, data=payload, headers={"Content-Type": "application/json"}
-        )
-        with opener(request, timeout=300) as response:
-            body = json.load(response)
-        vectors = body["embeddings"]
-        if len(vectors) != len(chunk):
-            raise RuntimeError(f"ollama вернула {len(vectors)} векторов на {len(chunk)} текстов")
-        for vector in vectors:
-            if len(vector) != dims:
-                raise RuntimeError(f"ожидалось {dims} измерений, пришло {len(vector)}")
-        out += vectors
-    return out
+    """Embeddings in input order, through the repository's embedding seam.
+
+    The seam is pg_search's, not one of our own: resolve_model() reads which
+    model produced the stored vectors and embed_batch() is the request, the
+    batching and both checks (count and width). A second implementation of
+    that contract here would be a second place for the model, the URL and
+    the dimension check to drift -- and a query vector from a different
+    model yields a perfectly well-formed distance that means nothing.
+    """
+    return embed_batch(model, dims, texts, ollama_url=url, batch=batch, opener=opener)
 
 
 def l2_normalize(vector: list[float]) -> list[float]:

@@ -39,6 +39,10 @@ from pg_common import PostgresUnavailable, load_pgenv, row_or_none, run_sql
 # whole module at import time on a standalone deploy.
 
 OLLAMA_URL = "http://127.0.0.1:5471/api/embed"
+# How many texts go into one ollama request when a caller has many (see
+# embed_batch): the crawl's levels are thousands of candidates, and one
+# request per candidate is one round trip per candidate.
+EMBED_BATCH = 16
 TS_CONFIG = "russian"
 FIELD_SEP = "\x1f"
 RECORD_SEP = "\x1e"
@@ -138,6 +142,39 @@ def embed_with(model: str, dims: int, query: str, ollama_url: str = OLLAMA_URL) 
             f"{model} вернула {len(vec)} измерений, в базе записано {dims}: "
             "модель сменилась, векторы надо пересчитать (pg_embed.py)")
     return json.dumps(vec)
+
+
+def embed_batch(model: str, dims: int, texts: list[str],
+                ollama_url: str = OLLAMA_URL, batch: int = EMBED_BATCH,
+                opener=urllib.request.urlopen) -> list[list[float]]:
+    """Many texts through the same seam embed_with() puts one query through,
+    a batch of `batch` per request, vectors returned in input order.
+
+    Two contracts differ from embed_with() on purpose, and both belong to
+    the caller that embeds a whole crawl level rather than one query:
+
+    - an unreachable service RAISES instead of returning None. A search can
+      fall back to full-text, which needs no model; a crawl that silently
+      scored nothing would write a level of dropped candidates.
+    - the count is checked as well as the width. ollama answering fewer
+      vectors than texts would otherwise pair each text with the NEXT text's
+      vector, and every score after the gap would be plausible and wrong.
+    """
+    out: list[list[float]] = []
+    for start in range(0, len(texts), batch):
+        chunk = texts[start:start + batch]
+        payload = json.dumps({"model": model, "input": chunk}).encode()
+        request = urllib.request.Request(
+            ollama_url, data=payload, headers={"Content-Type": "application/json"})
+        with opener(request, timeout=300) as response:
+            vectors = json.load(response)["embeddings"]
+        if len(vectors) != len(chunk):
+            raise RuntimeError(f"ollama вернула {len(vectors)} векторов на {len(chunk)} текстов")
+        for vector in vectors:
+            if len(vector) != dims:
+                raise RuntimeError(f"ожидалось {dims} измерений, пришло {len(vector)}")
+        out += vectors
+    return out
 
 
 def embed_query(query: str, env: dict[str, str], ollama_url: str = OLLAMA_URL) -> str | None:

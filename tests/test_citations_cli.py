@@ -119,7 +119,7 @@ class DryRunTouchesNothingTests(unittest.TestCase):
     def test_dry_run_crawl_applies_no_schema_either(self):
         with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
             harness = _MainHarness(stack)
-            stack.enter_context(mock.patch.object(pg_load_citations, "embedding_model",
+            stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
                                                   return_value=("bge-m3", 1024)))
             stack.enter_context(mock.patch.object(pg_load_citations, "corpus_document_ids",
                                                   return_value=["doc_a"]))
@@ -149,7 +149,7 @@ class MainFailurePathTests(unittest.TestCase):
         message = "осталось 3 запросов OpenAlex, окно сбросится через 83942 с"
         with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
             harness = _MainHarness(stack)
-            stack.enter_context(mock.patch.object(pg_load_citations, "embedding_model",
+            stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
                                                   return_value=("bge-m3", 1024)))
             stack.enter_context(mock.patch.object(pg_load_citations, "corpus_document_ids",
                                                   return_value=["doc_a"]))

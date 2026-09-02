@@ -6,18 +6,16 @@ DryRunWriter) and nothing else. These are the opposite direction and answer
 to nobody's --dry-run promise: reading the corpus, the run-85 matches and
 what was fetched recently costs the database nothing and writes nowhere, so
 a mode that must not write is free to ask them.
+
+Which embedding model produced the stored vectors is NOT among them: that
+read is pg_search.resolve_model(), the same one the search and the graph
+queries use. Two readings of corpus.embedding_model with two failure
+contracts is exactly how a crawl ends up scoring against a model the corpus
+was never embedded with.
 """
 from __future__ import annotations
 
-from pg_common import run_sql, scalar_row, sql_literal
-
-
-def embedding_model(env) -> tuple[str, int]:
-    model, dims = scalar_row(
-        env, "SELECT model, dims FROM corpus.embedding_model WHERE id = 1;",
-        expected_columns=2,
-    )
-    return model, int(dims)
+from pg_common import run_sql, sql_literal
 
 
 def corpus_document_ids(env, source_dir: str = "theory/iis") -> list[str]:

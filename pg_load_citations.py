@@ -36,16 +36,12 @@ from citations.spike_runs import (
     record_calibration,
     record_hub_report,
 )
-from citations.inputs import (
-    corpus_document_ids,
-    embedding_model,
-    fresh_keys,
-    seed_matches,
-)
+from citations.inputs import corpus_document_ids, fresh_keys, seed_matches
 from citations.store import DryRunWriter, PostgresWriter
 from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 from paths import default_cache_dir, default_corpus_dir, default_mathnet_cache_dir
 from pg_common import PostgresUnavailable, load_pgenv, run_sql
+from pg_search import resolve_model
 from pg_graph_common import check as graph_check
 from pg_graph_common import citation_schema_exists, init_schema, project
 
@@ -220,7 +216,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.merge_twins:
         return do_merge_twins(env, args)
 
-    model, dims = embedding_model(env)
+    resolved = resolve_model(env)
+    if resolved is None:
+        print("corpus.embedding_model пуста: сначала python3 pg_embed.py — "
+              "модель кандидатов обязана быть моделью корпуса", file=sys.stderr)
+        return 1
+    model, dims = resolved
     documents = corpus_document_ids(env)
     matches = seed_matches(env, COVERAGE_RUN, "openalex")
     print(f"документов ИИШ: {len(documents)}; матчей OpenAlex (run {COVERAGE_RUN}): {len(matches)}; "
