@@ -8,8 +8,18 @@ together only if something compares them, so:
 - an AST scan over every module that talks to the citation schema refuses a
   bare literal from either vocabulary (docstrings excepted -- prose about a
   value is not a use of it);
-- a live test compares the constants against pg_get_constraintdef() in BOTH
-  directions, so an extra value, a missing one and a renamed one all fail.
+- a static test reads pg_schema_citation.sql itself and compares the literals
+  in each CHECK clause against the Python constants in BOTH directions, so a
+  value added on one side only fails on ANY checkout, server or not;
+- a live test asks the same of pg_get_constraintdef(), which is the constraint
+  the database actually carries -- the schema file says what the next
+  `pg_graph.py init` will apply, and the two are not the same claim.
+
+The static half is what a machine with no Postgres runs. Without it, adding a
+CrawlAction and forgetting the SQL passed the whole suite there, and the
+divergence then surfaced where it costs most: the journal travels as one bulk
+COPY, so a value the CHECK rejects loses the WHOLE level's audit record after
+its work rows and edges are already written.
 
 The comparison is over the VOCABULARY, not the constraint text: the server
 renders `x = ANY (ARRAY[...])` however its version likes, and only the
@@ -42,6 +52,25 @@ from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv,
 
 VALUES = tuple(WorkKind.ALL) + tuple(CrawlAction.ALL)
 VOCAB_FILE = Path(citation_vocab.__file__).resolve()
+
+SCHEMA_FILE = kb_root() / "pg_schema_citation.sql"
+
+# Each vocabulary as the schema FILE spells it. The kind and the mode are
+# inline CHECKs on their column; the action is the `wanted` array of the DO
+# block that widens its named constraint without a validation scan. Anchored
+# on the column name, so a CHECK elsewhere in the file cannot stand in for a
+# missing one -- and a clause that stops matching is a failure here, never a
+# silently empty comparison (test_every_vocabulary_is_found_and_is_not_empty).
+SQL_CLAUSES = {
+    "kind": re.compile(r"CHECK \(kind IN \(([^)]*)\)\)"),
+    "action": re.compile(r"wanted\s+CONSTANT text\[\] := ARRAY\[([^\]]*)\]", re.S),
+    "mode": re.compile(r"CHECK \(mode IN \(([^)]*)\)\)"),
+}
+PYTHON_VOCABULARIES = {
+    "kind": WorkKind.ALL,
+    "action": CrawlAction.ALL,
+    "mode": PublicPolicyMode.ALL,
+}
 
 _CONSTRAINT_SQL = """
 SELECT coalesce(pg_get_constraintdef(c.oid), '')
@@ -174,6 +203,50 @@ class PackagerSharesTheDeclarationTests(unittest.TestCase):
     def test_what_it_adds_is_about_builds_not_about_the_column(self):
         for mode in CitationMode.SHIPPED + CitationMode.FULL_CONTENT:
             self.assertIn(mode, PublicPolicyMode.ALL)
+
+
+class VocabularyMatchesTheSchemaFileTests(unittest.TestCase):
+    """The Python constants against the SQL file, on any checkout.
+
+    Compared as VOCABULARIES and in both directions: an extra value, a
+    missing one and a renamed one each leave the two sets different, and
+    nothing else does. What this cannot see is what the SERVER carries --
+    a schema file is a promise about the next init -- which is why the live
+    comparison below stays beside it.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sql = SCHEMA_FILE.read_text(encoding="utf-8")
+
+    def _literals(self, column: str) -> set[str]:
+        found = SQL_CLAUSES[column].search(self.sql)
+        self.assertIsNotNone(
+            found, f"{column}: словарь не найден в {SCHEMA_FILE.name} -- "
+                   "форма CHECK изменилась, и сравнивать стало нечего")
+        return set(re.findall(r"'([^']*)'", found.group(1)))
+
+    def test_every_vocabulary_is_found_and_is_not_empty(self):
+        for column in SQL_CLAUSES:
+            self.assertTrue(self._literals(column), column)
+
+    def test_the_work_kinds_are_the_ones_the_file_allows(self):
+        self.assertEqual(self._literals("kind"), set(WorkKind.ALL))
+
+    def test_the_crawl_actions_are_the_ones_the_file_allows(self):
+        self.assertEqual(self._literals("action"), set(CrawlAction.ALL))
+
+    def test_the_public_policy_modes_are_the_ones_the_file_allows(self):
+        self.assertEqual(self._literals("mode"), set(PublicPolicyMode.ALL))
+
+    def test_a_value_on_one_side_only_is_what_this_catches(self):
+        """The failure this exists for, spelled out: the comparison is over
+        sets, so neither direction passes by inclusion.
+        """
+        for column, values in PYTHON_VOCABULARIES.items():
+            literals = self._literals(column)
+            self.assertNotEqual(literals, set(values) | {"invented"}, column)
+            self.assertNotEqual(literals, set(values) - {values[0]}, column)
 
 
 class VocabularyMatchesTheSchemaLiveTests(unittest.TestCase):
