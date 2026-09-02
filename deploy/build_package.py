@@ -68,7 +68,7 @@ from paths import default_corpus_dir  # noqa: E402
 from pg_common import PostgresUnavailable, load_pgenv  # noqa: E402
 
 from artifact_bundle import bundle_runtime_files, dump_schemas, package  # noqa: E402
-from citation_profile import CitationUnclassified  # noqa: E402
+from citation_profile import CitationUnclassified, resolve_citation_mode  # noqa: E402
 from dump_integrity import sha256_file  # noqa: E402
 from legal_profile import Unclassified  # noqa: E402
 from manifest_contract import CitationMode, Key, Profile  # noqa: E402
@@ -78,7 +78,8 @@ from public_dump import dump_public  # noqa: E402
 OLLAMA_URL = "http://127.0.0.1:5471/api/embed"
 
 
-def write_dump(profile: str, env: dict, gz_path: Path, citation_mode_override: str | None = None) -> None:
+def write_dump(profile: str, env: dict, gz_path: Path,
+                citation_mode: str = CitationMode.NONE) -> None:
     """Dispatches to the profile's dump writer, both (env, gz_path) -> None.
 
     Here rather than inside artifact_bundle.dump_schemas so the two writers
@@ -88,12 +89,12 @@ def write_dump(profile: str, env: dict, gz_path: Path, citation_mode_override: s
     a dict of function objects built at import time -- the dict captured the
     originals, so it silently ignored any later rebinding of these names
     (which is exactly how the tests substitute a stub for the real pg_dump).
-    citation_mode_override is meaningless for the full writer (dump_schemas
-    always carries the whole citation schema, like every other table) and is
-    passed only to dump_public.
+    citation_mode is meaningless for the full writer (dump_schemas always
+    carries the whole citation schema, like every other table) and is passed
+    only to dump_public.
     """
     if profile == Profile.PUBLIC:
-        dump_public(env, gz_path, citation_mode_override=citation_mode_override)
+        dump_public(env, gz_path, citation_mode=citation_mode)
     else:
         dump_schemas(env, gz_path)
 
@@ -147,23 +148,30 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
+    # The citation policy is read ONCE per build, here, and the resolved
+    # literal is handed to both consumers below (manifest and dump). Two
+    # resolutions of the same policy can disagree; one cannot.
+    try:
+        citation_mode = resolve_citation_mode(env, args.profile, args.policy_override)
+    except CitationUnclassified as exc:
+        # Same refusal as an unclassified document, for the citation schema
+        # as a whole (see citation_profile.py): the crawl's own record names
+        # third-party titles/abstracts, and shipping or stripping it by
+        # default would both be the packager deciding a question only the
+        # owner can answer.
+        print(f"схема citation не классифицирована для публичного артефакта: {exc}",
+              file=sys.stderr)
+        return 1
+
     print(f"профиль {args.profile}; собираю манифест против живой базы...")
     try:
         manifest = gather_manifest(env, args.ollama_url, profile=args.profile,
-                                    citation_mode_override=args.policy_override)
+                                    citation_mode=citation_mode)
     except Unclassified as exc:
         # Not a crash: a document with no legal classification is a decision
         # the owner has to make, and the packager must never make it by
         # default. Reported like any other refusal to build.
         print(f"правовая классификация неполна: {exc}", file=sys.stderr)
-        return 1
-    except CitationUnclassified as exc:
-        # Same refusal, for the citation schema as a whole (see
-        # citation_profile.py): the crawl's own record names third-party
-        # titles/abstracts, and shipping or stripping it by default would
-        # both be the packager deciding a question only the owner can answer.
-        print(f"схема citation не классифицирована для публичного артефакта: {exc}",
-              file=sys.stderr)
         return 1
 
     date_tag = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -175,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest[Key.FILES] = bundle_runtime_files(workdir)
         print(f"дамп схем {', '.join(manifest[Key.SCHEMAS])} (профиль {args.profile})...")
         dump_gz = workdir / "01_dump.sql.gz"
-        write_dump(args.profile, env, dump_gz, citation_mode_override=args.policy_override)
+        write_dump(args.profile, env, dump_gz, citation_mode=citation_mode)
         manifest[Key.DUMP] = {
             Key.FILE: dump_gz.name,
             Key.BYTES: dump_gz.stat().st_size,

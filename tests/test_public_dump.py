@@ -19,9 +19,9 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import citation_dump
+import citation_profile
 import dump_scan
 import public_dump
-from citation_profile import CitationUnclassified
 from legal_profile import Unclassified
 from manifest_contract import CitationMode
 
@@ -137,7 +137,6 @@ class DumpPublicTests(unittest.TestCase):
             dst.write(b"-- DDL\n" if argv[0] == "pg_dump" else b"row\n")
 
         with mock.patch.object(public_dump, "require_classified") as classified_mock, \
-             mock.patch.object(public_dump, "require_citation_mode", return_value=CitationMode.NONE), \
              mock.patch.object(public_dump, "table_columns",
                                 side_effect=lambda env, table, exclude=(): self.COLUMNS[table]), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=fake_stream):
@@ -183,7 +182,6 @@ class DumpPublicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "require_citation_mode", return_value=CitationMode.NONE), \
                  mock.patch.object(public_dump, "table_columns",
                                     side_effect=lambda env, table, exclude=(): self.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=boom):
@@ -213,24 +211,23 @@ class CitationDumpIntegrationTests(unittest.TestCase):
     def _run(self, tmp, citation_mode):
         gz_path = Path(tmp) / "01_dump.sql.gz"
         with mock.patch.object(public_dump, "require_classified"), \
-             mock.patch.object(public_dump, "require_citation_mode", return_value=citation_mode) as mode_mock, \
              mock.patch.object(public_dump, "table_columns",
                                 side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=self._fake_stream), \
              mock.patch.object(citation_dump, "table_columns",
                                 side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
-            public_dump.dump_public({}, gz_path)
-        return gz_path, mode_mock
+            public_dump.dump_public({}, gz_path, citation_mode=citation_mode)
+        return gz_path
 
     def test_none_mode_ships_no_citation_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
-            gz_path, _ = self._run(tmp, CitationMode.NONE)
+            gz_path = self._run(tmp, CitationMode.NONE)
             self.assertEqual(dump_scan.schema_names(gz_path), {"corpus"})
 
     def test_full_skeleton_mode_ships_citation_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
-            gz_path, _ = self._run(tmp, CitationMode.FULL_SKELETON)
+            gz_path = self._run(tmp, CitationMode.FULL_SKELETON)
             self.assertEqual(dump_scan.schema_names(gz_path), {"corpus", "citation"})
 
     def test_topology_only_blanks_abstracts_and_evidence(self):
@@ -248,74 +245,32 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "require_citation_mode",
-                                    return_value=CitationMode.TOPOLOGY_ONLY), \
                  mock.patch.object(public_dump, "table_columns",
                                     side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capturing_stream), \
                  mock.patch.object(citation_dump, "table_columns",
                                     side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
-                public_dump.dump_public({}, gz_path)
+                public_dump.dump_public({}, gz_path, citation_mode=CitationMode.TOPOLOGY_ONLY)
         work_select = next(s for s in seen_selects if "citation.work" in s)
         cites_select = next(s for s in seen_selects if "citation.cites" in s)
         self.assertIn("NULL::text AS abstract", work_select)
         self.assertIn("NULL::jsonb AS evidence", work_select)
         self.assertIn("NULL::jsonb AS evidence", cites_select)
 
-    def test_public_build_refuses_unclassified_citation_schema(self):
-        # Exactly the gate the task's ГЕЙТ item requires: a public build
-        # over a citation schema with no citation.public_policy row must
-        # fail with the message naming the unclassified schema, not silently
-        # ship or strip it. See also
-        # test_build_package.CitationPolicyOverrideTests and
-        # ProfileDispatchTests.test_unclassified_citation_schema_refuses_...
-        # for the CLI-level (build_package.main()) version of this refusal.
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "01_dump.sql.gz"
-            with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(
-                     public_dump, "require_citation_mode",
-                     side_effect=CitationUnclassified(
-                         "citation.public_policy has no usable mode (got None)")) as mode_mock, \
-                 mock.patch.object(public_dump, "stream_stdout") as stream_mock:
-                with self.assertRaises(CitationUnclassified) as ctx:
-                    public_dump.dump_public({}, gz_path)
-        mode_mock.assert_called_once()
-        stream_mock.assert_not_called()
-        self.assertFalse(gz_path.exists())
-        self.assertIn("citation.public_policy", str(ctx.exception))
-
-    def test_refuses_before_writing_when_citation_schema_is_unclassified(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "01_dump.sql.gz"
-            with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "require_citation_mode",
-                                    side_effect=CitationUnclassified("not decided")), \
-                 mock.patch.object(public_dump, "stream_stdout") as stream_mock:
-                with self.assertRaises(CitationUnclassified):
-                    public_dump.dump_public({}, gz_path)
-            self.assertFalse(gz_path.exists())
-            stream_mock.assert_not_called()
-
-    def test_override_bypasses_require_citation_mode(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path, mode_mock = self._run_with_override(tmp, CitationMode.TOPOLOGY_ONLY)
-            self.assertEqual(dump_scan.schema_names(gz_path), {"corpus", "citation"})
-        mode_mock.assert_not_called()
-
-    def _run_with_override(self, tmp, citation_mode):
-        gz_path = Path(tmp) / "01_dump.sql.gz"
-        with mock.patch.object(public_dump, "require_classified"), \
-             mock.patch.object(public_dump, "require_citation_mode") as mode_mock, \
-             mock.patch.object(public_dump, "table_columns",
-                                side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
-             mock.patch.object(public_dump, "stream_stdout", side_effect=self._fake_stream), \
-             mock.patch.object(citation_dump, "table_columns",
-                                side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
-             mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
-            public_dump.dump_public({}, gz_path, citation_mode_override=citation_mode)
-        return gz_path, mode_mock
+    def test_the_dump_never_reads_the_policy_itself(self):
+        """The mode arrives as a value from build_package.main(), which
+        resolved it once for the manifest and the dump alike. If this module
+        asked the database again, the two could disagree -- so the policy
+        reader is made to explode here and the dump must not notice.
+        """
+        with mock.patch.object(citation_profile, "require_citation_mode",
+                                side_effect=AssertionError("policy re-read by the dump")), \
+             mock.patch.object(citation_profile, "citation_public_policy",
+                                side_effect=AssertionError("policy re-read by the dump")):
+            with tempfile.TemporaryDirectory() as tmp:
+                gz_path = self._run(tmp, CitationMode.FULL_SKELETON)
+                self.assertEqual(dump_scan.schema_names(gz_path), {"corpus", "citation"})
 
     def test_dumps_never_carry_age_catalog(self):
         # Defense in depth on top of --schema already whitelisting corpus:
@@ -330,15 +285,13 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "require_citation_mode",
-                                    return_value=CitationMode.FULL_SKELETON), \
                  mock.patch.object(public_dump, "table_columns",
                                     side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capture), \
                  mock.patch.object(citation_dump, "table_columns",
                                     side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
-                public_dump.dump_public({}, gz_path)
+                public_dump.dump_public({}, gz_path, citation_mode=CitationMode.FULL_SKELETON)
         pg_dump_argvs = [argv for argv in seen_argv if argv[0] == "pg_dump"]
         self.assertEqual(len(pg_dump_argvs), 2)  # corpus DDL, citation DDL
         for argv in pg_dump_argvs:

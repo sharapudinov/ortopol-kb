@@ -37,14 +37,70 @@ from deploy_pathfix import ensure_corpus_importable
 
 ensure_corpus_importable()
 
-from manifest_contract import CitationMode  # noqa: E402
+from legal_profile import SHIPPED_SQL  # noqa: E402
+from manifest_contract import CitationMode, Profile  # noqa: E402
 from pg_common import run_sql, scalar  # noqa: E402
 
 FIELD_SEP = "\x1f"
 
+# --- the per-document legal cut, as it applies to the citation slice ------
+#
+# Two independent policies meet here: citation.public_policy decides how much
+# of the crawl record a public artifact carries at all (the modes above), and
+# corpus.documents.public_distribution decides, per document, whether the
+# artifact carries that document. The finer one wins on every row that names
+# a document -- citation.work.document_id REFERENCES corpus.documents(id), so
+# shipping a work whose document was cut away both aborts the restore on the
+# FK and publishes the title (and, under full-skeleton, the abstract) of
+# exactly the document whose regime the owner declined to establish.
+#
+# The predicate is SHIPPED_SQL, imported from legal_profile.py, never a list
+# of ids restated here (LEGAL_IS_DATA). SHIPPED, not FULL_CONTENT: a
+# metadata-only document DOES ship a row, so the work row naming it ships
+# too -- bibliography is precisely what metadata-only means. Blanking
+# document_id instead of dropping the row is not available:
+# CHECK (kind <> 'our-document' OR document_id IS NOT NULL).
+
+# frontier_key carries a document id on seed/twin rows and a work key on the
+# rest, and reason embeds either ("twin-of=<document_id>", "node=<work key>",
+# see citations/journal.py) -- so all three columns are matched against both
+# vocabularies. strpos(), not LIKE: a document id contains '_', which LIKE
+# reads as a wildcard, and an over-matching pattern would silently drop
+# journal rows that name nothing sensitive.
+_STEP_MENTIONS = (
+    "{alias}.frontier_key = {ref} OR {alias}.candidate_key = {ref} "
+    "OR strpos(coalesce({alias}.reason, ''), {ref}) > 0"
+)
+
+
+def shipped_work_sql(alias: str = "w") -> str:
+    """SQL boolean: this citation.work row may leave in a public artifact."""
+    return (
+        f"({alias}.document_id IS NULL OR EXISTS ("
+        f"SELECT 1 FROM corpus.documents d WHERE d.id = {alias}.document_id "
+        f"AND {SHIPPED_SQL}))"
+    )
+
+
+def shipped_crawl_step_sql(alias: str = "s") -> str:
+    """SQL boolean: this journal row names nothing the cut removed."""
+    return (
+        "(NOT EXISTS (SELECT 1 FROM corpus.documents d "
+        f"WHERE NOT ({SHIPPED_SQL}) AND ({_STEP_MENTIONS.format(alias=alias, ref='d.id')})) "
+        "AND NOT EXISTS (SELECT 1 FROM citation.work w "
+        f"WHERE NOT {shipped_work_sql('w')} "
+        f"AND ({_STEP_MENTIONS.format(alias=alias, ref='w.key')})))"
+    )
+
 _SCHEMA_EXISTS_SQL = "SELECT to_regclass('citation.work') IS NOT NULL;"
 _POLICY_SQL = "SELECT mode FROM citation.public_policy WHERE id = 1;"
-_COUNTS_SQL = "SELECT kind, count(*) FROM citation.work GROUP BY kind ORDER BY kind;"
+_COUNTS_SQL = "SELECT w.kind, count(*) FROM citation.work w{where} GROUP BY 1 ORDER BY 1;"
+_CITES_COUNT_SQL = """
+SELECT count(*) FROM citation.cites c
+JOIN citation.work wa ON wa.id = c.citing
+JOIN citation.work wb ON wb.id = c.cited
+WHERE {citing} AND {cited};
+"""
 
 
 class CitationUnclassified(RuntimeError):
@@ -84,14 +140,51 @@ def require_citation_mode(env: dict) -> str:
     return mode
 
 
-def citation_counts(env: dict) -> tuple[int, int, dict[str, int]]:
-    """(work_count, cites_count, {kind: count}) over the WHOLE citation
-    schema -- callers decide what a given mode ships (citation_dump.py) or
-    describes (manifest_probe.py); this module only reads the database.
+def resolve_citation_mode(env: dict, profile: str, override: str | None = None) -> str:
+    """The ONE reading of the citation policy per build.
+
+    Resolved once by build_package.main() and threaded to both consumers --
+    the manifest (manifest_probe.gather_manifest) and the dump
+    (public_dump.dump_public). Neither re-derives it: two independent
+    resolutions of the same policy can disagree, and the artifact would then
+    describe a citation block its dump does not match, which is exactly what
+    MANIFEST_DESCRIBES_ARTIFACT and profile_checks.py exist to prevent.
+
+    No citation schema in the database means there is nothing to carry, for
+    either profile and regardless of --policy-override: the override picks a
+    mode for a schema that exists, it cannot conjure one. Full always
+    carries the whole schema (build_package.py's own docstring: full applies
+    no legal or policy cut). Public defers to the owner's row, or to the
+    override (TEST ONLY, see build_package.py --help), and raises
+    CitationUnclassified when neither is available.
     """
-    work_n = int(scalar(env, "SELECT count(*) FROM citation.work;"))
-    cites_n = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
-    rows = run_sql(env, _COUNTS_SQL, extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
+    if not citation_schema_exists(env):
+        return CitationMode.NONE
+    if profile != Profile.PUBLIC:
+        return CitationMode.FULL_SKELETON
+    return override or require_citation_mode(env)
+
+
+def citation_counts(env: dict, *, shipped_only: bool = False) -> tuple[int, int, dict[str, int]]:
+    """(work_count, cites_count, {kind: count}) over the citation schema.
+
+    shipped_only applies the per-document cut above, i.e. counts what a
+    PUBLIC artifact will actually contain rather than what the live database
+    holds -- MANIFEST_DESCRIBES_ARTIFACT: every number in manifest.json is
+    about the package, and citation_content_checks.py compares these very
+    counts against the dumped rows.
+    """
+    if shipped_only:
+        work_where = f" WHERE {shipped_work_sql('w')}"
+        cites_sql = _CITES_COUNT_SQL.format(
+            citing=shipped_work_sql("wa"), cited=shipped_work_sql("wb"))
+    else:
+        work_where = ""
+        cites_sql = "SELECT count(*) FROM citation.cites;"
+    work_n = int(scalar(env, f"SELECT count(*) FROM citation.work w{work_where};"))
+    cites_n = int(scalar(env, cites_sql))
+    rows = run_sql(env, _COUNTS_SQL.format(where=work_where),
+                    extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
     by_kind: dict[str, int] = {}
     for line in rows.splitlines():
         if line.strip():

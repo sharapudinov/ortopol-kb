@@ -71,6 +71,8 @@ class MainHappyPathTests(unittest.TestCase):
 
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
+                 mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value="full-skeleton"), \
                  mock.patch.object(build_package, "gather_manifest",
                                     return_value=_fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files",
@@ -105,18 +107,18 @@ class ProfileDispatchTests(unittest.TestCase):
                 seen["writer"] = "full"
                 gz_path.write_bytes(b"full")
 
-            def fake_public(env, gz_path, citation_mode_override=None):
+            def fake_public(env, gz_path, citation_mode="none"):
                 seen["writer"] = "public"
-                seen["citation_mode_override"] = citation_mode_override
+                seen["dump_citation_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
 
             def fake_package(workdir, out_path):
                 seen["manifest"] = json.loads((workdir / "manifest.json").read_text())
                 out_path.write_bytes(b"fake-tar-zst")
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode_override=None):
+            def fake_gather(env, ollama_url, profile="full", citation_mode="none"):
                 seen["gathered_profile"] = profile
-                seen["gathered_citation_override"] = citation_mode_override
+                seen["manifest_citation_mode"] = citation_mode
                 return _fake_manifest(
                     profile=profile_in_manifest,
                     schemas=["corpus"] if profile_in_manifest == "public"
@@ -125,6 +127,8 @@ class ProfileDispatchTests(unittest.TestCase):
 
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
+                 mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value="full-skeleton"), \
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_schemas", side_effect=fake_full), \
@@ -155,6 +159,8 @@ class ProfileDispatchTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
+                 mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value="topology-only"), \
                  mock.patch.object(build_package, "gather_manifest",
                                     side_effect=Unclassified("2026_new: class=None")), \
                  mock.patch.object(build_package, "dump_public") as public_mock, \
@@ -168,21 +174,23 @@ class ProfileDispatchTests(unittest.TestCase):
         self.assertEqual(written, [])
 
     def test_unclassified_citation_schema_refuses_to_build_without_writing_anything(self):
-        # This gate adds: unlike an unclassified DOCUMENT, this is
-        # a whole-schema policy (citation.public_policy has no row) --
-        # test_public_build_refuses_unclassified_citation_schema.
+        # Unlike an unclassified DOCUMENT, this is a whole-schema policy
+        # (citation.public_policy has no row), and it is refused at the one
+        # place the mode is resolved -- before the manifest is gathered.
         with tempfile.TemporaryDirectory() as tmp:
             corpus_dir = Path(tmp)
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
-                 mock.patch.object(build_package, "gather_manifest",
+                 mock.patch.object(build_package, "resolve_citation_mode",
                                     side_effect=CitationUnclassified("citation.public_policy: no row")), \
+                 mock.patch.object(build_package, "gather_manifest") as gather_mock, \
                  mock.patch.object(build_package, "dump_public") as public_mock, \
                  mock.patch.object(build_package, "package") as package_mock, \
                  mock.patch("sys.stderr") as stderr_mock:
                 exit_code = build_package.main(["--profile", "public"])
             written = list((corpus_dir / "deploy").glob("*.tar.zst"))
         self.assertEqual(exit_code, 1)
+        gather_mock.assert_not_called()
         public_mock.assert_not_called()
         package_mock.assert_not_called()
         self.assertEqual(written, [])
@@ -206,6 +214,8 @@ class ProfileDispatchTests(unittest.TestCase):
 
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", side_effect=fake_load_pgenv), \
+                 mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value="full-skeleton"), \
                  mock.patch.object(build_package, "gather_manifest", return_value=_fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_schemas",
@@ -240,12 +250,12 @@ class CitationPolicyOverrideTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode_override=None):
-                seen["gathered_override"] = citation_mode_override
+            def fake_gather(env, ollama_url, profile="full", citation_mode="none"):
+                seen["manifest_mode"] = citation_mode
                 return _fake_manifest(profile="public", schemas=["corpus", "citation"])
 
-            def fake_public(env, gz_path, citation_mode_override=None):
-                seen["dump_override"] = citation_mode_override
+            def fake_public(env, gz_path, citation_mode="none"):
+                seen["dump_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
 
             def fake_package(workdir, out_path):
@@ -253,6 +263,8 @@ class CitationPolicyOverrideTests(unittest.TestCase):
 
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
+                 mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value="topology-only") as resolve_mock, \
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_public", side_effect=fake_public), \
@@ -261,14 +273,79 @@ class CitationPolicyOverrideTests(unittest.TestCase):
                  mock.patch("sys.stderr"):
                 exit_code = build_package.main(
                     ["--profile", "public", "--policy-override", "topology-only"])
+            resolve_mock.assert_called_once()
             written = sorted(p.name for p in (corpus_dir / "deploy").glob("*.tar.zst"))
         self.assertEqual(exit_code, 0)
-        self.assertEqual(seen["gathered_override"], "topology-only")
-        self.assertEqual(seen["dump_override"], "topology-only")
+        self.assertEqual(seen["manifest_mode"], "topology-only")
+        self.assertEqual(seen["dump_mode"], "topology-only")
         self.assertEqual(len(written), 1)
         self.assertTrue(written[0].startswith("kb-public-override-"), written)
         # Never named as if it were an ordinary (owner-classified) build.
         self.assertFalse(written[0].startswith("kb-public-2"), written)
+
+
+class CitationModeResolvedOnceTests(unittest.TestCase):
+    """The citation policy is data, and a build reads it exactly once: the
+    manifest block and the dump must describe the same cut, and two
+    independent resolutions of the same policy can disagree (a schema that
+    exists for one reader and not for the other, an override honoured by one
+    and not the other). main() resolves, both consumers receive.
+    """
+
+    def _run(self, argv, resolved=None, resolve_error=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_dir = Path(tmp)
+            seen = {}
+
+            def fake_gather(env, ollama_url, profile="full", citation_mode="none"):
+                seen["manifest_mode"] = citation_mode
+                return _fake_manifest(profile=profile, schemas=["corpus"])
+
+            def fake_public(env, gz_path, citation_mode="none"):
+                seen["dump_mode"] = citation_mode
+                gz_path.write_bytes(b"public")
+
+            def fake_full(env, gz_path):
+                seen["dump_mode"] = "<full writer>"
+                gz_path.write_bytes(b"full")
+
+            resolve = (mock.Mock(side_effect=resolve_error) if resolve_error
+                       else mock.Mock(return_value=resolved))
+            with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
+                 mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "x"}), \
+                 mock.patch.object(build_package, "resolve_citation_mode", resolve), \
+                 mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
+                 mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
+                 mock.patch.object(build_package, "dump_public", side_effect=fake_public), \
+                 mock.patch.object(build_package, "dump_schemas", side_effect=fake_full), \
+                 mock.patch.object(build_package, "sha256_file", return_value="a" * 64), \
+                 mock.patch.object(build_package, "package", side_effect=lambda w, o: o.write_bytes(b"z")), \
+                 mock.patch("sys.stderr"):
+                exit_code = build_package.main(argv)
+            seen["resolve_calls"] = resolve.call_count
+        return exit_code, seen
+
+    def test_manifest_and_dump_receive_the_same_resolved_mode(self):
+        exit_code, seen = self._run(["--profile", "public"], resolved="topology-only")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen["resolve_calls"], 1, "политика прочитана не один раз")
+        self.assertEqual(seen["manifest_mode"], "topology-only")
+        self.assertEqual(seen["dump_mode"], "topology-only")
+
+    def test_undecided_policy_is_a_refusal_message_not_a_traceback(self):
+        exit_code, seen = self._run(
+            ["--profile", "public"],
+            resolve_error=CitationUnclassified("citation.public_policy has no row"),
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertNotIn("manifest_mode", seen, "манифест собирался после отказа")
+        self.assertNotIn("dump_mode", seen, "дамп писался после отказа")
+
+    def test_full_profile_also_resolves_exactly_once(self):
+        exit_code, seen = self._run([], resolved="full-skeleton")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen["resolve_calls"], 1)
+        self.assertEqual(seen["manifest_mode"], "full-skeleton")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ style for the corpus-schema equivalent.
 from __future__ import annotations
 
 import io
+import re
 import unittest
 from unittest import mock
 
@@ -13,6 +14,20 @@ import _pathfix_deploy  # noqa: F401
 
 import citation_dump
 from manifest_contract import CitationMode
+from paths import default_corpus_dir
+from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
+
+FIELD_SEP = "\x1f"
+
+
+def _live_env() -> dict[str, str]:
+    try:
+        env = load_pgenv(default_corpus_dir() / ".pgenv")
+    except PostgresUnavailable as exc:
+        raise unittest.SkipTest(f"Postgres not configured: {exc}")
+    if not check_postgres_available(env):
+        raise unittest.SkipTest("Postgres not reachable")
+    return env
 
 
 class TableColumnsTests(unittest.TestCase):
@@ -41,7 +56,7 @@ class CopySelectTests(unittest.TestCase):
         self.assertIn("NULL::text AS abstract", sql)
         self.assertIn("NULL::jsonb AS evidence", sql)
         # id is never blanked -- cites.citing/cited references it by value.
-        self.assertIn("SELECT id,", sql)
+        self.assertIn("SELECT w.id,", sql)
 
     def test_topology_only_blanks_cites_evidence(self):
         sql = citation_dump.copy_select("cites", ["citing", "cited", "evidence"], CitationMode.TOPOLOGY_ONLY)
@@ -57,9 +72,10 @@ class CopySelectTests(unittest.TestCase):
             self.assertNotIn("NULL::", sql)
 
     def test_order_by_matches_each_table_shape(self):
-        self.assertIn("ORDER BY id", citation_dump.copy_select("work", ["id"], CitationMode.FULL_SKELETON))
+        self.assertIn("ORDER BY w.id",
+                      citation_dump.copy_select("work", ["id"], CitationMode.FULL_SKELETON))
         self.assertIn(
-            "ORDER BY citing, cited, source",
+            "ORDER BY c.citing, c.cited, c.source",
             citation_dump.copy_select("cites", ["citing", "cited", "source"], CitationMode.FULL_SKELETON),
         )
 
@@ -133,6 +149,128 @@ class DumpCitationTests(unittest.TestCase):
         self.assertIn("--schema=citation", argv)
         self.assertIn("--exclude-schema=citation_graph", argv)
         self.assertIn("--exclude-schema=ag_catalog", argv)
+
+
+class LegalCutSqlTests(unittest.TestCase):
+    """The citation slice honours corpus.documents.public_distribution, and
+    it does so the LEGAL_IS_DATA way: through the predicate legal_profile.py
+    derives from the column, never through a list of ids or filenames here.
+    """
+
+    def test_work_select_drops_rows_naming_an_unshipped_document(self):
+        sql = citation_dump.copy_select("work", ["id", "key", "document_id"],
+                                        CitationMode.FULL_SKELETON)
+        self.assertIn("public_distribution IN (", sql)
+        self.assertIn("w.document_id IS NULL", sql)
+        self.assertIn("corpus.documents d", sql)
+
+    def test_metadata_only_documents_keep_their_work_row(self):
+        # The predicate is SHIPPED (documents that have a row in the public
+        # artifact at all), not FULL_CONTENT: a metadata-only document ships
+        # its bibliography, so the work row naming it ships too.
+        sql = citation_dump.copy_select("work", ["id"], CitationMode.FULL_SKELETON)
+        self.assertIn("'metadata-only'", sql)
+
+    def test_cites_select_requires_both_endpoints_to_ship(self):
+        sql = citation_dump.copy_select("cites", ["citing", "cited", "source"],
+                                        CitationMode.FULL_SKELETON)
+        self.assertIn("JOIN citation.work wa ON wa.id = c.citing", sql)
+        self.assertIn("JOIN citation.work wb ON wb.id = c.cited", sql)
+        self.assertIn("wa.document_id IS NULL", sql)
+        self.assertIn("wb.document_id IS NULL", sql)
+
+    def test_crawl_step_select_drops_rows_naming_a_cut_document_or_work(self):
+        sql = citation_dump.copy_select("crawl_step", ["id", "frontier_key", "reason"],
+                                        CitationMode.FULL_SKELETON)
+        # frontier_key carries a document_id for seed/twin rows and a work
+        # key for the rest, and reason embeds either -- all three columns are
+        # checked against both vocabularies.
+        for column in ("frontier_key", "candidate_key", "reason"):
+            self.assertIn(f"s.{column}", sql)
+        self.assertIn("strpos(", sql, "reason is matched as a substring, not with LIKE")
+        self.assertNotIn("LIKE", sql, "'_' in a document id is a LIKE wildcard")
+
+    def test_public_policy_is_not_cut(self):
+        sql = citation_dump.copy_select("public_policy", ["id", "mode", "note"],
+                                        CitationMode.FULL_SKELETON)
+        self.assertNotIn("WHERE", sql)
+
+    def test_no_document_id_or_filename_pattern_anywhere_in_the_module(self):
+        """Mirror of test_legal_profile's own guard: the moment a document id
+        or a filename shape appears here, the packager -- not the owner --
+        has become the authority on a legal question.
+        """
+        source = citation_dump.__file__.replace(".pyc", ".py")
+        text = open(source, encoding="utf-8").read()
+        self.assertIsNone(re.search(r"\b(19|20)\d{2}_[a-z]", text),
+                          "document id shaped literal in citation_dump.py")
+        self.assertNotIn(".pdf", text)
+        self.assertNotIn(".djvu", text)
+
+
+class LiveLegalCutTests(unittest.TestCase):
+    """Runs the real COPY selects against the live database inside a
+    transaction that is ROLLED BACK, so a fixture carrying an `excluded`
+    document exists only for the duration of the statement block -- no test
+    row can survive a crash, and corpus.documents is never actually written.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+
+    def _rows(self, table: str, columns: list[str], fixture: str) -> list[str]:
+        select = citation_dump.copy_select(table, columns, CitationMode.FULL_SKELETON)
+        out = run_sql(
+            self.env,
+            "BEGIN;\n" + fixture + "\n" + select + ";\nROLLBACK;\n",
+            extra_args=["-t", "-A"],
+        ).stdout
+        return [line for line in out.splitlines() if line.strip()]
+
+    FIXTURE = """
+    INSERT INTO corpus.documents (id, filename, extraction_state, legal_class,
+                                  public_distribution, legal_note)
+    VALUES ('test:cut:excluded', 'x.pdf', 'clean', 'unknown', 'excluded', 'test fixture'),
+           ('test:cut:shipped', 'y.pdf', 'clean', 'cc-by', 'full-text', 'test fixture');
+    INSERT INTO citation.work (key, title, source, kind, document_id) VALUES
+      ('test:cut:a', 'A', 'manual', 'our-document', 'test:cut:excluded'),
+      ('test:cut:c', 'C', 'manual', 'our-document', 'test:cut:shipped');
+    INSERT INTO citation.work (key, title, source, kind) VALUES
+      ('test:cut:b', 'B', 'manual', 'external-skeleton');
+    INSERT INTO citation.cites (citing, cited, source)
+    SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
+    WHERE x.key = 'test:cut:b' AND y.key = 'test:cut:a';
+    INSERT INTO citation.cites (citing, cited, source)
+    SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
+    WHERE x.key = 'test:cut:b' AND y.key = 'test:cut:c';
+    INSERT INTO citation.crawl_step (crawl_id, depth, frontier_key, candidate_key, action, reason)
+    VALUES ('test:cut', 0, 'test:cut:excluded', 'test:cut:a', 'seed', NULL),
+           ('test:cut', 1, 'test:cut:b', 'test:cut:a', 'keep', 'kept; node=test:cut:a'),
+           ('test:cut', 0, 'test:cut:b', 'test:cut:c', 'keep', 'twin-of=test:cut:shipped'),
+           ('test:cut', 2, 'test:cut:b', NULL, 'fetch', NULL);
+    """
+
+    def test_work_row_of_an_excluded_document_does_not_ship(self):
+        keys = self._rows("work", ["key"], self.FIXTURE)
+        test_keys = sorted(k for k in keys if k.startswith("test:cut:"))
+        self.assertEqual(test_keys, ["test:cut:b", "test:cut:c"])
+
+    def test_edges_touching_that_work_do_not_ship(self):
+        # Endpoint ids are surrogates, so the fixture's own two edges are
+        # counted against the same select run without the fixture: of b->a
+        # and b->c only the second may survive.
+        baseline = len(self._rows("cites", ["citing", "cited"], ""))
+        rows = self._rows("cites", ["citing", "cited"], self.FIXTURE)
+        self.assertEqual(len(rows), baseline + 1, "ребро на вырезанный узел вышло в дамп")
+
+    def test_journal_rows_naming_the_cut_document_or_work_do_not_ship(self):
+        rows = self._rows("crawl_step", ["crawl_id", "depth", "frontier_key",
+                                          "candidate_key", "reason"], self.FIXTURE)
+        ours = [r for r in rows if r.split("\t")[0] == "test:cut"]
+        self.assertEqual(len(ours), 2, f"лишние журнальные строки: {ours}")
+        self.assertTrue(all("test:cut:a" not in r for r in ours), ours)
+        self.assertTrue(all("test:cut:excluded" not in r for r in ours), ours)
 
 
 if __name__ == "__main__":

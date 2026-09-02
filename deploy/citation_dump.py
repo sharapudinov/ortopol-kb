@@ -12,6 +12,14 @@ artifact_bundle.DEPLOY_FILES's own comment on legal_profile.py/
 public_dump.py) -- it reads and cuts the live database, which is the
 builder's job, not the recipient's.
 
+What the legal cut removes (citation_profile.shipped_work_sql /
+shipped_crawl_step_sql, applied in _SOURCE below): a work row whose
+document_id names a document the public artifact does not carry leaves with
+that document -- its row, every edge touching it, and every journal row that
+names it. Not a second policy invented here: it is corpus.documents.
+public_distribution, the same column public_dump.py cuts by, reaching the
+rows that reference it across a foreign key.
+
 id is preserved (never re-sequenced the way corpus.pages.id is excluded and
 left to the restore-side sequence): citation.cites references
 citation.work.id BY VALUE, and a column-list COPY has no id-remapping
@@ -24,17 +32,33 @@ from __future__ import annotations
 
 from typing import IO
 
+from citation_profile import shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import CitationMode
 from pg_common import run_sql
 from pg_stream import stream_stdout
 
 CITATION_TABLES = ("work", "cites", "crawl_step", "public_policy")
 
-_ORDER_BY = {
-    "work": "id",
-    "cites": "citing, cited, source",
-    "crawl_step": "id",
-    "public_policy": "id",
+# One alias per dumped table (the same discipline public_dump.TABLE_ALIASES
+# follows): an unlisted table raises KeyError instead of quietly producing
+# SQL with the wrong alias.
+TABLE_ALIASES = {"work": "w", "cites": "c", "crawl_step": "s", "public_policy": "p"}
+
+# Every row that names a document is cut by that document's own legal class
+# as well as by the schema-wide mode -- citation_profile.py's predicates say
+# why and how. This module ships only the public profile (public_dump.py is
+# its only caller; the full profile goes through pg_dump and applies no cut
+# at all), so the cut is unconditional here rather than a mode.
+_SOURCE = {
+    "work": "FROM citation.work w WHERE {work} ORDER BY w.id",
+    "cites": ("FROM citation.cites c "
+              "JOIN citation.work wa ON wa.id = c.citing "
+              "JOIN citation.work wb ON wb.id = c.cited "
+              "WHERE {citing} AND {cited} ORDER BY c.citing, c.cited, c.source"),
+    "crawl_step": "FROM citation.crawl_step s WHERE {step} ORDER BY s.id",
+    # Our own decision record about the crawl as a whole, naming no document
+    # and no third party: it ships whole under any shipping mode.
+    "public_policy": "FROM citation.public_policy p ORDER BY p.id",
 }
 
 # Tables carrying a BIGSERIAL id whose sequence must be advanced past every
@@ -71,13 +95,23 @@ def table_columns(env: dict, table: str) -> list[str]:
 
 def _select_expression(table: str, column: str, mode: str) -> str:
     cast = _BLANKED.get(table, {}).get(column) if mode == CitationMode.TOPOLOGY_ONLY else None
-    return f"NULL::{cast} AS {column}" if cast else column
+    if cast:
+        return f"NULL::{cast} AS {column}"
+    return f"{TABLE_ALIASES[table]}.{column}"
+
+
+def _source_clause(table: str) -> str:
+    return _SOURCE[table].format(
+        work=shipped_work_sql("w"),
+        citing=shipped_work_sql("wa"),
+        cited=shipped_work_sql("wb"),
+        step=shipped_crawl_step_sql("s"),
+    )
 
 
 def copy_select(table: str, columns: list[str], mode: str) -> str:
     projection = ",\n       ".join(_select_expression(table, c, mode) for c in columns)
-    return (f"COPY (SELECT {projection}\n"
-            f"FROM citation.{table} ORDER BY {_ORDER_BY[table]}) TO STDOUT")
+    return f"COPY (SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
 def _setval_sql(table: str) -> bytes:

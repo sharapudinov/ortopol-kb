@@ -31,6 +31,13 @@ Checks:
   vectors survive both classes every page row carries an embedding
   no tsv anywhere              tsv is GENERATED from body; a dump that
                                declared it would restore stale text content
+  citation slice holds         the citation-schema checks live in
+                               citation_content_checks.py (module size) and
+                               run in this same pass -- including the two
+                               that hold the citation cut to the DOCUMENT
+                               cut: no work row names a document this dump
+                               does not carry, no edge names a work it does
+                               not carry
 
 Same (ok, detail) contract as smoke_checks.py, so smoke_test.py can list
 these beside its live checks; runnable standalone as well:
@@ -184,13 +191,13 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dict, dict]:
             with_body.add(row[DOCUMENT_ID_COLUMN])
 
     row_visitors = {DOCUMENTS_TABLE: on_document, PAGES_TABLE: on_page}
-    citation_leaked = citation_content_checks.attach_visitors(row_visitors)
+    citation_facts = citation_content_checks.attach_visitors(row_visitors)
 
     scans = dump_scan.scan(dump_path, row_visitors)
     facts = {
         "documents": documents, "page_documents": page_documents,
         "with_blob": with_blob, "with_body": with_body, "pages": pages_seen,
-        "citation_leaked": citation_leaked,
+        **citation_facts,
     }
     return scans, facts
 
@@ -256,6 +263,10 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
          *citation_content_checks.check_citation_schema_matches_mode(manifest, scans)),
         ("citation topology-only: аннотации и evidence вырезаны",
          *citation_content_checks.check_topology_only_strips_abstract_and_evidence(manifest, facts)),
+        ("citation.work ссылается только на документы этого пакета",
+         *citation_content_checks.check_work_documents_are_in_the_dump(manifest, facts)),
+        ("citation.cites ссылается только на узлы этого пакета",
+         *citation_content_checks.check_edges_reference_shipped_works(manifest, facts)),
     ]
 
 

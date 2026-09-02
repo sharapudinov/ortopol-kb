@@ -62,7 +62,7 @@ ensure_corpus_importable()
 
 import citation_dump  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
-from citation_profile import require_citation_mode  # noqa: E402
+from manifest_contract import CitationMode  # noqa: E402
 from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL, require_classified  # noqa: E402
 from pg_common import run_sql  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
@@ -180,25 +180,26 @@ PREAMBLE = (
     "-- for how it was applied. Schema `citation`, when present, is cut per\n"
     "-- manifest.json's `citation` block instead (deploy/citation_profile.py /\n"
     "-- deploy/citation_dump.py) -- a separate policy, decided once for the\n"
-    "-- whole crawl record rather than per document.\n"
+    "-- whole crawl record rather than per document. The per-document cut\n"
+    "-- still reaches it: a citation.work row naming a document absent from\n"
+    "-- this file is absent too, and so are its edges and its journal rows.\n"
     "--\n\n"
 )
 
 
-def dump_public(env: dict, gz_path: Path, citation_mode_override: str | None = None) -> None:
+def dump_public(env: dict, gz_path: Path, citation_mode: str = CitationMode.NONE) -> None:
     """Writes the filtered dump to gz_path, gzip-streamed in one pass.
 
     Refuses to write anything at all while any document lacks a usable
-    classification (legal_profile.require_classified), or while the
-    citation schema's public-artifact policy is undecided
-    (citation_profile.require_citation_mode): either must stop the build,
-    not be quietly assigned a default. citation_mode_override is
-    build_package.py's --policy-override escape hatch (TEST ONLY -- see its
-    own --help): when given, it is used as-is and the database is never
-    asked.
+    classification (legal_profile.require_classified) -- that must stop the
+    build, not be quietly assigned a default.
+
+    citation_mode is the value build_package.main() resolved once
+    (citation_profile.resolve_citation_mode) and handed to the manifest as
+    well; this module does not re-read the policy, so the dump and the
+    manifest cannot describe two different cuts of the same schema.
     """
     require_classified(env)
-    citation_mode = citation_mode_override or require_citation_mode(env)
     documents_columns = table_columns(env, "documents")
     pages_columns = table_columns(env, "pages", exclude=PAGES_EXCLUDED)
     model_columns = table_columns(env, "embedding_model")

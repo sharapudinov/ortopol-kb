@@ -86,5 +86,100 @@ class CitationCountsTests(unittest.TestCase):
         self.assertEqual(by_kind, {})
 
 
+class ResolveCitationModeTests(unittest.TestCase):
+    """The ONE reading of the policy per build (build_package.main hands the
+    result to the manifest and to the dump alike).
+    """
+
+    def test_no_citation_schema_means_nothing_to_carry(self):
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=False), \
+             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
+            for profile in ("full", "public"):
+                self.assertEqual(
+                    citation_profile.resolve_citation_mode({}, profile), CitationMode.NONE)
+        require_mock.assert_not_called()
+
+    def test_an_override_cannot_conjure_a_schema_that_is_absent(self):
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=False):
+            self.assertEqual(
+                citation_profile.resolve_citation_mode({}, "public", CitationMode.FULL_SKELETON),
+                CitationMode.NONE,
+            )
+
+    def test_full_profile_ships_the_whole_schema_whatever_the_policy_row_says(self):
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \
+             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
+            self.assertEqual(citation_profile.resolve_citation_mode({}, "full"),
+                             CitationMode.FULL_SKELETON)
+        require_mock.assert_not_called()
+
+    def test_public_profile_defers_to_the_owners_row(self):
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \
+             mock.patch.object(citation_profile, "require_citation_mode",
+                                return_value=CitationMode.TOPOLOGY_ONLY) as require_mock:
+            self.assertEqual(citation_profile.resolve_citation_mode({}, "public"),
+                             CitationMode.TOPOLOGY_ONLY)
+        require_mock.assert_called_once()
+
+    def test_override_bypasses_the_database_read(self):
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \
+             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
+            self.assertEqual(
+                citation_profile.resolve_citation_mode({}, "public", CitationMode.FULL_SKELETON),
+                CitationMode.FULL_SKELETON,
+            )
+        require_mock.assert_not_called()
+
+    def test_undecided_policy_still_refuses(self):
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \
+             mock.patch.object(citation_profile, "require_citation_mode",
+                                side_effect=citation_profile.CitationUnclassified("no row")):
+            with self.assertRaises(citation_profile.CitationUnclassified):
+                citation_profile.resolve_citation_mode({}, "public")
+
+
+class ShippedRowPredicateTests(unittest.TestCase):
+    """The citation slice honours corpus.documents.public_distribution
+    through legal_profile's own predicate -- LEGAL_IS_DATA, no id list here.
+    """
+
+    def test_work_predicate_lets_a_document_less_row_through(self):
+        sql = citation_profile.shipped_work_sql("w")
+        self.assertIn("w.document_id IS NULL", sql)
+        self.assertIn("public_distribution IN (", sql)
+
+    def test_work_predicate_uses_shipped_not_full_content(self):
+        sql = citation_profile.shipped_work_sql()
+        self.assertIn("'metadata-only'", sql, "библиография metadata-only уезжает")
+        self.assertNotIn("'excluded'", sql)
+
+    def test_crawl_step_predicate_checks_both_vocabularies_in_three_columns(self):
+        sql = citation_profile.shipped_crawl_step_sql("s")
+        self.assertEqual(sql.count("s.frontier_key"), 2)
+        self.assertEqual(sql.count("s.candidate_key"), 2)
+        self.assertEqual(sql.count("strpos(coalesce(s.reason, '')"), 2)
+        self.assertIn("corpus.documents d", sql)
+        self.assertIn("citation.work w", sql)
+
+
+class ShippedOnlyCountsTests(unittest.TestCase):
+    def test_shipped_only_counts_apply_the_predicate(self):
+        seen = []
+        with mock.patch.object(citation_profile, "scalar",
+                                side_effect=lambda env, sql: seen.append(sql) or "0"), \
+             mock.patch.object(citation_profile, "run_sql", return_value=mock.Mock(stdout="")):
+            citation_profile.citation_counts({}, shipped_only=True)
+        self.assertTrue(all("public_distribution IN (" in sql for sql in seen), seen)
+        self.assertIn("JOIN citation.work wa", seen[1])
+
+    def test_default_counts_the_whole_schema(self):
+        seen = []
+        with mock.patch.object(citation_profile, "scalar",
+                                side_effect=lambda env, sql: seen.append(sql) or "0"), \
+             mock.patch.object(citation_profile, "run_sql", return_value=mock.Mock(stdout="")):
+            citation_profile.citation_counts({})
+        self.assertTrue(all("public_distribution" not in sql for sql in seen), seen)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,9 +31,9 @@ def _scan(dump_text: str) -> tuple[dict, dict]:
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
         row_visitors: dict = {}
-        leaked = citation_content_checks.attach_visitors(row_visitors)
+        facts = citation_content_checks.attach_visitors(row_visitors)
         scans = dump_scan.scan(dump_path, row_visitors)
-    return scans, {"citation_leaked": leaked}
+    return scans, dict(facts)
 
 
 class CheckCitationSchemaMatchesModeTests(unittest.TestCase):
@@ -129,6 +129,71 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
             manifest, facts,
         )
         self.assertTrue(ok, detail)
+
+
+class CheckWorkDocumentsPresentTests(unittest.TestCase):
+    """The citation slice and the corpus slice are cut by two different
+    policies (citation.public_policy vs corpus.documents.public_distribution),
+    and citation.work.document_id is a FK across that boundary. A work row
+    naming a document the dump does not carry breaks the restore outright --
+    and, before that, publishes the title of exactly the document the owner
+    classified out.
+    """
+
+    MANIFEST = {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}}
+
+    def test_passes_when_every_named_document_is_in_the_dump(self):
+        dump = (
+            _copy_block("corpus.documents", ["id", "filename"], [["1997_sm280", "a.pdf"]])
+            + _copy_block("citation.work", ["id", "key", "document_id"],
+                          [["1", "k1", "1997_sm280"], ["2", "k2", "\\N"]])
+        )
+        _scans, facts = _scan(dump)
+        facts["documents"] = {"1997_sm280"}
+        ok, detail = citation_content_checks.check_work_documents_are_in_the_dump(
+            self.MANIFEST, facts)
+        self.assertTrue(ok, detail)
+
+    def test_fails_when_a_work_names_a_document_the_dump_does_not_carry(self):
+        dump = _copy_block("citation.work", ["id", "key", "document_id"],
+                           [["1", "k1", "excluded_doc"]])
+        _scans, facts = _scan(dump)
+        facts["documents"] = {"1997_sm280"}
+        ok, detail = citation_content_checks.check_work_documents_are_in_the_dump(
+            self.MANIFEST, facts)
+        self.assertFalse(ok)
+        self.assertIn("excluded_doc", detail)
+
+    def test_none_mode_is_a_trivial_pass(self):
+        facts = {"citation_work_documents": {"whatever": {"k1"}}, "documents": set()}
+        ok, detail = citation_content_checks.check_work_documents_are_in_the_dump(
+            {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE}}, facts)
+        self.assertTrue(ok, detail)
+
+
+class CheckEdgesReferenceShippedWorksTests(unittest.TestCase):
+    MANIFEST = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
+
+    def test_passes_when_both_endpoints_are_in_the_dump(self):
+        dump = (
+            _copy_block("citation.work", ["id", "key"], [["1", "k1"], ["2", "k2"]])
+            + _copy_block("citation.cites", ["citing", "cited"], [["1", "2"]])
+        )
+        _scans, facts = _scan(dump)
+        ok, detail = citation_content_checks.check_edges_reference_shipped_works(
+            self.MANIFEST, facts)
+        self.assertTrue(ok, detail)
+
+    def test_fails_on_an_edge_whose_endpoint_was_cut_away(self):
+        dump = (
+            _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
+            + _copy_block("citation.cites", ["citing", "cited"], [["1", "2"]])
+        )
+        _scans, facts = _scan(dump)
+        ok, detail = citation_content_checks.check_edges_reference_shipped_works(
+            self.MANIFEST, facts)
+        self.assertFalse(ok)
+        self.assertIn("2", detail)
 
 
 if __name__ == "__main__":

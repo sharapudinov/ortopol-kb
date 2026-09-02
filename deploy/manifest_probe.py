@@ -62,28 +62,20 @@ def blob_probe_doc(profile: str) -> str:
     return PUBLIC_BLOB_PROBE_DOC if profile == Profile.PUBLIC else BLOB_PROBE_DOC
 
 
-def _citation_mode(env: dict, profile: str, citation_mode_override: str | None) -> str:
-    """The citation-graph mode THIS build applies.
+def _citation_block(env: dict, mode: str, public: bool) -> dict:
+    """MANIFEST_DESCRIBES_ARTIFACT: the counts are of the rows THIS package
+    carries, not of the live schema. The public profile drops every work row
+    (and every edge and journal row that names it) whose document its own
+    legal cut removed, so its counts are taken with that cut applied --
+    citation_content_checks.py compares exactly these numbers against the
+    rows the dump turns out to contain.
 
-    Full always carries the whole schema (like every other table it dumps,
-    see build_package.py's own docstring: full never applies a legal/policy
-    cut) -- unless the database genuinely has no citation schema at all, in
-    which case there is nothing to carry, for either profile. Public defers
-    to citation_profile.require_citation_mode (or the --policy-override
-    escape hatch, TEST ONLY -- see build_package.py's --help), which raises
-    CitationUnclassified when the owner has not decided.
+    `mode` is resolved once per build by citation_profile.
+    resolve_citation_mode() and handed in; this module never re-derives it.
     """
-    if not citation_profile.citation_schema_exists(env):
-        return CitationMode.NONE
-    if profile != Profile.PUBLIC:
-        return CitationMode.FULL_SKELETON
-    return citation_mode_override or citation_profile.require_citation_mode(env)
-
-
-def _citation_block(env: dict, mode: str) -> dict:
     if mode == CitationMode.NONE:
         return {Key.CITATION_MODE: mode, Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {}}
-    work_n, cites_n, by_kind = citation_profile.citation_counts(env)
+    work_n, cites_n, by_kind = citation_profile.citation_counts(env, shipped_only=public)
     return {Key.CITATION_MODE: mode, Key.WORK_COUNT: work_n, Key.CITES_COUNT: cites_n,
             Key.WORK_BY_KIND: by_kind}
 
@@ -166,7 +158,7 @@ def _stemmed_token_overlap(env: dict, query: str, document_id: str, page_number:
 
 def gather_manifest(
     env: dict, ollama_url: str, profile: str = Profile.FULL,
-    citation_mode_override: str | None = None,
+    citation_mode: str = CitationMode.NONE,
 ) -> dict:
     if profile not in Profile.ALL:
         raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
@@ -175,11 +167,11 @@ def gather_manifest(
     # an unclassified document -- the same gate public_dump.py applies before
     # writing any data, checked here too so the build fails on the FIRST
     # database read rather than after the manifest work. The citation-schema
-    # policy gate (citation_profile.require_citation_mode, inside
-    # _citation_mode) follows right after, for the same reason.
+    # policy gate is the caller's: build_package.main() resolves the mode
+    # (citation_profile.resolve_citation_mode) before it gets here and hands
+    # the resolved literal to this function and to the dump alike.
     if public:
         legal_profile.require_classified(env)
-    citation_mode = _citation_mode(env, profile, citation_mode_override)
     content_predicate = legal_profile.FULL_CONTENT_SQL if public else "TRUE"
     shipped_predicate = legal_profile.SHIPPED_SQL if public else "TRUE"
     probe_doc = blob_probe_doc(profile)
@@ -265,7 +257,7 @@ def gather_manifest(
         Key.SCHEMA_VERSION: MANIFEST_SCHEMA_VERSION,
         Key.PROFILE: profile,
         Key.SCHEMAS: declared_schemas(profile, citation_mode),
-        Key.CITATION: _citation_block(env, citation_mode),
+        Key.CITATION: _citation_block(env, citation_mode, public),
         Key.CREATED_AT: datetime.now(timezone.utc).isoformat(),
         Key.DOCUMENTS_COUNT: documents_count,
         Key.PAGES_COUNT: pages_count,
