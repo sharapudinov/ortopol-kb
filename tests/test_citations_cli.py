@@ -384,16 +384,25 @@ class CalibrateCliTests(unittest.TestCase):
 
 
 class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
-    """The third channel DRY_RUN_WRITES_NOTHING names: the HTTP caches.
+    """The third channel DRY_RUN_WRITES_NOTHING names: the caches.
 
     All three clients sit on the startup path of a non-offline run, all
     three cache into the data tree, and none of them had a seam -- the
     writers made the promise structural for citation.* and measurements.*
-    while the crawl quietly mkdir'd three directories inside it.
+    while the crawl quietly mkdir'd three directories inside it. The
+    fourth cache is not HTTP: the vector memo, which is in the tree for
+    the same reason and under the same promise.
+
+    Every one of the four is patched into the temporary tree, the memo
+    included: a cache left pointing at the real data root is invisible to
+    the leftovers check below, so a regression in ITS read_only wiring
+    would write into the developer's own tree and still pass green.
     """
 
+    CACHES = ("cache/openalex", "cache/mathnet", "cache/zbmath", "cache/embeddings")
+
     def _crawl(self, stack, tree: pathlib.Path, *flags: str) -> int:
-        """A crawl with no seeds: enough to CONSTRUCT all three clients,
+        """A crawl with no seeds: enough to CONSTRUCT all four caches,
         which is where the directories appear.
         """
         _harness = _MainHarness(stack)
@@ -410,6 +419,7 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
             (seed_metadata, "corpus_seed_documents", []),
             (pg_load_citations, "default_zbmath_cache_dir", cache / "zbmath"),
             (pg_load_citations, "default_mathnet_cache_dir", cache / "mathnet"),
+            (pg_load_citations, "default_embedding_cache_dir", cache / "embeddings"),
         ):
             stack.enter_context(mock.patch.object(module, name, return_value=value))
         stack.enter_context(mock.patch.object(
@@ -429,10 +439,10 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(leftovers, [], "--dry-run наследил в дереве данных")
 
-    def test_a_real_run_does_create_the_three_caches(self):
+    def test_a_real_run_does_create_all_four_caches(self):
         """The complement, so the guard cannot pass by never caching."""
         _code, made = self._run()
-        for directory in ("cache/openalex", "cache/mathnet", "cache/zbmath"):
+        for directory in self.CACHES:
             self.assertIn(directory, made)
 
 
