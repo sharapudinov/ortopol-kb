@@ -68,11 +68,23 @@ DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py
   (citations/store.py для графа, citations/spike_runs.py для measurements и
   отчётов); запись мимо шва запрещена, потому что печатаемое обещание держится
   конструкцией, а не аккуратностью — уже однажды разошлось с делом.
+JOURNAL_FACTS_ARE_COLUMNS [HARD, 2026-09-02]: то, что читает КОД, живёт в
+  колонке citation.crawl_step (node_key, score, tau рядом с frontier_key /
+  candidate_key / n_found / n_kept), а reason — только проза для человека.
+  Разбор reason в новом коде запрещён как класс: substring/split_part/strpos
+  не берут индекс, ловят имя внутри фразы и рвутся от правки формулировки —
+  так жили три потребителя сразу (распределение score, узлы depth-1
+  hub-отчёта, журнальный срез public-артефакта). Новая машиночитаемая
+  величина = ADD COLUMN IF NOT EXISTS + индекс, если по ней ищут, +
+  идемпотентный разбор уже написанных строк в том же файле схемы.
 SNOWBALL_FRONTIER [2026-09-02, измерено run 89/93]: обход расширяет на depth ≥ 2
   только узлы с relation='cites'; узлы, пришедшие по references, — листья; хабы
   (cited_by_count > --hub-cap) вверх не спрашиваются. Порог релевантности τ — не
   константа в коде, а результат калибровки (run 89: τ=0.50, пустая корзина
-  0.484–0.504); менять — новым run, не правкой числа.
+  0.484–0.504); менять — новым run, не правкой числа. Рекомендация и вердикт
+  живут в самом отчёте и переносятся регенерацией (calibration.
+  carry_over_sections); из кода считается только suggest_tau() — где в
+  данных пустая корзина, либо честное «границы нет».
 ```
 
 ## Предикат готовности
@@ -80,7 +92,7 @@ SNOWBALL_FRONTIER [2026-09-02, измерено run 89/93]: обход расш�
 Любая правка закрывается этим (из корня репозитория):
 
 ```bash
-python3 -m unittest discover -s tests -t tests            # 504 теста, exit 0
+python3 -m unittest discover -s tests -t tests            # 680 тестов, exit 0
 set -a; . ../corpus/.pgenv; set +a
 python3 corpus_completeness.py                            # exit 0
 ```
