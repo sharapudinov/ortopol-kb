@@ -100,6 +100,34 @@ def batched(items, size: int = ID_BATCH):
         yield seq[start:start + size]
 
 
+SIDECAR_SUFFIX = ".meta.json"
+
+
+def sidecar_path(page: Path) -> Path:
+    """Where the index of one cached page lives, beside the page itself."""
+    name = page.name[: -len(".json")] if page.name.endswith(".json") else page.name
+    return page.with_name(name + SIDECAR_SUFFIX)
+
+
+def page_index(body: dict) -> dict:
+    """{filter, oql, count}: what a cached page says about the BATCH it is a
+    page OF -- a few hundred bytes standing in for a body of up to 200 works
+    with their referenced_works lists.
+
+    The batch's identity is the `filter=` value, NOT the request url: the url
+    carries the cursor in its tail, so eight batches wear 253 distinct urls
+    (one per page) and a reader keyed on the url counts the same meta.count
+    once per page -- measured: 3 392 521 promised citers instead of 51 652.
+    The `filter=` value is the same on every page of a batch.
+    """
+    meta = body.get("meta") or {}
+    query = meta.get("x_query") or {}
+    url = query.get("url") or ""
+    oql = query.get("oql") or ""
+    identity = url.split("filter=", 1)[1].split("&", 1)[0] if "filter=" in url else (oql or url)
+    return {"filter": identity, "oql": oql, "count": meta.get("count") or 0}
+
+
 def short_id(value: str | None) -> str:
     """'https://openalex.org/W123' -> 'W123'; already-short ids pass through."""
     if not value:
@@ -200,8 +228,27 @@ class OpenAlexClient:
                 raise OpenAlexError(f"не JSON от {url}: {err}") from err
             if cached is not None:
                 cached.write_text(raw, encoding="utf-8")
+                self._write_sidecar(cached, body)
             return body
         raise OpenAlexError(f"исчерпаны {self.tries} попытки: {url}")
+
+    @staticmethod
+    def _write_sidecar(cached: Path, body: dict) -> None:
+        """The page's own index, written the moment the page is cached.
+
+        A reader that needs only what batch a page belongs to and how many
+        works the batch promised (citations/hub_report.py's negative result)
+        would otherwise json.loads() the whole cache to find two numbers:
+        253 pages, 217 MiB, every one of them a full object graph. Best
+        effort -- the cache is disposable scratch, and a cache directory
+        that cannot be written is the caller's problem, not a failed
+        request's.
+        """
+        try:
+            sidecar_path(cached).write_text(
+                json.dumps(page_index(body), ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
     # -- queries ---------------------------------------------------------
     def _paged(self, **params) -> Iterator[dict]:

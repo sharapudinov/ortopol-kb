@@ -265,6 +265,52 @@ class BatchCountTests(unittest.TestCase):
             self._page(directory, "c.json", ["W3"], 21, "CCC")
             self.assertEqual(hub_report.batch_counts(directory), [18904, 21])
 
+    def _down_page(self, directory, name):
+        (directory / name).write_text(json.dumps({"meta": {
+            "count": 50, "x_query": {"oql": "works where openalex id is (W1)",
+                                     "url": "/works?filter=ids.openalex:W1"}},
+            "results": [{"id": "W1", "referenced_works": ["W%d" % i for i in range(500)]}]}),
+            encoding="utf-8")
+
+    def test_only_the_cites_pages_are_decoded(self):
+        """The cache is 217 MiB of works with their referenced_works lists,
+        and the report needs two fields per BATCH. A page of the down
+        direction is recognised by its head and never becomes an object.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
+            self._down_page(directory, "b.json")
+            self._down_page(directory, "c.json")
+            decoded = []
+            real = json.loads
+
+            def counting(text, *args, **kwargs):
+                decoded.append(len(text))
+                return real(text, *args, **kwargs)
+
+            with mock.patch.object(hub_report.json, "loads", counting):
+                self.assertEqual(hub_report.batch_counts(directory), [18904])
+            self.assertEqual(len(decoded), 1, "разобрано лишнее: %s" % decoded)
+
+    def test_the_second_pass_reads_the_sidecar_not_the_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
+            self.assertEqual(hub_report.batch_counts(directory), [18904])
+            # The body is now unreadable: only a reader that still parses it
+            # can notice, and the answer must not change.
+            (directory / "a.json").write_text("{ not json at all", encoding="utf-8")
+            self.assertEqual(hub_report.batch_counts(directory), [18904])
+
+    def test_a_sidecar_is_not_mistaken_for_a_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
+            hub_report.batch_counts(directory)
+            self.assertTrue((directory / "a.meta.json").is_file())
+            self.assertEqual(hub_report.batch_counts(directory), [18904])
+
     def test_openalex_id_batches_are_not_counted_as_cites(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = pathlib.Path(tmp)

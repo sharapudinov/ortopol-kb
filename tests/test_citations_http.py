@@ -20,7 +20,12 @@ import _pathfix  # noqa: F401
 
 from citations import frontier
 from citations.mathnet import MathnetClient, parse_titles
-from citations.openalex_client import OpenAlexClient, OpenAlexError
+from citations.openalex_client import (
+    OpenAlexClient,
+    OpenAlexError,
+    page_index,
+    sidecar_path,
+)
 
 PAGE = ('<html><head><title>И. И. Шарапудинов, “Русское название”, Матем. сб., '
         '180:9 (1989), 1–10; I. I. Sharapudinov, “English title”, '
@@ -133,6 +138,45 @@ class OpenAlexRetryTests(unittest.TestCase):
         with self.assertRaises(OpenAlexError) as ctx:
             client.get_json("https://api.openalex.org/works?x=1")
         self.assertIn("не JSON", str(ctx.exception))
+
+
+class OpenAlexSidecarTests(unittest.TestCase):
+    """A cached page gets a two-field index beside it, so a reader that
+    needs the batch and its promised count does not decode 217 MiB of works.
+    """
+
+    BODY = json.dumps({
+        "meta": {"count": 18904, "x_query": {
+            "oql": "works where it cites (W1 or W2)",
+            "url": "/works?filter=referenced_works:W1|W2&per_page=200&cursor=AAA"}},
+        "results": [],
+    }).encode()
+
+    def _cached(self, tmp: Path) -> Path:
+        client = OpenAlexClient(opener=_Sequence([_Response(self.BODY)]),
+                                sleep=lambda _s: None, pause=0.0, cache_dir=tmp)
+        client.get_json("https://api.openalex.org/works?filter=cites:W1|W2")
+        return next(p for p in tmp.glob("*.json") if not p.name.endswith(".meta.json"))
+
+    def test_the_page_is_cached_with_its_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            page = self._cached(Path(tmp))
+            note = json.loads(sidecar_path(page).read_text(encoding="utf-8"))
+        self.assertEqual(note, {"filter": "referenced_works:W1|W2",
+                                "oql": "works where it cites (W1 or W2)",
+                                "count": 18904})
+
+    def test_the_batch_is_named_by_its_filter_not_by_the_cursor(self):
+        """Two pages of one batch differ only in the cursor; keyed on the
+        url they counted as two batches -- 3 392 521 instead of 51 652.
+        """
+        first = page_index(json.loads(self.BODY))
+        second = page_index(json.loads(self.BODY.replace(b"cursor=AAA", b"cursor=BBB")))
+        self.assertEqual(first["filter"], second["filter"])
+
+    def test_a_page_with_no_filter_still_gets_an_index(self):
+        note = page_index({"meta": {"count": 3, "x_query": {"oql": "works", "url": "/works"}}})
+        self.assertEqual(note, {"filter": "works", "oql": "works", "count": 3})
 
 
 class MathnetClientTests(unittest.TestCase):
