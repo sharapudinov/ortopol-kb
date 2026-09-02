@@ -92,3 +92,50 @@ def fresh_keys(env, days: int) -> set[str]:
         extra_args=["-t", "-A"],
     ).stdout.strip()
     return {line for line in out.split("\n") if line}
+
+
+# How many keys travel in one `key IN (...)` list. The same reason the
+# OpenAlex client batches its id filter: the whole list goes into one
+# statement, and an unbounded one is a psql command line (and a planner
+# input) that grows with the level. A depth-2 level is thousands of
+# candidates, so the read is a handful of round trips rather than one
+# enormous statement or one statement per key.
+KEY_BATCH = 200
+
+
+def known_embeddings(env, keys) -> dict[str, list[float]]:
+    """{key: stored vector} for those of `keys` citation.work already holds.
+
+    What makes a re-crawl (and the calibrate-then-crawl pair, which asks
+    OpenAlex the same depth-1 pages twice by design) stop paying ollama for
+    vectors already in the database. A miss is simply absent from the
+    answer: the caller embeds exactly the misses.
+
+    The vectors are the corpus model's -- store.py writes what the crawl
+    embedded, and the crawl binds its embedder from pg_search.resolve_model()
+    over corpus.embedding_model, the same read pg_embed.py uses. There is no
+    per-row model column to check against, so a re-embedding of the corpus
+    under a new model must clear these vectors the way it clears
+    corpus.pages.embedding; a stale one here would score against the wrong
+    model and produce a plausible number rather than an error.
+
+    pgvector prints a vector as a JSON array of numbers, which is why the
+    parse is json.loads and not a hand-written split.
+    """
+    keys = list(dict.fromkeys(keys))
+    out: dict[str, list[float]] = {}
+    for start in range(0, len(keys), KEY_BATCH):
+        chunk = keys[start:start + KEY_BATCH]
+        listed = ", ".join(sql_literal(key) for key in chunk)
+        rows = run_sql(
+            env,
+            "SELECT key, embedding FROM citation.work "
+            f"WHERE embedding IS NOT NULL AND key IN ({listed});",
+            extra_args=["-t", "-A", "-F", "\x1f"],
+        ).stdout.strip()
+        for line in rows.split("\n"):
+            if not line:
+                continue
+            key, _, vector = line.partition("\x1f")
+            out[key] = json.loads(vector)
+    return out

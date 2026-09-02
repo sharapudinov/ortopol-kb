@@ -34,7 +34,8 @@ from __future__ import annotations
 
 from . import edges as edges_mod
 from . import gathering, journal, seeding
-from .frontier import EMBED_BATCH, candidate_text, cosine_unit
+from .frontier import cosine_unit
+from .frontier import vectors_for as frontier_vectors
 from .openalex_client import short_id
 from .registry import WorkRegistry, scoring_fields
 
@@ -46,11 +47,19 @@ HUB_CAP = 1000
 
 class Snowball:
     def __init__(self, client, embed, writer, *, tau, crawl_id, log=print,
-                 skip_keys=frozenset(), hub_cap=HUB_CAP):
+                 skip_keys=frozenset(), hub_cap=HUB_CAP, known_vectors=None):
         """`embed` is a callable list[str] -> list[list[float]]; the model is
-        bound by the caller from corpus.embedding_model, never chosen here."""
+        bound by the caller from corpus.embedding_model, never chosen here.
+
+        `known_vectors` is the read side of the same seam: a callable
+        list[str] -> {key: vector} answering which of those keys the
+        database already carries an embedding for (citations/inputs.
+        known_embeddings). Default: nothing is known, which is what a unit
+        test with no database sees.
+        """
         self.client = client
         self.embed = embed
+        self.known_vectors = known_vectors or (lambda keys: {})
         self.writer = writer
         self.tau = tau
         self.hub_cap = hub_cap
@@ -83,10 +92,22 @@ class Snowball:
         return self.seed_keys
 
     def embed_nodes(self, nodes) -> list[list[float]]:
-        vectors = self.embed([candidate_text(n.title, n.abstract) for n in nodes])
+        """Vectors for `nodes`, in order, stored on each node on the way.
+
+        The seeds are the same 56 works on every run and their vectors are
+        already in citation.work, so the stored one stands in and only a
+        genuinely new (or never-embedded) seed reaches ollama.
+        """
+        vectors = self.vectors_for(nodes)
         for node, vector in zip(nodes, vectors):
             node.embedding = vector
         return vectors
+
+    def vectors_for(self, holders) -> list[list[float]]:
+        """Vectors for `holders` (anything carrying key/title/abstract), in
+        order -- frontier.vectors_for() with this crawl's two seams bound.
+        """
+        return frontier_vectors(self.embed, self.known_vectors, holders)
 
     def write_seeds(self) -> None:
         self.writer.works([self.registry.nodes[k] for k in self.seed_keys])
@@ -130,21 +151,18 @@ class Snowball:
         and the vector of anything below tau dropped as soon as its score is
         known.
 
-        Batched because the vector is the expensive thing here: 1024 floats
-        per candidate, and a depth-2 level is thousands of candidates
-        (~4262 distinct references measured at tau=0.50) of which the filter
-        keeps a fraction. Holding every level's vectors until expand()
-        finished made peak memory a function of the CANDIDATE set; dropping
-        below-tau vectors on the spot makes it a function of the KEPT set.
-        Same batch size the embedder itself uses, so this adds no request.
+        Batched by vectors_for(), because the vector is the expensive thing
+        here: 1024 floats per candidate, and a depth-2 level is thousands of
+        candidates (~4262 distinct references measured at tau=0.50) of which
+        the filter keeps a fraction. Holding every level's vectors until
+        expand() finished made peak memory a function of the CANDIDATE set;
+        dropping below-tau vectors on the spot makes it a function of the
+        KEPT set.
         """
         scored: dict[str, tuple[float, list[float] | None]] = {}
-        for start in range(0, len(holders), EMBED_BATCH):
-            chunk = holders[start:start + EMBED_BATCH]
-            vectors = self.embed([candidate_text(h.title, h.abstract) for h in chunk])
-            for holder, vector in zip(chunk, vectors):
-                score = cosine_unit(vector, self.centroid)
-                scored[holder.key] = (score, vector if score >= self.tau else None)
+        for holder, vector in zip(holders, self.vectors_for(holders)):
+            score = cosine_unit(vector, self.centroid)
+            scored[holder.key] = (score, vector if score >= self.tau else None)
         return scored
 
     def score(self, candidates) -> list[dict]:

@@ -86,9 +86,13 @@ class PlannedEmbedder:
     def __init__(self, table):
         self.table = table
         self.calls = 0
+        # Every text ever handed to the embedder, flat. `calls` counts
+        # batches; the question "was this vector paid for" is about texts.
+        self.texts: list[str] = []
 
     def __call__(self, texts):
         self.calls += 1
+        self.texts.extend(texts)
         out = []
         for text in texts:
             for marker, vector in self.table.items():

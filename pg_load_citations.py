@@ -39,6 +39,7 @@ from citations.spike_runs import (
 from citations.inputs import (
     corpus_document_ids,
     fresh_keys,
+    known_embeddings,
     seed_matches,
     stored_zbmath_abstracts,
 )
@@ -274,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
 
     snowball = Snowball(client, make_embedder(model, dims), writer,
                         tau=args.tau if args.tau is not None else float("inf"),
-                        crawl_id=crawl_id, skip_keys=skip, hub_cap=args.hub_cap)
+                        crawl_id=crawl_id, skip_keys=skip, hub_cap=args.hub_cap,
+                        known_vectors=lambda keys: known_embeddings(env, keys))
     try:
         abstracts = zbmath_abstracts(env, documents, matches,
                                      writer=writer, crawl_id=crawl_id)

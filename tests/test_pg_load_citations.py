@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import random
 import unittest
+from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import (
@@ -21,7 +22,7 @@ from _citation_fixtures import (
     unit,
     work,
 )
-from citations import frontier, registry
+from citations import frontier, inputs, registry
 from citations.openalex_client import (
     OpenAlexClient,
     QuotaExhausted,
@@ -30,6 +31,7 @@ from citations.openalex_client import (
     short_id,
 )
 from citations.store import csv_rows, vector_literal
+from pg_common import sql_literal
 
 # Verbatim from research/citation-sources/data/openalex_works_A5066843289_p1.json
 # (W2074536792). Kept whole rather than trimmed: a truncated index would let a
@@ -132,6 +134,36 @@ class IdentityTests(unittest.TestCase):
                             kind="external-skeleton", depth=1)
         self.assertEqual(node.abstract, "Meixner")
         self.assertEqual(node.abstract_source, "openalex")
+
+
+class KnownEmbeddingsTests(unittest.TestCase):
+    """The read that makes the crawl stop re-buying vectors it already has."""
+
+    def test_parses_the_pgvector_array_and_keys_it(self):
+        stdout = "W1\x1f[1.0, 0.0, 0.5]\nW2\x1f[0.25, 1.0, 0.0]\n"
+        with mock.patch.object(inputs, "run_sql", return_value=mock.Mock(stdout=stdout)):
+            self.assertEqual(inputs.known_embeddings({}, ["W1", "W2", "W3"]),
+                             {"W1": [1.0, 0.0, 0.5], "W2": [0.25, 1.0, 0.0]})
+
+    def test_a_miss_is_simply_absent(self):
+        with mock.patch.object(inputs, "run_sql", return_value=mock.Mock(stdout="")):
+            self.assertEqual(inputs.known_embeddings({}, ["W1"]), {})
+
+    def test_keys_travel_in_batches_the_way_the_openalex_id_filter_does(self):
+        keys = [f"W{i}" for i in range(inputs.KEY_BATCH * 2 + 3)]
+        with mock.patch.object(inputs, "run_sql",
+                               return_value=mock.Mock(stdout="")) as run_mock:
+            inputs.known_embeddings({}, keys)
+        self.assertEqual(run_mock.call_count, 3)
+        listed = "".join(call[0][1] for call in run_mock.call_args_list)
+        for key in keys:
+            self.assertIn(f"'{key}'", listed)
+
+    def test_a_key_carrying_a_quote_is_quoted_by_the_shared_escaper(self):
+        with mock.patch.object(inputs, "run_sql",
+                               return_value=mock.Mock(stdout="")) as run_mock:
+            inputs.known_embeddings({}, ["W'1"])
+        self.assertIn(sql_literal("W'1"), run_mock.call_args[0][1])
 
 
 class FrontierMathTests(unittest.TestCase):

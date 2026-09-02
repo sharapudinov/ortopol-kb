@@ -54,6 +54,36 @@ def embed_texts(
     return embed_batch(model, dims, texts, ollama_url=url, batch=batch, opener=opener)
 
 
+def vectors_for(embed, known_vectors, holders) -> list[list[float]]:
+    """Vectors for `holders` (anything carrying key/title/abstract), in
+    order: read from the store where already known, embedded where not.
+
+    Two seams, both bound by the caller -- `embed` is the model-bound
+    embedder above, `known_vectors` is list[str] -> {key: vector} over what
+    the database already holds (citations/inputs.known_embeddings). One read
+    for the whole set, then only the misses reach ollama, a batch at a time.
+
+    The duplication this removes is not hypothetical: --calibrate embeds
+    every depth-1 candidate and writes no node, the crawl that follows meets
+    the same candidates, and a re-crawl without --resume meets every node it
+    ever wrote. At a depth-2 level (~4262 distinct candidates measured) that
+    is thousands of bge-m3 inferences and hundreds of round trips paid for
+    vectors already in Postgres.
+
+    Batching stays here rather than inside embed_texts(): a batch is also
+    the granularity at which the caller's memory grows, and the scoring pass
+    drops every below-tau vector as soon as its score is known.
+    """
+    known = known_vectors([h.key for h in holders])
+    missing = [h for h in holders if h.key not in known]
+    fresh: dict[str, list[float]] = {}
+    for start in range(0, len(missing), EMBED_BATCH):
+        chunk = missing[start:start + EMBED_BATCH]
+        vectors = embed([candidate_text(h.title, h.abstract) for h in chunk])
+        fresh.update({h.key: vector for h, vector in zip(chunk, vectors)})
+    return [known[h.key] if h.key in known else fresh[h.key] for h in holders]
+
+
 def l2_normalize(vector: list[float]) -> list[float]:
     norm = math.sqrt(sum(v * v for v in vector))
     if norm == 0.0:
