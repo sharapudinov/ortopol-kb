@@ -103,12 +103,14 @@ def memoizing_embedder(embed, memo: VectorMemo):
     def embed_with_memo(texts: list[str]) -> list[list[float]]:
         known: dict[str, list[float]] = {}
         missing: list[str] = []
+        pending: set[str] = set()
         for text in texts:
-            if text in known or text in missing:
+            if text in known or text in pending:
                 continue
             cached = memo.get(text)
             if cached is None:
                 missing.append(text)
+                pending.add(text)
             else:
                 known[text] = cached
         if missing:
