@@ -19,6 +19,18 @@ import smoke_stack
 
 
 class LatestArtifactTests(unittest.TestCase):
+    def test_a_missing_deploy_directory_raises_artifact_unavailable(self):
+        """The state before the first build: nothing has created deploy/ yet.
+        iterdir() raises FileNotFoundError there, and an uncaught one says
+        nothing about which artifact was wanted -- the same domain error the
+        empty directory answers with is what a caller can act on.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_dir = Path(tmp)
+            with self.assertRaises(smoke_stack.ArtifactUnavailable) as ctx:
+                smoke_stack.latest_artifact(corpus_dir, "full")
+            self.assertIn("kb-full-<YYYYMMDD>.tar.zst", str(ctx.exception))
+
     def test_empty_directory_raises_artifact_unavailable(self):
         # Not SystemExit: this is a domain error the library layer raises,
         # not a process-exit decision -- see ArtifactUnavailable's docstring.

@@ -63,14 +63,23 @@ def latest_artifact(corpus_dir: Path, profile: str | None = None) -> Path:
     package when asked for nothing in particular. Callers say which one they
     mean; smoke_test.py defaults to full.
     """
+    deploy_dir = corpus_dir / "deploy"
     candidates = []
-    for path in (corpus_dir / "deploy").iterdir():
+    # An absent deploy/ is "no artifact", not a crash: before the first
+    # build nothing has created it, and iterdir() raises there where glob()
+    # simply yielded nothing. The refusal below is the one a caller can
+    # act on -- it names what it was looking for and where.
+    try:
+        entries = list(deploy_dir.iterdir())
+    except FileNotFoundError:
+        entries = []
+    for path in entries:
         match = _ARTIFACT_NAME.match(path.name)
         if match and (profile is None or match.group("profile") == profile):
             candidates.append(path)
     if not candidates:
         wanted = f"kb-{profile or '<profile>'}-<YYYYMMDD>.tar.zst"
-        raise ArtifactUnavailable(f"no {wanted} found under {corpus_dir / 'deploy'}")
+        raise ArtifactUnavailable(f"no {wanted} found under {deploy_dir}")
     return sorted(candidates)[-1]
 
 
