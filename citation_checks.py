@@ -61,11 +61,6 @@ ORDER BY d.id;
 """
 
 
-def unplaced_documents(env: dict) -> list[str]:
-    """ISU corpus documents the crawl never recorded a decision about."""
-    return citation_reading(env).unplaced
-
-
 _NO_EVIDENCE_SQL = """
 SELECT key, kind FROM citation.work
 WHERE kind IN ('external-skeleton', 'indexed') AND evidence IS NULL
@@ -73,47 +68,20 @@ ORDER BY key;
 """
 
 
-def works_without_evidence(env: dict) -> list[tuple[str, str]]:
-    return citation_reading(env).no_evidence
-
-
 _SELF_LOOP_SQL = "SELECT DISTINCT citing FROM citation.cites WHERE citing = cited ORDER BY citing;"
 
 
-def self_loop_work_ids(env: dict) -> list[str]:
-    return citation_reading(env).self_loops
-
-
-def _projection_stale(seen) -> list[str]:
-    """The same reading `pg_graph.py project --check` makes, rendered as
-    completeness problems -- pg_graph_common.projection_diff() owns the
-    reading, this owns only the wording. The reading itself is made once by
-    citation_state() and passed in: it also carries the work/cites totals
-    the summary line needs.
-    """
-    if seen is None:
-        return ["PROJECTION STALE: citation_graph is not projected "
-                "(python3 pg_graph.py project)"]
-    return [f"PROJECTION STALE: {fault}"
-            for fault in pg_graph_common.projection_faults(seen)]
-
-
+# Titled works with no vector -- the crawl writes one the moment it scores a
+# candidate, so these are rows it never scored: written before the column
+# existed, or edited by hand since. `python3 pg_embed.py works` fills them
+# with the SAME text rule and the SAME model (pg_embedding_text,
+# corpus.embedding_model), which is what makes the top-up safe to run beside
+# the crawl at all.
 _NO_SEMANTIC_KEY_SQL = """
 SELECT key FROM citation.work
 WHERE embedding IS NULL AND btrim(coalesce(title, '')) <> ''
 ORDER BY key;
 """
-
-
-def works_without_semantic_key(env: dict) -> list[str]:
-    """Titled works with no vector -- the crawl writes one the moment it
-    scores a candidate, so these are rows it never scored: written before
-    the column existed, or edited by hand since. `python3 pg_embed.py
-    works` fills them with the SAME text rule and the SAME model
-    (pg_embedding_text, corpus.embedding_model), which is what makes the
-    top-up safe to run beside the crawl at all.
-    """
-    return citation_reading(env).no_semantic_key
 
 
 _INDEXED_WITHOUT_EXTERNAL_SQL = f"""
@@ -124,10 +92,6 @@ WHERE w.kind = 'indexed'
         WHERE d.id = w.document_id AND d.source_dir = '{EXTERNAL_SOURCE_DIR}'))
 ORDER BY w.key;
 """
-
-
-def indexed_without_external_document(env: dict) -> list[str]:
-    return citation_reading(env).indexed_without_external
 
 
 # The five problem queries and the kind census, as ONE psql script.
@@ -250,6 +214,20 @@ def _summary(read: CitationReading, seen) -> str:
     if seen is None:
         return f"citation: {sum(read.by_kind.values())} work ({kinds}), проекции нет"
     return f"citation: {seen.work_n} work ({kinds}), {seen.cites_n} cites"
+
+
+def _projection_stale(seen) -> list[str]:
+    """The same reading `pg_graph.py project --check` makes, rendered as
+    completeness problems -- pg_graph_common.projection_diff() owns the
+    reading, this owns only the wording. The reading itself is made once by
+    citation_state() and passed in: it also carries the work/cites totals
+    the summary line needs.
+    """
+    if seen is None:
+        return ["PROJECTION STALE: citation_graph is not projected "
+                "(python3 pg_graph.py project)"]
+    return [f"PROJECTION STALE: {fault}"
+            for fault in pg_graph_common.projection_faults(seen)]
 
 
 def _problems(read: CitationReading, seen) -> list[str]:

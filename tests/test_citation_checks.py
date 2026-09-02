@@ -33,12 +33,12 @@ class UnplacedDocumentsTests(unittest.TestCase):
     def test_parses_one_row_per_document(self):
         with mock.patch.object(citation_checks, "scalar",
                                 _answer(unplaced=[["2015_demr1"], ["2016_vmj598"]])):
-            self.assertEqual(citation_checks.unplaced_documents({}),
+            self.assertEqual(citation_checks.citation_reading({}).unplaced,
                              ["2015_demr1", "2016_vmj598"])
 
     def test_empty_result_is_an_empty_list(self):
         with mock.patch.object(citation_checks, "scalar", _answer()):
-            self.assertEqual(citation_checks.unplaced_documents({}), [])
+            self.assertEqual(citation_checks.citation_reading({}).unplaced, [])
 
     def test_query_checks_both_the_our_document_kind_and_the_seed_missing_step(self):
         sql = citation_checks._UNPLACED_SQL
@@ -52,7 +52,7 @@ class WorksWithoutEvidenceTests(unittest.TestCase):
         rows = [("openalex:W1", "external-skeleton"), ("openalex:W2", "indexed")]
         with mock.patch.object(citation_checks, "scalar",
                                 _answer(no_evidence=[list(r) for r in rows])):
-            self.assertEqual(citation_checks.works_without_evidence({}), rows)
+            self.assertEqual(citation_checks.citation_reading({}).no_evidence, rows)
 
     def test_query_restricts_kind_to_external_skeleton_and_indexed(self):
         sql = citation_checks._NO_EVIDENCE_SQL
@@ -64,11 +64,11 @@ class WorksWithoutEvidenceTests(unittest.TestCase):
 class SelfLoopTests(unittest.TestCase):
     def test_parses_ids(self):
         with mock.patch.object(citation_checks, "scalar", _answer(self_loops=[["42"]])):
-            self.assertEqual(citation_checks.self_loop_work_ids({}), ["42"])
+            self.assertEqual(citation_checks.citation_reading({}).self_loops, ["42"])
 
     def test_empty_when_no_self_loops(self):
         with mock.patch.object(citation_checks, "scalar", _answer()):
-            self.assertEqual(citation_checks.self_loop_work_ids({}), [])
+            self.assertEqual(citation_checks.citation_reading({}).self_loops, [])
 
 
 class OneReadingTests(unittest.TestCase):
@@ -139,14 +139,15 @@ class SemanticKeyTests(unittest.TestCase):
     def test_parses_keys(self):
         with mock.patch.object(citation_checks, "scalar",
                                 _answer(no_semantic_key=[["openalex:W1"]])):
-            self.assertEqual(citation_checks.works_without_semantic_key({}), ["openalex:W1"])
+            self.assertEqual(citation_checks.citation_reading({}).no_semantic_key,
+                             ["openalex:W1"])
 
 
 class IndexedWithoutExternalTests(unittest.TestCase):
     def test_parses_keys(self):
         with mock.patch.object(citation_checks, "scalar",
                                 _answer(indexed_without_external=[["openalex:W9"]])):
-            self.assertEqual(citation_checks.indexed_without_external_document({}),
+            self.assertEqual(citation_checks.citation_reading({}).indexed_without_external,
                              ["openalex:W9"])
 
     def test_query_restricts_to_indexed_kind_and_external_source_dir(self):
