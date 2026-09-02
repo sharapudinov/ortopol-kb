@@ -8,6 +8,7 @@ import unittest
 import _pathfix  # noqa: F401
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
+from pg_embed import TARGETS
 from pg_search import embed_query, search
 
 
@@ -81,6 +82,26 @@ class SemanticSearchTests(unittest.TestCase):
             "SELECT count(*) FROM corpus.documents d WHERE NOT EXISTS "
             "(SELECT 1 FROM corpus.pages p WHERE p.document_id = d.id);")
         self.assertEqual(empty, "0", "документ в индексе без единой страницы")
+
+
+class WorksTargetRegistrationTests(unittest.TestCase):
+    """No live database needed: TARGETS is a plain module-level dict.
+
+    Registration (EXTENDING.md § "Процедура E" step 2) is itself the check
+    that citation.work is a findable record kind, so this asserts the
+    dict entry directly rather than round-tripping through Postgres.
+    """
+
+    def test_works_target_registered_with_content_predicate(self):
+        self.assertIn("works", TARGETS, "citation.work не зарегистрирован в TARGETS")
+        table, text_expr, content_pred = TARGETS["works"]
+        self.assertEqual(table, "citation.work")
+        # A record with no title carries no semantic content — same rule as
+        # corpus.pages's "btrim(body) <> ''" — so the predicate must exclude it,
+        # not embed an empty/whitespace string.
+        self.assertIn("title", content_pred)
+        self.assertIn("title", text_expr)
+        self.assertIn("abstract", text_expr)
 
 
 if __name__ == "__main__":
