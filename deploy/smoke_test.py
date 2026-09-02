@@ -190,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
                     ollama_url = f"http://127.0.0.1:{OLLAMA_PORT}/api/embed"
                     results.append(("число документов/страниц = манифест", *checks.check_counts(penv, manifest)))
                     results.append(("fulltext находит документы", *checks.check_fulltext(penv, manifest)))
+                    results.append(("citation-граф спроецирован",
+                                     *checks.check_citation_projection(penv, manifest)))
                     if ollama_healthy:
                         results.append(("vector находит релевантное без совпадения слов",
                                          *checks.check_vector(penv, manifest, ollama_url)))

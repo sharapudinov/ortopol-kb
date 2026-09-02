@@ -86,6 +86,19 @@ class Key:
     FULL_CONTENT_DISTRIBUTIONS = "full_content_distributions"
     SHIPPED_DISTRIBUTIONS = "shipped_distributions"
 
+    # citation{} -- describes the PACKAGE, produced by
+    # manifest_probe.gather_manifest() from citation_profile.py's reading of
+    # citation.public_policy, verified statically by
+    # citation_content_checks.py. Counts are about what THIS artifact
+    # carries, not the live database (MANIFEST_DESCRIBES_ARTIFACT) -- zero
+    # for CitationMode.NONE, whole-corpus otherwise (full-skeleton and
+    # topology-only ship every row, only some columns differ).
+    CITATION = "citation"
+    CITATION_MODE = "mode"
+    WORK_COUNT = "work_count"
+    CITES_COUNT = "cites_count"
+    WORK_BY_KIND = "work_by_kind"
+
 
 class Profile:
     """The two artifact profiles, named here rather than in legal_profile.py
@@ -126,6 +139,26 @@ class Distribution:
     SHIPPED = (FULL_TEXT, METADATA_ONLY, INTERNAL)
 
 
+class CitationMode:
+    """citation.public_policy.mode's vocabulary (pg_schema_citation.sql's own
+    CHECK carries the same three values) -- the DATA that decides whether/how
+    much of the citation schema a public artifact ships. Its meaning (and the
+    refusal to guess about anything outside ALL) lives in
+    deploy/citation_profile.py; deploy/citation_dump.py applies it to the
+    dump, deploy/citation_content_checks.py verifies it statically against
+    the dump's own bytes.
+    """
+
+    FULL_SKELETON = "full-skeleton"
+    TOPOLOGY_ONLY = "topology-only"
+    NONE = "none"
+    ALL = (FULL_SKELETON, TOPOLOGY_ONLY, NONE)
+    # Modes whose dump carries the citation schema at all.
+    SHIPPED = (FULL_SKELETON, TOPOLOGY_ONLY)
+    # Modes whose citation.work/cites rows carry abstract/evidence.
+    FULL_CONTENT = (FULL_SKELETON,)
+
+
 # 4: added profile/schemas/legal to the manifest (two-profile packager). A
 # profile-unaware artifact cannot be verified by profile_checks.py at all,
 # so an older manifest must fail the version gate rather than be read with
@@ -136,7 +169,13 @@ class Distribution:
 # and only this field says which of those lists the package actually
 # contains. Read with a default it would silently turn a deliberate
 # exclusion into an unexplained gap, so a v4 manifest fails the gate.
-MANIFEST_SCHEMA_VERSION = 5
+# 6: added the citation{} block and, correspondingly, "citation"
+# to schemas{} whenever a build ships that schema. A v5 reader has no key to
+# learn the citation-graph policy from at all -- reading with a default would
+# either hide a mode the artifact actually applied or invent counts the
+# package does not carry, so a v5 manifest fails the gate rather than being
+# read as "citation not shipped".
+MANIFEST_SCHEMA_VERSION = 6
 
 # A paraphrase of "an algebraic polynomial bounded from its values on a
 # uniform grid" (the recurring theme of 1997_sm280 and related papers) with

@@ -60,7 +60,9 @@ from deploy_pathfix import ensure_corpus_importable
 
 ensure_corpus_importable()
 
+import citation_dump  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
+from citation_profile import require_citation_mode  # noqa: E402
 from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL, require_classified  # noqa: E402
 from pg_common import run_sql  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
@@ -157,7 +159,7 @@ def _dump_ddl(env: dict, dst: IO[bytes]) -> None:
     schema_args = [f"--schema={name}" for name in PUBLIC_SCHEMAS]
     stream_stdout(
         ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--no-tablespaces",
-         *schema_args],
+         *schema_args, "--exclude-schema=citation_graph", "--exclude-schema=ag_catalog"],
         env, dst,
     )
 
@@ -175,19 +177,28 @@ PREAMBLE = (
     "-- manifest.json's `legal` block for the classification this build used\n"
     "-- (documents_by_distribution names every document, shipped_distributions\n"
     "-- says which of those lists this file carries) and deploy/public_dump.py\n"
-    "-- for how it was applied.\n"
+    "-- for how it was applied. Schema `citation`, when present, is cut per\n"
+    "-- manifest.json's `citation` block instead (deploy/citation_profile.py /\n"
+    "-- deploy/citation_dump.py) -- a separate policy, decided once for the\n"
+    "-- whole crawl record rather than per document.\n"
     "--\n\n"
 )
 
 
-def dump_public(env: dict, gz_path: Path) -> None:
+def dump_public(env: dict, gz_path: Path, citation_mode_override: str | None = None) -> None:
     """Writes the filtered dump to gz_path, gzip-streamed in one pass.
 
     Refuses to write anything at all while any document lacks a usable
-    classification (legal_profile.require_classified): an unclassified
-    document must stop the build, not be quietly assigned a default.
+    classification (legal_profile.require_classified), or while the
+    citation schema's public-artifact policy is undecided
+    (citation_profile.require_citation_mode): either must stop the build,
+    not be quietly assigned a default. citation_mode_override is
+    build_package.py's --policy-override escape hatch (TEST ONLY -- see its
+    own --help): when given, it is used as-is and the database is never
+    asked.
     """
     require_classified(env)
+    citation_mode = citation_mode_override or require_citation_mode(env)
     documents_columns = table_columns(env, "documents")
     pages_columns = table_columns(env, "pages", exclude=PAGES_EXCLUDED)
     model_columns = table_columns(env, "embedding_model")
@@ -200,6 +211,8 @@ def dump_public(env: dict, gz_path: Path) -> None:
             write_copy_block(env, dst, "documents", documents_columns)
             write_copy_block(env, dst, "pages", pages_columns)
             write_copy_block(env, dst, "embedding_model", model_columns)
+            dst.write(b"\n")
+            citation_dump.dump_citation(env, dst, citation_mode)
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc

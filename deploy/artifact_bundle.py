@@ -49,14 +49,26 @@ DEPLOY_FILES = [
     # corpus, which is the builder's job, not the recipient's.
     "profile_checks.py",
     "dump_scan.py",
+    # Static verification of the citation-schema slice of the dump (task
+    # profile_checks.py's run_checks() calls into it.
+    "citation_content_checks.py",
+    # Rebuilds citation_graph after the dump restores (see its own comment
+    # on why LOAD 'age' cannot be a bare statement inside the DO block).
+    "init/02_project_graph.sql",
 ]
 CORPUS_LIB_FILES = [
     "pg_common.py",
     "pg_search.py",
+    # smoke_checks.check_citation_projection reuses graph_exists/graph_counts/
+    # compare_counts rather than reimplementing the |V|=|work|/|E|=|cites|
+    # comparison a second time (pg_graph.py's own module docstring: this is
+    # the thin CLI layer other consumers, in-repo or bundled, import for
+    # graph_sql()'s AGE-activation contract).
+    "pg_graph.py",
 ]
 
 
-FULL_SCHEMAS = ("corpus", "measurements")
+FULL_SCHEMAS = ("corpus", "measurements", "citation")
 
 # gzip.open()'s default compresslevel is 9 (max), not the level 6 the gzip
 # CLI itself defaults to. Level 9 buys ~1-2% smaller output for 2-4x slower
@@ -85,7 +97,14 @@ def dump_schemas(env: dict, gz_path: Path) -> None:
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             stream_stdout(
-                ["pg_dump", "--no-owner", "--no-privileges", "--no-tablespaces", *schema_args],
+                ["pg_dump", "--no-owner", "--no-privileges", "--no-tablespaces", *schema_args,
+                 # Defensive, on top of --schema already being a whitelist:
+                 # citation_graph (AGE's own schema for graph 'citation_graph')
+                 # must never be dumped -- apache/age issue #2503, restoring a
+                 # dumped ag_graph.graphid breaks Cypher against it (see
+                 # pg_schema_citation.sql's header comment). ag_catalog is
+                 # excluded for the same reason, belt-and-braces.
+                 "--exclude-schema=citation_graph", "--exclude-schema=ag_catalog"],
                 env, dst,
             )
     except CommandFailed as exc:

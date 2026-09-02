@@ -50,6 +50,13 @@ def _copy_block(table, columns, rows):
     return "\n".join(lines)
 
 
+def _citation_copy_block(table, columns, rows):
+    lines = [f"COPY citation.{table} ({', '.join(columns)}) FROM stdin;"]
+    lines += ["\t".join(row) for row in rows]
+    lines += ["\\.", ""]
+    return "\n".join(lines)
+
+
 class ArtifactBuilder:
     """Writes a manifest + gzipped dump pair into a directory, defaulting to
     a well-formed public artifact: one full-text document with content, one
@@ -81,6 +88,10 @@ class ArtifactBuilder:
         self.shipped = ["full-text", "metadata-only", "internal"]
         self.unclassified = 0
         self.extra_sql = ""
+        # None = no citation{} key at all (an older manifest / a build that
+        # never touched the citation schema) -- the two content checks must
+        # then be a trivial pass, which is what most tests here exercise.
+        self.citation: dict | None = None
 
     def write(self) -> Path:
         dump_text = (
@@ -90,6 +101,11 @@ class ArtifactBuilder:
             + _copy_block("documents", DOCUMENT_COLUMNS, self.documents)
             + _copy_block("pages", self.page_columns, self.pages)
         )
+        if self.citation is not None and self.citation["mode"] != "none":
+            dump_text += _citation_copy_block(
+                "work", self.citation.get("work_columns", []), self.citation.get("work", []))
+            dump_text += _citation_copy_block(
+                "cites", self.citation.get("cites_columns", []), self.citation.get("cites", []))
         dump_path = self.directory / "01_dump.sql.gz"
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
@@ -110,6 +126,13 @@ class ArtifactBuilder:
             "dump": {"file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"},
             "legal": legal,
         }
+        if self.citation is not None:
+            manifest["citation"] = {
+                "mode": self.citation["mode"],
+                "work_count": self.citation["work_count"],
+                "cites_count": self.citation["cites_count"],
+                "work_by_kind": self.citation.get("work_by_kind", {}),
+            }
         (self.directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False))
         return self.directory
 
@@ -291,6 +314,83 @@ class PublicProfileChecksTests(unittest.TestCase):
         ok, detail = results["правовая классификация полна"]
         self.assertFalse(ok)
         self.assertIn("shipped_distributions", detail)
+
+
+class CitationContentChecksIntegrationTests(unittest.TestCase):
+    """The two citation checks (citation_content_checks.py) as run through
+    profile_checks.run_checks() end to end -- unit coverage of the
+    predicates themselves lives in test_citation_content_checks.py.
+    """
+
+    WORK_COLUMNS = ["id", "key", "title", "abstract", "evidence"]
+    CITES_COLUMNS = ["citing", "cited", "evidence"]
+
+    def _builder_with_citation(self, tmp, mode, work_rows, cites_rows):
+        builder = ArtifactBuilder(Path(tmp))
+        builder.citation = {
+            "mode": mode, "work_count": len(work_rows), "cites_count": len(cites_rows),
+            "work_columns": self.WORK_COLUMNS, "cites_columns": self.CITES_COLUMNS,
+            "work": work_rows, "cites": cites_rows,
+        }
+        return builder
+
+    def test_no_citation_block_is_a_trivial_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = _results(ArtifactBuilder(Path(tmp)))
+        self.assertTrue(results["citation: схема/счётчики совпадают с манифестом"][0])
+        self.assertTrue(results["citation topology-only: аннотации и evidence вырезаны"][0])
+
+    def test_full_skeleton_with_matching_counts_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self._builder_with_citation(
+                tmp, "full-skeleton",
+                work_rows=[["1", "k1", "T1", "an abstract", '{"src": "openalex"}']],
+                cites_rows=[],
+            )
+            results = _results(builder)
+        ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
+        self.assertTrue(ok, detail)
+        ok, detail = results["citation topology-only: аннотации и evidence вырезаны"]
+        self.assertTrue(ok, detail)  # not topology-only -- nothing to strip
+
+    def test_topology_only_with_a_leaked_abstract_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self._builder_with_citation(
+                tmp, "topology-only",
+                work_rows=[["1", "k1", "T1", "an abstract", "\\N"]],
+                cites_rows=[],
+            )
+            results = _results(builder)
+        ok, detail = results["citation topology-only: аннотации и evidence вырезаны"]
+        self.assertFalse(ok)
+        self.assertIn("abstract", detail)
+
+    def test_topology_only_properly_stripped_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self._builder_with_citation(
+                tmp, "topology-only",
+                work_rows=[["1", "k1", "T1", "\\N", "\\N"]],
+                cites_rows=[["1", "2", "\\N"]],
+            )
+            results = _results(builder)
+        ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
+        self.assertTrue(ok, detail)
+        ok, detail = results["citation topology-only: аннотации и evidence вырезаны"]
+        self.assertTrue(ok, detail)
+
+    def test_none_mode_with_a_leaked_table_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.citation = {"mode": "none", "work_count": 0, "cites_count": 0}
+            # Leak a citation.work COPY block directly, bypassing write()'s
+            # own citation-writing path (which "none" never triggers) --
+            # simulates a packager bug that shipped the table anyway.
+            builder.extra_sql = _citation_copy_block(
+                "work", self.WORK_COLUMNS, [["1", "k1", "T1", "\\N", "\\N"]])
+            results = _results(builder)
+        ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
+        self.assertFalse(ok)
+        self.assertIn("citation.work", detail)
 
 
 class FullProfileChecksTests(unittest.TestCase):

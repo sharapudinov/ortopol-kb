@@ -22,12 +22,14 @@ from deploy_pathfix import ensure_corpus_importable
 
 ensure_corpus_importable()
 
+import citation_profile  # noqa: E402
 import legal_profile  # noqa: E402
 import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
 from manifest_contract import (  # noqa: E402
     MANIFEST_SCHEMA_VERSION,
     VECTOR_PROBE_QUERY,
+    CitationMode,
     Key,
     Profile,
 )
@@ -58,6 +60,39 @@ PROFILE_SCHEMAS = {
 
 def blob_probe_doc(profile: str) -> str:
     return PUBLIC_BLOB_PROBE_DOC if profile == Profile.PUBLIC else BLOB_PROBE_DOC
+
+
+def _citation_mode(env: dict, profile: str, citation_mode_override: str | None) -> str:
+    """The citation-graph mode THIS build applies.
+
+    Full always carries the whole schema (like every other table it dumps,
+    see build_package.py's own docstring: full never applies a legal/policy
+    cut) -- unless the database genuinely has no citation schema at all, in
+    which case there is nothing to carry, for either profile. Public defers
+    to citation_profile.require_citation_mode (or the --policy-override
+    escape hatch, TEST ONLY -- see build_package.py's --help), which raises
+    CitationUnclassified when the owner has not decided.
+    """
+    if not citation_profile.citation_schema_exists(env):
+        return CitationMode.NONE
+    if profile != Profile.PUBLIC:
+        return CitationMode.FULL_SKELETON
+    return citation_mode_override or citation_profile.require_citation_mode(env)
+
+
+def _citation_block(env: dict, mode: str) -> dict:
+    if mode == CitationMode.NONE:
+        return {Key.CITATION_MODE: mode, Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {}}
+    work_n, cites_n, by_kind = citation_profile.citation_counts(env)
+    return {Key.CITATION_MODE: mode, Key.WORK_COUNT: work_n, Key.CITES_COUNT: cites_n,
+            Key.WORK_BY_KIND: by_kind}
+
+
+def declared_schemas(profile: str, citation_mode: str) -> list[str]:
+    schemas = list(PROFILE_SCHEMAS[profile])
+    if citation_mode != CitationMode.NONE:
+        schemas = schemas + ["citation"]
+    return schemas
 
 # One round trip for the six independent scalar reads gather_manifest()
 # needs before the (necessarily sequential) vector probe: each is a scalar
@@ -129,16 +164,22 @@ def _stemmed_token_overlap(env: dict, query: str, document_id: str, page_number:
     return sorted(raw.split("\x1f")) if raw else []
 
 
-def gather_manifest(env: dict, ollama_url: str, profile: str = Profile.FULL) -> dict:
+def gather_manifest(
+    env: dict, ollama_url: str, profile: str = Profile.FULL,
+    citation_mode_override: str | None = None,
+) -> dict:
     if profile not in Profile.ALL:
         raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
     public = profile == Profile.PUBLIC
     # The public build refuses to describe (let alone package) a corpus with
     # an unclassified document -- the same gate public_dump.py applies before
     # writing any data, checked here too so the build fails on the FIRST
-    # database read rather than after the manifest work.
+    # database read rather than after the manifest work. The citation-schema
+    # policy gate (citation_profile.require_citation_mode, inside
+    # _citation_mode) follows right after, for the same reason.
     if public:
         legal_profile.require_classified(env)
+    citation_mode = _citation_mode(env, profile, citation_mode_override)
     content_predicate = legal_profile.FULL_CONTENT_SQL if public else "TRUE"
     shipped_predicate = legal_profile.SHIPPED_SQL if public else "TRUE"
     probe_doc = blob_probe_doc(profile)
@@ -223,7 +264,8 @@ def gather_manifest(env: dict, ollama_url: str, profile: str = Profile.FULL) -> 
     return {
         Key.SCHEMA_VERSION: MANIFEST_SCHEMA_VERSION,
         Key.PROFILE: profile,
-        Key.SCHEMAS: PROFILE_SCHEMAS[profile],
+        Key.SCHEMAS: declared_schemas(profile, citation_mode),
+        Key.CITATION: _citation_block(env, citation_mode),
         Key.CREATED_AT: datetime.now(timezone.utc).isoformat(),
         Key.DOCUMENTS_COUNT: documents_count,
         Key.PAGES_COUNT: pages_count,

@@ -19,8 +19,13 @@ from bundled_files_check import (  # noqa: E402,F401 -- re-exported for smoke_te
     OPERATIONAL_ALLOWLIST,
     check_bundled_files,
 )
-from manifest_contract import MANIFEST_SCHEMA_VERSION, Key  # noqa: E402,F401 -- MANIFEST_SCHEMA_VERSION re-exported, see smoke_test.py's checks.MANIFEST_SCHEMA_VERSION
+from manifest_contract import (  # noqa: E402,F401 -- MANIFEST_SCHEMA_VERSION re-exported, see smoke_test.py's checks.MANIFEST_SCHEMA_VERSION
+    MANIFEST_SCHEMA_VERSION,
+    CitationMode,
+    Key,
+)
 from ollama_registry import served_model_digest  # noqa: E402
+import pg_graph  # noqa: E402
 from pg_common import scalar, scalar_row  # noqa: E402
 from vector_probe_check import (  # noqa: E402,F401 -- re-exported for smoke_test.py's `checks.*`
     VECTOR_PROBE_DISTANCE_TOLERANCE,
@@ -140,6 +145,33 @@ def check_measurements_run(env: dict, manifest: dict) -> tuple[bool, str]:
     want = manifest[Key.MEASUREMENTS_RUN_COUNT]
     ok = count == want and incomplete == 0
     return ok, f"rows={count} (manifest {want}), missing required fields={incomplete}"
+
+
+def check_citation_projection(env: dict, manifest: dict) -> tuple[bool | None, str]:
+    """AGE is loaded and citation_graph is a faithful projection of the
+    restored citation.work/cites -- confirms deploy/init/02_project_graph.sql
+    actually ran, the way check_measurements_run confirms 01_dump.sql.gz did.
+
+    SKIP (None), not FAIL, when the artifact's manifest declares no shipped
+    citation mode (an older artifact predating the citation schema, or one built under
+    CitationMode.NONE): there is no graph to have projected, and querying
+    ag_catalog/citation_graph against a database that never created either
+    would be a psql error that says nothing about the package's health --
+    same convention as check_measurements_run for the public profile.
+    """
+    citation = manifest.get(Key.CITATION, {})
+    mode = citation.get(Key.CITATION_MODE)
+    if mode is None or mode == CitationMode.NONE:
+        return None, f"citation mode={mode!r} -- профиль не несёт граф, проверять нечего"
+    if not pg_graph.graph_exists(env):
+        return False, "citation_graph не спроецирован после restore (init/02_project_graph.sql?)"
+    want_work = citation.get(Key.WORK_COUNT, 0)
+    want_cites = citation.get(Key.CITES_COUNT, 0)
+    vertex_n, edge_n = pg_graph.graph_counts(env)
+    diff_v, diff_e = pg_graph.compare_counts(want_work, want_cites, vertex_n, edge_n)
+    ok = diff_v == 0 and diff_e == 0
+    return ok, (f"vertices={vertex_n} (work {want_work}, diff {diff_v}), "
+                f"edges={edge_n} (cites {want_cites}, diff {diff_e})")
 
 
 # blob_sha256/check_blob_roundtrip/check_blob_corruption_detected now live in

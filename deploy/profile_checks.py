@@ -45,6 +45,7 @@ import json
 import sys
 from pathlib import Path
 
+import citation_content_checks
 import dump_scan
 from manifest_contract import Key, Profile
 
@@ -182,10 +183,14 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dict, dict]:
         if row.get(BODY_COLUMN, "") not in ("", dump_scan.NULL_FIELD):
             with_body.add(row[DOCUMENT_ID_COLUMN])
 
-    scans = dump_scan.scan(dump_path, {DOCUMENTS_TABLE: on_document, PAGES_TABLE: on_page})
+    row_visitors = {DOCUMENTS_TABLE: on_document, PAGES_TABLE: on_page}
+    citation_leaked = citation_content_checks.attach_visitors(row_visitors)
+
+    scans = dump_scan.scan(dump_path, row_visitors)
     facts = {
         "documents": documents, "page_documents": page_documents,
         "with_blob": with_blob, "with_body": with_body, "pages": pages_seen,
+        "citation_leaked": citation_leaked,
     }
     return scans, facts
 
@@ -247,6 +252,10 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         ("full-text: блоб и текст на месте", *check_full_content_intact(manifest, facts)),
         ("векторы у всех страниц", *check_pages_embedded(manifest, scans, facts)),
         ("нет generated-колонок в дампе", *check_no_generated_columns(scans)),
+        ("citation: схема/счётчики совпадают с манифестом",
+         *citation_content_checks.check_citation_schema_matches_mode(manifest, scans)),
+        ("citation topology-only: аннотации и evidence вырезаны",
+         *citation_content_checks.check_topology_only_strips_abstract_and_evidence(manifest, facts)),
     ]
 
 

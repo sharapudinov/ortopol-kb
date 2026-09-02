@@ -68,16 +68,17 @@ from paths import default_corpus_dir  # noqa: E402
 from pg_common import PostgresUnavailable, load_pgenv  # noqa: E402
 
 from artifact_bundle import bundle_runtime_files, dump_schemas, package  # noqa: E402
+from citation_profile import CitationUnclassified  # noqa: E402
 from dump_integrity import sha256_file  # noqa: E402
 from legal_profile import Unclassified  # noqa: E402
-from manifest_contract import Key, Profile  # noqa: E402
+from manifest_contract import CitationMode, Key, Profile  # noqa: E402
 from manifest_probe import gather_manifest  # noqa: E402
 from public_dump import dump_public  # noqa: E402
 
 OLLAMA_URL = "http://127.0.0.1:5471/api/embed"
 
 
-def write_dump(profile: str, env: dict, gz_path: Path) -> None:
+def write_dump(profile: str, env: dict, gz_path: Path, citation_mode_override: str | None = None) -> None:
     """Dispatches to the profile's dump writer, both (env, gz_path) -> None.
 
     Here rather than inside artifact_bundle.dump_schemas so the two writers
@@ -87,9 +88,12 @@ def write_dump(profile: str, env: dict, gz_path: Path) -> None:
     a dict of function objects built at import time -- the dict captured the
     originals, so it silently ignored any later rebinding of these names
     (which is exactly how the tests substitute a stub for the real pg_dump).
+    citation_mode_override is meaningless for the full writer (dump_schemas
+    always carries the whole citation schema, like every other table) and is
+    passed only to dump_public.
     """
     if profile == Profile.PUBLIC:
-        dump_public(env, gz_path)
+        dump_public(env, gz_path, citation_mode_override=citation_mode_override)
     else:
         dump_schemas(env, gz_path)
 
@@ -108,7 +112,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Ollama /api/embed endpoint for the vector probe; override to build "
              "from a host other than the developer's local one",
     )
+    parser.add_argument(
+        "--policy-override", choices=CitationMode.ALL, default=None, dest="policy_override",
+        help="TEST ONLY: force the citation schema's public-artifact mode instead of "
+             "reading citation.public_policy. This is NEVER the owner's decision -- it "
+             "exists so the packaging/smoke pipeline can be exercised before that decision "
+             "is made. Valid only with --profile public; the output artifact is named "
+             "kb-public-override-<date>, never kb-public-<date>, so an override build can "
+             "never be mistaken for one the owner classified.",
+    )
     args = parser.parse_args(argv)
+
+    if args.policy_override and args.profile != Profile.PUBLIC:
+        print("--policy-override only applies to --profile public", file=sys.stderr)
+        return 2
 
     corpus_dir = default_corpus_dir()
     pgenv_path = args.pgenv or (corpus_dir / ".pgenv")
@@ -121,18 +138,36 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Postgres unavailable: {exc}", file=sys.stderr)
         return 1
 
+    profile_tag = args.profile
+    if args.policy_override:
+        profile_tag = f"{args.profile}-override"
+        print(
+            f"ВНИМАНИЕ: --policy-override={args.policy_override} -- override, not the "
+            f"owner's decision; артефакт назван kb-{profile_tag}-..., не kb-public-...",
+            file=sys.stderr,
+        )
+
     print(f"профиль {args.profile}; собираю манифест против живой базы...")
     try:
-        manifest = gather_manifest(env, args.ollama_url, profile=args.profile)
+        manifest = gather_manifest(env, args.ollama_url, profile=args.profile,
+                                    citation_mode_override=args.policy_override)
     except Unclassified as exc:
         # Not a crash: a document with no legal classification is a decision
         # the owner has to make, and the packager must never make it by
         # default. Reported like any other refusal to build.
         print(f"правовая классификация неполна: {exc}", file=sys.stderr)
         return 1
+    except CitationUnclassified as exc:
+        # Same refusal, for the citation schema as a whole (see
+        # citation_profile.py): the crawl's own record names third-party
+        # titles/abstracts, and shipping or stripping it by default would
+        # both be the packager deciding a question only the owner can answer.
+        print(f"схема citation не классифицирована для публичного артефакта: {exc}",
+              file=sys.stderr)
+        return 1
 
     date_tag = datetime.now(timezone.utc).strftime("%Y%m%d")
-    out_path = out_dir / f"kb-{args.profile}-{date_tag}.tar.zst"
+    out_path = out_dir / f"kb-{profile_tag}-{date_tag}.tar.zst"
 
     with tempfile.TemporaryDirectory(prefix="kb-build-") as workdir_str:
         workdir = Path(workdir_str)
@@ -140,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest[Key.FILES] = bundle_runtime_files(workdir)
         print(f"дамп схем {', '.join(manifest[Key.SCHEMAS])} (профиль {args.profile})...")
         dump_gz = workdir / "01_dump.sql.gz"
-        write_dump(args.profile, env, dump_gz)
+        write_dump(args.profile, env, dump_gz, citation_mode_override=args.policy_override)
         manifest[Key.DUMP] = {
             Key.FILE: dump_gz.name,
             Key.BYTES: dump_gz.stat().st_size,

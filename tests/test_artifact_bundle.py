@@ -64,6 +64,22 @@ class FakeProc:
 
 
 class DumpSchemasTests(unittest.TestCase):
+    def test_full_schemas_include_citation(self):
+        # The full profile is the owner's own backup -- it carries the whole
+        # citation schema unconditionally, the same as corpus/measurements.
+        self.assertEqual(artifact_bundle.FULL_SCHEMAS, ("corpus", "measurements", "citation"))
+
+    def test_dumps_never_carry_age_catalog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gz_path = Path(tmp) / "dump.sql.gz"
+            with mock.patch.object(artifact_bundle.subprocess, "Popen",
+                                    return_value=FakeProc(b"-- fake\n")) as popen_mock:
+                artifact_bundle.dump_schemas({}, gz_path)
+            (argv,), _kwargs = popen_mock.call_args
+        self.assertIn("--exclude-schema=citation_graph", argv)
+        self.assertIn("--exclude-schema=ag_catalog", argv)
+        self.assertIn("--schema=citation", argv)
+
     def test_streams_pg_dump_stdout_through_gzip(self):
         payload = b"-- fake pg_dump output\n" * 1000
         with tempfile.TemporaryDirectory() as tmp:

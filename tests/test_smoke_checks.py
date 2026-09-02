@@ -59,6 +59,49 @@ class ManifestComparisonTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("missing required fields=2", detail)
 
+
+class CitationProjectionTests(unittest.TestCase):
+    """check_citation_projection: SKIP for an artifact that ships no
+    citation mode (older artifact, or CitationMode.NONE), otherwise the same
+    |V|=work/|E|=cites comparison pg_graph.py's own `project --check` makes.
+    """
+
+    def test_skips_when_manifest_has_no_citation_block(self):
+        ok, detail = smoke_checks.check_citation_projection({}, {})
+        self.assertIsNone(ok)
+        self.assertIn("None", detail)
+
+    def test_skips_under_none_mode(self):
+        manifest = {"citation": {"mode": "none", "work_count": 0, "cites_count": 0}}
+        with mock.patch.object(smoke_checks.pg_graph, "graph_exists") as exists_mock:
+            ok, _detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertIsNone(ok)
+        exists_mock.assert_not_called()
+
+    def test_fails_when_graph_was_never_projected(self):
+        manifest = {"citation": {"mode": "full-skeleton", "work_count": 5, "cites_count": 3}}
+        with mock.patch.object(smoke_checks.pg_graph, "graph_exists", return_value=False):
+            ok, detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertFalse(ok)
+        self.assertIn("02_project_graph.sql", detail)
+
+    def test_matching_counts_pass(self):
+        manifest = {"citation": {"mode": "topology-only", "work_count": 438, "cites_count": 2425}}
+        with mock.patch.object(smoke_checks.pg_graph, "graph_exists", return_value=True), \
+             mock.patch.object(smoke_checks.pg_graph, "graph_counts", return_value=(438, 2425)):
+            ok, detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertTrue(ok, detail)
+
+    def test_mismatched_counts_fail(self):
+        manifest = {"citation": {"mode": "full-skeleton", "work_count": 438, "cites_count": 2425}}
+        with mock.patch.object(smoke_checks.pg_graph, "graph_exists", return_value=True), \
+             mock.patch.object(smoke_checks.pg_graph, "graph_counts", return_value=(437, 2425)):
+            ok, detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertFalse(ok)
+        self.assertIn("diff -1", detail)
+
+
+class CheckEmbeddingModelDimsTests(unittest.TestCase):
     # check_embedding_model_dims folded its two round trips (declared
     # model/dims, then the corpus.pages aggregate) into one -- see
     # smoke_checks._EMBEDDING_MODEL_DIMS_SQL -- so every case below mocks a

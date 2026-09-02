@@ -70,5 +70,36 @@ class PgImageWithAgeAndPgvectorTests(unittest.TestCase):
         self.assertIn("pg/README.md", artifact_bundle.DEPLOY_FILES)
 
 
+class ProjectGraphInitScriptTests(unittest.TestCase):
+    """init/02_project_graph.sql rebuilds citation_graph after the dump
+    restores -- test_init_projects_graph_only_when_schema_present.
+    """
+
+    def test_init_projects_graph_only_when_schema_present(self):
+        text = (_DEPLOY_DIR / "init" / "02_project_graph.sql").read_text()
+        # Guarded, not unconditional: an artifact built under
+        # CitationMode.NONE (or one predating the citation schema) has no citation
+        # schema at all, and this script is bundled into every artifact
+        # regardless of mode.
+        self.assertIn("to_regclass('citation.work') IS NOT NULL", text)
+        # LOAD 'age' cannot be a bare statement inside a DO block (PL/pgSQL
+        # has no grammar for the utility command) -- it must go through
+        # EXECUTE, confirmed against the live image (see the script's own
+        # comment).
+        self.assertIn("EXECUTE 'LOAD ''age'''", text)
+        self.assertIn("citation.project_graph()", text)
+
+    def test_compose_mounts_the_init_script_as_the_third_initdb_step(self):
+        text = (_DEPLOY_DIR / "docker-compose.yml").read_text()
+        self.assertIn(
+            "./init/02_project_graph.sql:/docker-entrypoint-initdb.d/02_project_graph.sql:ro",
+            text,
+        )
+
+    def test_bundle_ships_the_init_script(self):
+        import artifact_bundle
+        self.assertIn("init/02_project_graph.sql", artifact_bundle.DEPLOY_FILES)
+
+
 if __name__ == "__main__":
     unittest.main()

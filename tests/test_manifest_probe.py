@@ -64,11 +64,31 @@ _LEGAL_SUMMARY = {
 }
 
 
+def _patch_citation_defaults(test_case: unittest.TestCase) -> None:
+    """Mocks citation_profile so gather_manifest() never touches the
+    database for its citation-graph half. Defaults keep the citation schema
+    "present but nothing shipped" (mode NONE), which reproduces the OLD
+    schemas{}/manifest shape for every test that isn't specifically about
+    citation -- those override the relevant patch in their own body.
+    """
+    for target, value in (
+        ("citation_schema_exists", True),
+        ("require_citation_mode", "none"),
+        ("citation_counts", (0, 0, {})),
+    ):
+        patcher = mock.patch.object(manifest_probe.citation_profile, target, return_value=value)
+        patcher.start()
+        test_case.addCleanup(patcher.stop)
+
+
 class GatherManifestErrorPathsTests(unittest.TestCase):
     """gather_manifest()'s guard branches -- previously untested, so a
     regression in any of them (e.g. the overlap check silently passing a
     lexically-overlapping pair) would have gone undetected.
     """
+
+    def setUp(self):
+        _patch_citation_defaults(self)
 
     def _patch_prelude(self, row=None, digest=("sha256:abc", 123)):
         row = list(row if row is not None else _GOOD_ROW)
@@ -152,6 +172,9 @@ class ProfileAwarenessTests(unittest.TestCase):
 
     NEAREST = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
 
+    def setUp(self):
+        _patch_citation_defaults(self)
+
     def _gather(self, profile):
         with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)) as row_mock, \
              mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
@@ -168,7 +191,12 @@ class ProfileAwarenessTests(unittest.TestCase):
     def test_full_profile_is_the_default_and_keeps_both_schemas(self):
         manifest, row_mock, classified_mock = self._gather("full")
         self.assertEqual(manifest["profile"], "full")
-        self.assertEqual(manifest["schemas"], ["corpus", "measurements"])
+        # citation appended: full always ships the whole citation schema
+        # (like every other table) whenever the database has one at all --
+        # see _patch_citation_defaults, which keeps citation_schema_exists
+        # True for this class.
+        self.assertEqual(manifest["schemas"], ["corpus", "measurements", "citation"])
+        self.assertEqual(manifest["citation"]["mode"], "full-skeleton")
         self.assertEqual(manifest["measurements_run_count"], int(_GOOD_ROW[4]))
         self.assertEqual(manifest["blob_probe"]["document_id"], manifest_probe.BLOB_PROBE_DOC)
         # No legal gate on the full profile: it never leaves the owner's
@@ -246,6 +274,75 @@ class ProfileAwarenessTests(unittest.TestCase):
     def test_legal_block_is_carried_into_the_manifest(self):
         manifest, _row_mock, _classified = self._gather("public")
         self.assertEqual(manifest["legal"], _LEGAL_SUMMARY)
+
+
+class CitationManifestTests(unittest.TestCase):
+    """The citation{} block describes the PACKAGE, never the
+    live database -- MANIFEST_DESCRIBES_ARTIFACT applied to the citation
+    schema. test_manifest_counts_describe_package.
+    """
+
+    NEAREST = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
+
+    def _gather(self, profile="public", citation_mode_override=None):
+        with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)), \
+             mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
+             mock.patch.object(manifest_probe.legal_profile, "legal_summary",
+                                return_value=dict(_LEGAL_SUMMARY)), \
+             mock.patch.object(manifest_probe.legal_profile, "require_classified"), \
+             mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
+             mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
+             mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
+             mock.patch.object(manifest_probe, "scalar", return_value=""), \
+             mock.patch.object(manifest_probe.citation_profile, "citation_schema_exists", return_value=True), \
+             mock.patch.object(manifest_probe.citation_profile, "require_citation_mode",
+                                return_value="topology-only") as mode_mock, \
+             mock.patch.object(manifest_probe.citation_profile, "citation_counts",
+                                return_value=(438, 2425,
+                                              {"external-skeleton": 382, "our-document": 56})):
+            manifest = manifest_probe.gather_manifest(
+                {}, "http://x/api/embed", profile=profile, citation_mode_override=citation_mode_override,
+            )
+        return manifest, mode_mock
+
+    def test_manifest_counts_describe_package(self):
+        manifest, _mode_mock = self._gather()
+        self.assertEqual(manifest["citation"], {
+            "mode": "topology-only", "work_count": 438, "cites_count": 2425,
+            "work_by_kind": {"external-skeleton": 382, "our-document": 56},
+        })
+        self.assertEqual(manifest["schemas"], ["corpus", "citation"])
+
+    def test_none_mode_records_zero_counts_and_no_schema(self):
+        with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)), \
+             mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
+             mock.patch.object(manifest_probe.legal_profile, "legal_summary",
+                                return_value=dict(_LEGAL_SUMMARY)), \
+             mock.patch.object(manifest_probe.legal_profile, "require_classified"), \
+             mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
+             mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
+             mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
+             mock.patch.object(manifest_probe, "scalar", return_value=""), \
+             mock.patch.object(manifest_probe.citation_profile, "citation_schema_exists", return_value=False), \
+             mock.patch.object(manifest_probe.citation_profile, "citation_counts") as counts_mock:
+            manifest = manifest_probe.gather_manifest({}, "http://x/api/embed", profile="public")
+        self.assertEqual(manifest["citation"],
+                          {"mode": "none", "work_count": 0, "cites_count": 0, "work_by_kind": {}})
+        self.assertEqual(manifest["schemas"], ["corpus"])
+        counts_mock.assert_not_called()
+
+    def test_override_bypasses_require_citation_mode(self):
+        manifest, mode_mock = self._gather(citation_mode_override="full-skeleton")
+        mode_mock.assert_not_called()
+        self.assertEqual(manifest["citation"]["mode"], "full-skeleton")
+
+    def test_full_profile_ships_full_skeleton_regardless_of_public_policy(self):
+        # Full never applies a legal/policy cut -- it is the owner's own
+        # backup (build_package.py's own docstring).
+        manifest, mode_mock = self._gather(profile="full")
+        mode_mock.assert_not_called()
+        self.assertEqual(manifest["citation"]["mode"], "full-skeleton")
+        self.assertEqual(manifest["schemas"], ["corpus", "measurements", "citation"])
 
 
 class ManifestScalarsSqlTests(unittest.TestCase):
