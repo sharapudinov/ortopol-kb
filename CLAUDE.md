@@ -85,7 +85,13 @@ DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py
   писателя — клиент через cache.write() и проход по кэшу через write_text()
   мимо шва, и второй писал под --dry-run. Правило: модуль, работающий с
   кэшем, принимает объект Cache, а не Path (протокол несёт и чтение —
-  read/names — именно чтобы путь было незачем просить).
+  read/names — именно чтобы путь было незачем просить) и не флаг режима:
+  у канала НЕТ умолчания, как нет его у writer/measurements. Флаг
+  `read_only_cache=False`, протянутый через слои, на каждом слое
+  доставался в ПИШУЩУЮ реализацию — забытый keyword у вызова без
+  командной строки писал бы в дерево под --dry-run. Все три кэша строит
+  одно место (pg_load_citations.main) и передаёт объектами; проверяют
+  тесты test_citations_layering.CacheModeIsAnObjectTests.
 JOURNAL_FACTS_ARE_COLUMNS [HARD, 2026-09-02]: то, что читает КОД, живёт в
   колонке citation.crawl_step (node_key, score, tau рядом с frontier_key /
   candidate_key / n_found / n_kept), а reason — только проза для человека.

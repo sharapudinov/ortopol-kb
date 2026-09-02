@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
-from pathlib import Path
 
 from .http_session import HttpSession
 
@@ -65,15 +64,13 @@ class ZbmathClient:
     """
 
     def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
-                 pause=PAUSE, cache_dir: Path | None = None,
-                 read_only_cache: bool = False):
+                 pause=PAUSE, cache=None):
         # No retry policy: what this client owes the caller is the
         # distinction between an answer and a failure, and a silent second
         # attempt at a 429 does not change which of the two arrived.
         self._session = HttpSession(
             user_agent=USER_AGENT, accept="application/json", opener=opener,
-            sleep=sleep, pause=pause, cache_dir=cache_dir,
-            read_only_cache=read_only_cache)
+            sleep=sleep, pause=pause, cache=cache)
         self.pause = pause
         # Mirrors MathnetClient.failures in the same call chain: counted and
         # named, never swallowed.

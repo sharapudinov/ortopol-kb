@@ -19,6 +19,7 @@ from pathlib import Path
 
 import _pathfix  # noqa: F401
 
+from citations.http_cache import DiskCache, ReadOnlyCache
 from citations.http_session import HttpSession, Response, Retry
 
 
@@ -201,7 +202,7 @@ class CacheSeamTests(unittest.TestCase):
 
     def test_a_stored_entry_reads_back_and_counts_as_a_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
-            session, _opener, _slept = _session([_Answer(OK)], cache_dir=Path(tmp))
+            session, _opener, _slept = _session([_Answer(OK)], cache=DiskCache(Path(tmp)))
             session.store("page", "тело")
             self.assertEqual(session.cached("page"), "тело")
         self.assertEqual(session.n_cache_hits, 1)
@@ -209,8 +210,8 @@ class CacheSeamTests(unittest.TestCase):
     def test_a_read_only_session_serves_hits_and_creates_no_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp) / "cache"
-            session, _opener, _slept = _session([_Answer(OK)], cache_dir=directory,
-                                                read_only_cache=True)
+            session, _opener, _slept = _session([_Answer(OK)],
+                                                cache=ReadOnlyCache(directory))
             session.store("page", "тело")
             self.assertFalse(directory.exists(), "--dry-run создал каталог кэша")
             directory.mkdir()
@@ -219,7 +220,7 @@ class CacheSeamTests(unittest.TestCase):
 
     def test_a_body_at_or_under_the_floor_is_not_a_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
-            session, _opener, _slept = _session([_Answer(OK)], cache_dir=Path(tmp))
+            session, _opener, _slept = _session([_Answer(OK)], cache=DiskCache(Path(tmp)))
             session.store("page", "short")
             self.assertIsNone(session.cached("page", floor=2000))
             self.assertEqual(session.n_cache_hits, 0)

@@ -25,7 +25,6 @@ import html
 import re
 import time
 import urllib.request
-from pathlib import Path
 
 from .http_session import HttpSession
 
@@ -73,15 +72,13 @@ class MathnetClient:
     """
 
     def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
-                 pause=0.6, cache_dir: Path | None = None,
-                 read_only_cache: bool = False):
+                 pause=0.6, cache=None):
         # windows-1251, not UTF-8 (module docstring), and no retry: a page
         # that did not arrive is COUNTED, and a silent second attempt is
         # exactly the thing that made the gap invisible for 2019_rm9846.
         self._session = HttpSession(
             user_agent=USER_AGENT, opener=opener, sleep=sleep, pause=pause,
-            timeout=90, encoding="windows-1251", cache_dir=cache_dir,
-            read_only_cache=read_only_cache)
+            timeout=90, encoding="windows-1251", cache=cache)
         self.pause = pause
         self.failures: list[str] = []
 

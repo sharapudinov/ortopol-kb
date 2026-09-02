@@ -159,6 +159,41 @@ class ScoringIsDependencyFreeTests(unittest.TestCase):
                 self.assertEqual(node.level, 0, "относительный импорт в чистой математике")
 
 
+class CacheModeIsAnObjectTests(unittest.TestCase):
+    """DRY_RUN_WRITES_NOTHING's third channel travels the way the other two
+    do: the run picks an http_cache object and hands it over.
+
+    A boolean threaded through the layers instead defaulted, at every one of
+    them, to the WRITING implementation -- and seed_metadata.py advertises
+    itself as callable with no command line, which is exactly the caller
+    that would omit the keyword and write into the data tree under a dry
+    run. `writer` and `measurements` have no such default; neither may
+    `cache`.
+    """
+
+    SEEDERS = ("zbmath_abstracts", "mathnet_names")
+
+    def test_no_module_takes_the_mode_as_a_flag(self):
+        for path in SOURCES:
+            self.assertNotIn(
+                "read_only_cache", path.read_text(encoding="utf-8"),
+                f"{path.name}: the mode is an http_cache object, not a flag")
+
+    def test_the_seeding_pipeline_cannot_default_its_cache(self):
+        tree = ast.parse((CITATIONS_DIR / "seed_metadata.py").read_text(encoding="utf-8"))
+        functions = {node.name: node for node in tree.body
+                     if isinstance(node, ast.FunctionDef)}
+        for name in self.SEEDERS:
+            arguments = functions[name].args
+            self.assertNotIn("cache", [a.arg for a in arguments.args],
+                             f"{name}: cache must be keyword-only")
+            defaults = dict(zip([a.arg for a in arguments.kwonlyargs],
+                                arguments.kw_defaults))
+            self.assertIn("cache", defaults, f"{name}: no cache argument at all")
+            self.assertIsNone(defaults["cache"],
+                              f"{name}: a defaulted cache is a writing cache")
+
+
 class LoaderIsADispatcherTests(unittest.TestCase):
     """pg_load_citations.py parses flags, constructs and dispatches. The
     run-establishing pipeline (a SQL read, a client, journal writes and the

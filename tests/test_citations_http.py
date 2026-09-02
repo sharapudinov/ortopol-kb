@@ -157,7 +157,8 @@ class OpenAlexSidecarTests(unittest.TestCase):
 
     def _cached(self, tmp: Path) -> Path:
         client = OpenAlexClient(opener=_Sequence([_Response(self.BODY)]),
-                                sleep=lambda _s: None, pause=0.0, cache_dir=tmp)
+                                sleep=lambda _s: None, pause=0.0,
+                                cache=http_cache.DiskCache(tmp))
         client.get_json("https://api.openalex.org/works?filter=cites:W1|W2")
         return next(p for p in tmp.glob("*.json") if not p.name.endswith(".meta.json"))
 
@@ -179,7 +180,7 @@ class OpenAlexSidecarTests(unittest.TestCase):
             cache = Path(tmp) / "openalex"
             client = OpenAlexClient(opener=_Sequence([_Response(self.BODY)]),
                                     sleep=lambda _s: None, pause=0.0,
-                                    cache_dir=cache, read_only_cache=True)
+                                    cache=http_cache.ReadOnlyCache(cache))
             client.get_json("https://api.openalex.org/works?filter=cites:W1|W2")
             self.assertFalse(cache.exists(), "--dry-run создал каталог кэша")
 
@@ -191,7 +192,7 @@ class OpenAlexSidecarTests(unittest.TestCase):
             cache = Path(tmp)
             self._cached(cache)
             client = OpenAlexClient(opener=_Sequence([]), sleep=lambda _s: None,
-                                    pause=0.0, cache_dir=cache, read_only_cache=True)
+                                    pause=0.0, cache=http_cache.ReadOnlyCache(cache))
             body = client.get_json("https://api.openalex.org/works?filter=cites:W1|W2")
         self.assertEqual(body["meta"]["count"], 18904)
         self.assertEqual(client.n_cache_hits, 1)
@@ -247,10 +248,10 @@ class MathnetClientTests(unittest.TestCase):
     weakens the twin index invisibly (it did, for 2019_rm9846).
     """
 
-    def _client(self, opener, cache: Path | None = None,
+    def _client(self, opener, directory: Path | None = None,
                 read_only: bool = False) -> MathnetClient:
-        return MathnetClient(opener=opener, sleep=lambda _s: None, cache_dir=cache,
-                             read_only_cache=read_only)
+        return MathnetClient(opener=opener, sleep=lambda _s: None,
+                             cache=http_cache.cache_for(directory, read_only=read_only))
 
     def test_the_page_gives_both_titles_and_both_years(self):
         titles, years = parse_titles(PAGE)

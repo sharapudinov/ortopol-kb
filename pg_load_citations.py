@@ -46,24 +46,21 @@ from citations.inputs import (
 )
 from citations.seed_metadata import mathnet_names, zbmath_abstracts
 from citations.store import DryRunWriter, PostgresWriter
-from paths import default_cache_dir, default_corpus_dir
+from paths import (
+    default_cache_dir,
+    default_corpus_dir,
+    default_mathnet_cache_dir,
+    default_zbmath_cache_dir,
+)
 from pg_common import PostgresUnavailable, load_pgenv
 from pg_search import resolve_model
 from pg_graph_common import check as graph_check
 from pg_graph_common import citation_schema_exists, init_schema, project
 
 
-def build_client(args) -> OpenAlexClient:
-    """The crawl's HTTP client, with the cache the mode allows.
-
-    --dry-run's promise covers the data tree, and the response cache lives
-    in it (paths.default_cache_dir()): the read-only cache still serves
-    every hit -- a dry run must cost no more quota than a real one -- and
-    persists nothing, the same object substitution DryRunWriter makes for
-    citation.* and DryRunMeasurementsWriter for measurements.*.
-    """
-    return OpenAlexClient(cache_dir=Path(args.cache_dir),
-                          read_only_cache=args.dry_run,
+def build_client(args, cache) -> OpenAlexClient:
+    """The crawl's HTTP client, with the cache main() chose for the run."""
+    return OpenAlexClient(cache=cache,
                           quota_floor=args.quota_floor,
                           max_quota_wait=args.max_quota_wait)
 
@@ -252,7 +249,13 @@ def main(argv: list[str] | None = None) -> int:
 
     crawl_id = args.crawl_id or time.strftime("%Y%m%dT%H%M%S")
     writer = DryRunWriter() if (args.dry_run or args.calibrate) else PostgresWriter(env)
-    client = build_client(args)
+    # Three caches in the data tree, all three chosen HERE and handed to
+    # their readers as objects -- the same construction the two writers
+    # above get, and for the same reason: --dry-run's promise about the tree
+    # must not depend on a keyword nobody forgot (DRY_RUN_WRITES_NOTHING).
+    client = build_client(args, cache_for(Path(args.cache_dir), read_only=args.dry_run))
+    zbmath_cache = cache_for(default_zbmath_cache_dir(), read_only=args.dry_run)
+    mathnet_cache = cache_for(default_mathnet_cache_dir(), read_only=args.dry_run)
     skip = fresh_keys(env, args.fresh_days) if args.resume else frozenset()
     if skip:
         print(f"--resume: {len(skip)} узлов свежее {args.fresh_days} дней не раскрываются")
@@ -262,11 +265,10 @@ def main(argv: list[str] | None = None) -> int:
                         crawl_id=crawl_id, skip_keys=skip, hub_cap=args.hub_cap,
                         known_vectors=lambda keys: known_embeddings(env, keys))
     try:
-        abstracts = zbmath_abstracts(env, documents, matches,
-                                     writer=writer, crawl_id=crawl_id,
-                                     read_only_cache=args.dry_run)
+        abstracts = zbmath_abstracts(env, documents, matches, cache=zbmath_cache,
+                                     writer=writer, crawl_id=crawl_id)
         snowball.seed(documents, matches, abstracts,
-                      mathnet_names(env, read_only_cache=args.dry_run))
+                      mathnet_names(env, cache=mathnet_cache))
         print(f"семян: {len(snowball.seed_keys)}; "
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:

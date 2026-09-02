@@ -387,8 +387,8 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
             (seed_metadata, "stored_zbmath_abstracts", {}),
             (seed_metadata, "stored_mathnet_titles", {}),
             (seed_metadata, "corpus_seed_documents", []),
-            (seed_metadata, "default_zbmath_cache_dir", cache / "zbmath"),
-            (seed_metadata, "default_mathnet_cache_dir", cache / "mathnet"),
+            (pg_load_citations, "default_zbmath_cache_dir", cache / "zbmath"),
+            (pg_load_citations, "default_mathnet_cache_dir", cache / "mathnet"),
         ):
             stack.enter_context(mock.patch.object(module, name, return_value=value))
         stack.enter_context(mock.patch.object(

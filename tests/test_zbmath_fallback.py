@@ -23,6 +23,7 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 from citations import inputs, seed_metadata
+from citations.http_cache import DiskCache
 from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 
 
@@ -66,8 +67,8 @@ class ZbmathFailureVsAbsenceTests(unittest.TestCase):
         def __exit__(self, *_exc):
             return False
 
-    def _client(self, opener):
-        return ZbmathClient(opener=opener, sleep=lambda _s: None)
+    def _client(self, opener, cache=None):
+        return ZbmathClient(opener=opener, sleep=lambda _s: None, cache=cache)
 
     def test_404_is_a_legitimate_absence(self):
         def opener(request, timeout=None):
@@ -122,9 +123,11 @@ class ZbmathFailureVsAbsenceTests(unittest.TestCase):
             return self._Response(self.REVIEWED)
 
         with tempfile.TemporaryDirectory() as tmp:
-            first = ZbmathClient(opener=opener, sleep=lambda _s: None, cache_dir=Path(tmp))
+            first = ZbmathClient(opener=opener, sleep=lambda _s: None,
+                                 cache=DiskCache(Path(tmp)))
             self.assertEqual(abstract_of(first.document("1234.56789"))[0], "разбор")
-            second = ZbmathClient(opener=opener, sleep=lambda _s: None, cache_dir=Path(tmp))
+            second = ZbmathClient(opener=opener, sleep=lambda _s: None,
+                                  cache=DiskCache(Path(tmp)))
             self.assertEqual(abstract_of(second.document("1234.56789"))[0], "разбор")
         self.assertEqual(calls, ["https://api.zbmath.org/v1/document/1234.56789"])
         self.assertEqual((second.n_requests, second.n_cache_hits), (0, 1))
@@ -137,7 +140,8 @@ class ZbmathFailureVsAbsenceTests(unittest.TestCase):
             raise urllib.error.HTTPError(request.full_url, 429, "Too Many", {}, None)
 
         with tempfile.TemporaryDirectory() as tmp:
-            client = ZbmathClient(opener=opener, sleep=lambda _s: None, cache_dir=Path(tmp))
+            client = ZbmathClient(opener=opener, sleep=lambda _s: None,
+                                  cache=DiskCache(Path(tmp)))
             with self.assertRaises(ZbmathUnavailable):
                 client.document("1234.56789")
             self.assertEqual(list(Path(tmp).iterdir()), [])
@@ -166,8 +170,8 @@ class ZbmathAbstractsJournalTests(unittest.TestCase):
                                 return_value=stored or {}), \
              mock.patch.object(seed_metadata, "ZbmathClient", return_value=client):
             out = seed_metadata.zbmath_abstracts(
-                {}, ["1997_sm280"], {"1997_sm280": "W1"}, writer=writer, crawl_id="t",
-                log=lambda *_: None,
+                {}, ["1997_sm280"], {"1997_sm280": "W1"}, cache=None, writer=writer,
+                crawl_id="t", log=lambda *_: None,
             )
         return out, writer, client
 
@@ -216,7 +220,7 @@ class MathnetNamesTests(unittest.TestCase):
              mock.patch.object(seed_metadata, "stored_mathnet_titles",
                                return_value=stored or {}), \
              mock.patch.object(seed_metadata, "MathnetClient", return_value=client):
-            out = seed_metadata.mathnet_names({}, log=lambda *_: None)
+            out = seed_metadata.mathnet_names({}, cache=None, log=lambda *_: None)
         return out, client
 
     def test_titles_already_in_the_graph_cost_no_request(self):

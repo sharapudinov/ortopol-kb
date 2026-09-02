@@ -44,8 +44,6 @@ import urllib.error
 import urllib.request
 from typing import Any, NamedTuple
 
-from .http_cache import cache_for
-
 
 class Retry(NamedTuple):
     """How many times, on what, and how long between.
@@ -94,18 +92,19 @@ class Response(NamedTuple):
 class HttpSession:
     """One source's request layer: headers, timeout, pause, retries, cache.
 
-    The cache is constructed here rather than handed in as a directory, so
-    a client never sees a path and DRY_RUN_WRITES_NOTHING keeps holding by
-    construction (http_cache.py's own docstring). What is cached is still
-    the client's business: names, floors and whether the stored text is the
-    raw body or something derived from it are all decided at the call.
+    The cache arrives as an OBJECT (http_cache.Cache) chosen by whoever
+    knows the run's mode, never as a directory and never as a flag: a
+    session cannot construct a writing cache by defaulting, the same way
+    store.Writer cannot be defaulted into a writing one. A session given no
+    cache has none. What is cached is still the client's business: names,
+    floors and whether the stored text is the raw body or something derived
+    from it are all decided at the call.
     """
 
     def __init__(self, *, user_agent: str, opener=urllib.request.urlopen,
                  sleep=time.sleep, pause: float = 0.0, timeout: float = 60,
                  encoding: str = "utf-8", accept: str | None = None,
-                 cache_dir=None, read_only_cache: bool = False,
-                 retry: Retry = Retry()):
+                 cache=None, retry: Retry = Retry()):
         self._opener = opener
         self._sleep = sleep
         self._headers = {"User-Agent": user_agent}
@@ -115,7 +114,7 @@ class HttpSession:
         self.encoding = encoding
         self.pause = pause
         self.retry = retry
-        self.cache = cache_for(cache_dir, read_only=read_only_cache)
+        self.cache = cache
         self.n_requests = 0
 
     # -- cache -----------------------------------------------------------

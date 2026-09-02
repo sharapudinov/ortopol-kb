@@ -34,7 +34,6 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
-from pathlib import Path
 
 from .http_session import HttpSession, Retry
 from .openalex_records import (  # noqa: F401  (re-exported: one import site per name)
@@ -103,8 +102,7 @@ class OpenAlexClient:
         *,
         opener=urllib.request.urlopen,
         sleep=time.sleep,
-        cache_dir: Path | None = None,
-        read_only_cache: bool = False,
+        cache=None,
         quota_floor: int = QUOTA_FLOOR,
         max_quota_wait: float = MAX_QUOTA_WAIT,
         pause: float = PAUSE,
@@ -113,8 +111,7 @@ class OpenAlexClient:
         self._sleep = sleep
         self._session = HttpSession(
             user_agent=USER_AGENT, accept="application/json", opener=opener,
-            sleep=sleep, pause=pause, timeout=120, cache_dir=cache_dir,
-            read_only_cache=read_only_cache,
+            sleep=sleep, pause=pause, timeout=120, cache=cache,
             retry=Retry(tries=tries, codes=RETRY_CODES),
         )
         self.quota_floor = quota_floor
