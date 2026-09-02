@@ -220,6 +220,68 @@ class HubReportPopulateTests(unittest.TestCase):
         self.assertEqual(out, "382")
 
 
+class ActionVocabularyGuardTests(unittest.TestCase):
+    """The action vocabulary is a named CHECK constraint, and re-adding one
+    is not free: Postgres validates it against every existing row under an
+    ACCESS EXCLUSIVE lock. The journal grows by ~100k rows per depth-2 crawl
+    and the schema is applied on every `pg_graph.py init` AND every
+    non-dry-run crawl, so an unconditional DROP+ADD is the same unbounded
+    scan the reason-parse backfill was guarded against one section below.
+
+    Applied inside a rolled-back transaction; the live constraint is read
+    but never replaced.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+        cls.schema = pg_graph_common.SCHEMA_PATHS[0].read_text(encoding="utf-8")
+
+    DEFINITION = (
+        "SELECT c.oid::text, c.xmin::text, pg_get_constraintdef(c.oid) "
+        "FROM pg_constraint c WHERE c.conname = 'crawl_step_action_check';"
+    )
+
+    def _probe(self, script: str) -> list[str]:
+        out = run_sql(self.env, "BEGIN;\n" + script + "\nROLLBACK;\n",
+                      extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
+        return [line for line in out.splitlines() if line.strip()]
+
+    def test_a_repeat_apply_leaves_the_same_constraint_in_place(self):
+        rows = self._probe(self.schema + self.DEFINITION
+                           + self.schema + self.DEFINITION)
+        self.assertEqual(rows[0], rows[1],
+                         "constraint пересоздан: oid/xmin изменились")
+
+    def test_the_live_constraint_already_matches_the_file(self):
+        """Not a property of the file but of THIS instance: if the live
+        vocabulary differed, every apply here would legitimately rewrite it
+        and the test above would be measuring a no-op it created itself.
+        """
+        before = run_sql(self.env, self.DEFINITION,
+                         extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout.strip()
+        after = self._probe(self.schema + self.DEFINITION)[0]
+        self.assertEqual(before, after)
+
+    def test_a_stale_vocabulary_is_replaced(self):
+        """The complement: the guard must not be "never touch it". A
+        constraint created before hub-skip existed is exactly the case
+        DROP+ADD was written for. NOT VALID only because the live journal
+        already carries the values the narrow fixture forbids.
+        """
+        stale = (
+            "ALTER TABLE citation.crawl_step DROP CONSTRAINT "
+            "crawl_step_action_check;\n"
+            "ALTER TABLE citation.crawl_step ADD CONSTRAINT "
+            "crawl_step_action_check CHECK (action IN ('seed', 'fetch')) "
+            "NOT VALID;\n"
+        )
+        rows = self._probe(stale + self.DEFINITION + self.schema + self.DEFINITION)
+        self.assertNotIn("hub-skip", rows[0])
+        self.assertIn("hub-skip", rows[1])
+        self.assertNotEqual(rows[0].split(FIELD_SEP)[0], rows[1].split(FIELD_SEP)[0])
+
+
 class BackfillRegistryTests(unittest.TestCase):
     """The parse runs once per database, and citation.schema_backfill is how
     the schema knows it already did.

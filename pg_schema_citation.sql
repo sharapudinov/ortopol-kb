@@ -151,16 +151,57 @@ ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS cited_by_count BIGINT;
 -- inline in CREATE TABLE: the crawl grows new kinds of decision (hub-skip
 -- arrived when depth-2 turned out to pull >51k citers through a handful of
 -- heavily-cited classics), and an inline CHECK cannot be widened on an
--- instance that already has the table. DROP IF EXISTS + ADD is idempotent on
--- both a fresh database and one created before the value existed.
+-- instance that already has the table.
 --
 -- hub-skip: the node was NOT expanded upward because its citer count is past
 -- the cap. It is a decision, not an error -- without a row saying so, "why is
 -- this node a dead end" is unanswerable after the fact, which is the whole
 -- reason crawl_step exists.
-ALTER TABLE citation.crawl_step DROP CONSTRAINT IF EXISTS crawl_step_action_check;
-ALTER TABLE citation.crawl_step ADD CONSTRAINT crawl_step_action_check
-    CHECK (action IN ('seed', 'seed-missing', 'fetch', 'keep', 'drop', 'hub-skip', 'error'));
+--
+-- Replaced only when the vocabulary actually differs, for the same reason
+-- the reason-parse backfill below carries a registry: ADD CONSTRAINT
+-- validates the new CHECK against every existing row under an ACCESS
+-- EXCLUSIVE lock, and this schema is applied on every `pg_graph.py init`
+-- AND every non-dry-run crawl, against an append-only journal that grows by
+-- ~100k rows per depth-2 crawl. Value-idempotent DROP+ADD was never the
+-- gap; the gap was paying a full validation scan to arrive at the
+-- constraint that was already there.
+--
+-- Compared as the VOCABULARY, not as text: pg_get_constraintdef() renders
+-- the same CHECK as `action = ANY (ARRAY[...])`, and its exact spelling is
+-- the server's business (and its version's). The literals inside it are
+-- ours, so they are what is compared -- an extra value, a missing one or a
+-- renamed one all differ, and nothing else does.
+DO $action_check$
+DECLARE
+    wanted     CONSTANT text[] := ARRAY['seed', 'seed-missing', 'fetch', 'keep',
+                                        'drop', 'hub-skip', 'error'];
+    definition text;
+    current_vocabulary text[];
+BEGIN
+    SELECT pg_get_constraintdef(c.oid) INTO definition
+    FROM pg_constraint c
+    WHERE c.conrelid = 'citation.crawl_step'::regclass
+      AND c.conname = 'crawl_step_action_check';
+
+    IF definition IS NOT NULL THEN
+        SELECT array_agg(m[1] ORDER BY m[1]) INTO current_vocabulary
+        FROM regexp_matches(definition, '''([^'']*)''', 'g') AS m;
+    END IF;
+
+    IF current_vocabulary IS NOT DISTINCT FROM
+       (SELECT array_agg(value ORDER BY value) FROM unnest(wanted) AS value) THEN
+        RETURN;
+    END IF;
+
+    EXECUTE 'ALTER TABLE citation.crawl_step '
+            'DROP CONSTRAINT IF EXISTS crawl_step_action_check';
+    EXECUTE format(
+        'ALTER TABLE citation.crawl_step ADD CONSTRAINT crawl_step_action_check '
+        'CHECK (action IN (%s))',
+        (SELECT string_agg(quote_literal(value), ', ') FROM unnest(wanted) AS value));
+END
+$action_check$;
 
 CREATE INDEX IF NOT EXISTS crawl_step_crawl_depth_idx ON citation.crawl_step (crawl_id, depth);
 
