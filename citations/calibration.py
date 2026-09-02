@@ -15,6 +15,11 @@ from . import frontier as frontier_math
 
 SPIKE = "research/citation-frontier-threshold"
 REPORT_PATH = "research/citation-frontier/threshold.md"
+# The orchestrator writes the verdict INTO the generated report, by hand.
+# Regenerating the report must therefore carry that section over instead of
+# overwriting it -- the same bargain the loaders strike with transcribed
+# pages: a rerun of a tool never destroys work the tool did not produce.
+VERDICT_HEADING = "## Вердикт"
 
 RECOMMENDED_TAU = 0.50
 # The executor's reading of the distribution below, kept as a constant so the
@@ -145,6 +150,21 @@ def calibration_report(rows, tau_hint: float, refs=None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def carry_over_verdict(new_text: str, previous_path) -> str:
+    """Re-attach the orchestrator's verdict to a freshly generated report.
+
+    Without this, a second --calibrate silently deletes a section this code
+    never wrote. Nothing else of the old file survives: the facts above the
+    verdict are exactly what the new measurement recomputed.
+    """
+    if not previous_path.is_file():
+        return new_text
+    previous = previous_path.read_text(encoding="utf-8")
+    if VERDICT_HEADING not in previous or VERDICT_HEADING in new_text:
+        return new_text
+    return new_text.rstrip("\n") + "\n\n" + previous[previous.index(VERDICT_HEADING):]
+
+
 def run_fields(rows, tau_hint: float) -> dict:
     scores = sorted(r["score"] for r in rows)
     return {
@@ -165,7 +185,14 @@ def run_fields(rows, tau_hint: float) -> dict:
             "cd kb && set -a; . ../corpus/.pgenv; set +a && "
             "python3 pg_load_citations.py --calibrate   "
             "# семена = 56 матчей OpenAlex из run 85, кандидаты = citers+references "
-            "семян; ЧИСЛА НЕ ВЕЧНЫ: OpenAlex живой индекс, cited_by_count растёт"
+            "семян. Таблица создаётся самим прогоном (citations/threshold_store.py, "
+            "THRESHOLD_DDL) и несёт колонки run_id, candidate_key, depth, relation, "
+            "score, title, year, has_abstract, n_references — последние две "
+            "добавлены после первой калибровки идемпотентным ADD COLUMN IF NOT "
+            "EXISTS, поэтому пересоздание с нуля даёт ту же форму: has_abstract "
+            "держит вывод «без реферата медиана ниже» (0.6506 против 0.6893), "
+            "n_references — цену раскрытия узла на следующей глубине. "
+            "ЧИСЛА НЕ ВЕЧНЫ: OpenAlex живой индекс, cited_by_count растёт"
         ),
         "verify_query": (
             "SELECT count(*), round(min(score)::numeric,4) AS min, "

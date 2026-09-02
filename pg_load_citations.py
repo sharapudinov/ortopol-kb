@@ -31,6 +31,7 @@ from citations.calibration import (
     REPORT_PATH,
     SPIKE,
     calibration_report,
+    carry_over_verdict,
     run_fields,
     suggest_tau,
 )
@@ -93,8 +94,9 @@ def do_calibrate(env, snowball: Snowball, client, data_root: Path) -> int:
     written = threshold_store.insert_threshold_rows(env, run_id, rows)
     report = data_root / REPORT_PATH
     report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(calibration_report(rows, tau_hint, snowball.candidate_refs),
-                      encoding="utf-8")
+    report.write_text(
+        carry_over_verdict(calibration_report(rows, tau_hint, snowball.candidate_refs), report),
+        encoding="utf-8")
     print(f"run {run_id} ({SPIKE}); строк порога: {written}; отчёт: {report}")
     print(f"запросов OpenAlex: {client.n_requests} (из кэша: {client.n_cache_hits})")
     print(f"рекомендация τ (не вердикт): {tau_hint:.4f}")

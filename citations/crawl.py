@@ -22,6 +22,15 @@ score is the entire record of it.
 The journal follows the shape of crawl_step's columns: one `fetch` row per
 expanded frontier node (n_found candidates from it, n_kept of them), one
 `keep`/`drop` row per candidate, `seed`/`seed-missing` at depth 0.
+
+Every keep and every drop carries its score in the reason, in a fixed
+machine-readable form -- `score=0.6123 tau=0.5000 relation=cites` -- so the
+score distribution at depths the tau calibration never saw is a query, not a
+re-crawl:
+
+    SELECT depth, action,
+           substring(reason from 'score=(-?[0-9.]+)')::float8 AS score
+    FROM citation.crawl_step WHERE crawl_id = ...
 """
 from __future__ import annotations
 
@@ -185,21 +194,31 @@ class Snowball:
                     "crawl_id": self.crawl_id, "depth": depth,
                     "frontier_key": item["discovered_from"] or None,
                     "candidate_key": item["candidate_key"], "action": "drop",
-                    "reason": f"below-threshold tau={self.tau:.4f}; score={item['score']:.4f}",
+                    "reason": f"below-threshold; score={item['score']:.4f} "
+                              f"tau={self.tau:.4f} relation={item['relation']}",
                 })
                 continue
-            node, _ = self.registry.add(
+            node, is_new = self.registry.add(
                 item["record"], kind="external-skeleton", depth=depth,
                 relation=item["relation"], discovered_from=item["discovered_from"])
-            node.score, node.embedding = item["score"], item["vector"]
-            kept_keys.append(node.key)
+            # Two kept candidates can be one work: score() cannot know that,
+            # because the twin union only happens on add(). The second record
+            # merges into the node the first created, so the node is written
+            # ONCE (a duplicate in the batch aborts the whole upsert with
+            # "ON CONFLICT DO UPDATE command cannot affect row a second time")
+            # while both candidates keep their own journal row -- the merge is
+            # a decision the journal should show, not hide.
+            if is_new:
+                node.score, node.embedding = item["score"], item["vector"]
+                kept_keys.append(node.key)
             kept_per_frontier[item["discovered_from"]] = \
                 kept_per_frontier.get(item["discovered_from"], 0) + 1
             steps.append({
                 "crawl_id": self.crawl_id, "depth": depth,
                 "frontier_key": item["discovered_from"] or None,
-                "candidate_key": node.key, "action": "keep",
-                "reason": f"relation={item['relation']}; score={item['score']:.4f}",
+                "candidate_key": item["candidate_key"], "action": "keep",
+                "reason": f"kept; score={item['score']:.4f} tau={self.tau:.4f} "
+                          f"relation={item['relation']} node={node.key}",
             })
 
         for key in frontier_keys:
@@ -212,8 +231,10 @@ class Snowball:
         edges = self.edges_among_known(frontier_keys, candidates)
         self.writer.edges(edges)
         self.writer.journal(steps)
-        self.per_depth[depth] = {"candidates": len(scored), "kept": len(kept_keys),
-                                 "dropped": len(scored) - len(kept_keys),
+        kept_rows = sum(1 for s in steps if s["action"] == "keep")
+        self.per_depth[depth] = {"candidates": len(scored), "kept": kept_rows,
+                                 "nodes": len(kept_keys),
+                                 "dropped": len(scored) - kept_rows,
                                  "edges": len(edges)}
         return kept_keys
 

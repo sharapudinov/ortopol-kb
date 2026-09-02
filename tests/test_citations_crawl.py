@@ -68,10 +68,10 @@ class CrawlTests(unittest.TestCase):
         self.assertNotIn("W_FAR", {n.key for n in writer.works_seen})
         drops = [s for s in writer.steps_seen if s["action"] == "drop"]
         self.assertEqual([s["candidate_key"] for s in drops], ["W_FAR"])
-        self.assertIn("below-threshold tau=0.5000", drops[0]["reason"])
-        self.assertIn("score=0.0000", drops[0]["reason"])
+        self.assertIn("below-threshold; score=0.0000 tau=0.5000", drops[0]["reason"])
         keeps = [s for s in writer.steps_seen if s["action"] == "keep"]
         self.assertEqual([s["candidate_key"] for s in keeps], ["W_NEAR"])
+        self.assertIn("kept; score=1.0000 tau=0.5000", keeps[0]["reason"])
 
     def test_fetch_row_counts_what_a_frontier_node_yielded(self):
         writer = DryRunWriter()
@@ -133,6 +133,30 @@ class CrawlTests(unittest.TestCase):
         self.assertAlmostEqual(next(r["score"] for r in rows if r["candidate_key"] == "W_C2"), 0.0)
         self.assertEqual(writer.works_seen, [])
 
+    def test_two_candidates_that_are_one_work_are_written_once(self):
+        """The twin union happens on add(), after scoring: without a guard the
+        node lands in the write batch twice and the whole upsert aborts with
+        "ON CONFLICT DO UPDATE command cannot affect row a second time"."""
+        writer = DryRunWriter()
+        seed = work("W_SEED", title="Seed Chebyshev")
+        original = work("W_RU", title="Near Chebyshev original",
+                        doi="10.4213/sm723", refs=["W_SEED"])
+        translation = work("W_EN", title="Near Chebyshev translation",
+                           doi="10.4213/SM723", refs=["W_SEED"])
+        client = FakeClient([seed, original, translation],
+                            citers={"W_SEED": [original, translation]})
+        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0), "Near": unit(0)}),
+                            writer, tau=0.5, crawl_id="c", log=lambda *_: None)
+        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
+        kept = snowball.expand(["W_SEED"], 1)
+
+        self.assertEqual(kept, ["W_RU"], "двойник по DOI записан вторым узлом")
+        self.assertEqual([n.key for n in writer.works_seen].count("W_RU"), 1)
+        keeps = [s for s in writer.steps_seen if s["action"] == "keep"]
+        self.assertEqual(sorted(s["candidate_key"] for s in keeps), ["W_EN", "W_RU"],
+                         "слияние двойников спрятано от журнала")
+        self.assertTrue(all("node=W_RU" in s["reason"] for s in keeps))
+
     def test_titleless_candidate_scores_below_every_threshold(self):
         writer = DryRunWriter()
         seed = work("W_SEED", title="Seed Chebyshev")
@@ -145,7 +169,7 @@ class CrawlTests(unittest.TestCase):
         snowball.expand(["W_SEED"], 1)
         drops = [s for s in writer.steps_seen if s["action"] == "drop"]
         self.assertEqual([s["candidate_key"] for s in drops], ["W_BLANK"])
-        self.assertIn("score=-1.0000", drops[0]["reason"])
+        self.assertIn("score=-1.0000 tau=0.0000", drops[0]["reason"])
 
 
 def _live_env():

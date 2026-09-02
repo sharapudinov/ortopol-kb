@@ -8,6 +8,19 @@ procedure D: idempotent by spike name (the id shifts on every reload, the
 name does not), verdict left NULL because the verdict is the orchestrator's,
 and one row per scored candidate so the distribution the threshold rests on
 is queryable rather than summarised in prose.
+
+Table shape, so that recreating from scratch gives the same columns as the
+instance that already ran: (run_id, candidate_key, depth, relation, score,
+title, year) plus TWO columns added after the first calibration --
+`has_abstract` and `n_references`. They are not decoration. has_abstract
+carries the finding that a title-only candidate scores measurably lower
+(median 0.6506 against 0.6893, n=173 against 217), i.e. that a high tau
+filters on metadata completeness as much as on relevance; n_references is
+what expanding the node costs at the next depth. Without them the two claims
+the calibration report rests on would live in a scratch script rather than in
+the base. THRESHOLD_DDL therefore ends in ADD COLUMN IF NOT EXISTS, and both
+CREATE and ALTER are idempotent -- a fresh instance and an instance that
+predates the columns converge on the same shape.
 """
 from __future__ import annotations
 
