@@ -12,6 +12,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import citation_columns
 import citation_dump
 import citation_profile
 from legal_profile import SHIPPED_SQL
@@ -66,10 +67,35 @@ class CopySelectTests(unittest.TestCase):
         self.assertIn("citing", sql)
         self.assertIn("cited", sql)
 
-    def test_crawl_step_and_public_policy_are_never_blanked_under_any_mode(self):
+    def test_topology_only_blanks_every_column_classified_content(self):
+        """Not the two the mode was first written around: every column the
+        classification calls content, in every dumped table. The embedding
+        was the column this test would have caught -- it is classified
+        topology (a vector ranks, it does not reproduce an abstract) and
+        must therefore still be in the projection.
+        """
+        for table, columns in citation_columns.CITATION_COLUMN_CLASS.items():
+            sql = citation_dump.copy_select(table, list(columns), CitationMode.TOPOLOGY_ONLY)
+            alias = citation_dump.TABLE_ALIASES[table]
+            for column, kind in columns.items():
+                if kind == citation_columns.CONTENT:
+                    self.assertIn(f"AS {column}", sql, f"{table}.{column}")
+                    self.assertNotIn(f"{alias}.{column},", sql, f"{table}.{column}")
+                else:
+                    self.assertIn(f"{alias}.{column}", sql, f"{table}.{column}")
+
+    def test_an_unclassified_column_stops_the_build(self):
+        with self.assertRaises(citation_columns.ColumnUnclassified) as raised:
+            citation_dump.copy_select("work", ["id", "brand_new"], CitationMode.FULL_SKELETON)
+        self.assertIn("citation.work.brand_new", str(raised.exception))
+
+    def test_full_skeleton_blanks_nothing_but_still_classifies_everything(self):
+        for table, columns in citation_columns.CITATION_COLUMN_CLASS.items():
+            sql = citation_dump.copy_select(table, list(columns), CitationMode.FULL_SKELETON)
+            self.assertNotIn("NULL::", sql, table)
+
+    def test_public_policy_is_never_blanked_under_any_mode(self):
         for mode in CitationMode.ALL:
-            sql = citation_dump.copy_select("crawl_step", ["id", "reason"], mode)
-            self.assertNotIn("NULL::", sql)
             sql = citation_dump.copy_select("public_policy", ["id", "mode", "note"], mode)
             self.assertNotIn("NULL::", sql)
 
@@ -153,6 +179,30 @@ class DumpCitationTests(unittest.TestCase):
         self.assertIn("--exclude-schema=ag_catalog", argv)
 
 
+class ClassificationCoversTheCatalogTests(unittest.TestCase):
+    """The map is complete against the DATABASE, not against itself.
+
+    table_columns() reads pg_attribute, so the artifact's column list grows
+    with the schema; the classification has to grow with it in the same
+    commit or the build stops. Asserted as set equality both ways: a column
+    added to the schema and not to the map is the leak this whole mechanism
+    exists to prevent, and a column in the map the table no longer has is a
+    classification of nothing, quietly rotting.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+
+    def test_every_dumped_column_is_classified_and_nothing_else_is(self):
+        for table in citation_dump.CITATION_TABLES:
+            self.assertEqual(
+                set(citation_dump.table_columns(self.env, table)),
+                set(citation_columns.CITATION_COLUMN_CLASS[table]),
+                f"citation.{table}: каталог и классификация разошлись",
+            )
+
+
 class LegalCutSqlTests(unittest.TestCase):
     """The citation slice honours corpus.documents.public_distribution, and
     it does so the LEGAL_IS_DATA way: through the predicate legal_profile.py
@@ -189,8 +239,12 @@ class LegalCutSqlTests(unittest.TestCase):
         self.assertEqual(sql.count("FROM corpus.documents d"), 1)
 
     def test_only_crawl_step_gets_the_cut_set_prefix(self):
-        for table in ("work", "cites", "public_policy"):
-            sql = citation_dump.copy_select(table, ["id"], CitationMode.FULL_SKELETON)
+        # A real column of each table: an invented one is now a build error
+        # (the classification covers exactly the catalog), which is a
+        # different question from the one this test asks.
+        for table, column in (("work", "id"), ("cites", "citing"),
+                              ("public_policy", "id")):
+            sql = citation_dump.copy_select(table, [column], CitationMode.FULL_SKELETON)
             self.assertNotIn("cut_documents", sql, table)
 
     def test_crawl_step_select_drops_rows_naming_a_cut_document_or_work(self):

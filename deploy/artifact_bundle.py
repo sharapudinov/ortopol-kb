@@ -51,8 +51,13 @@ DEPLOY_FILES = [
     "profile_checks.py",
     "dump_scan.py",
     # Static verification of the citation-schema slice of the dump:
-    # profile_checks.py's run_checks() calls into it.
+    # profile_checks.py's run_checks() calls into it ...
     "citation_content_checks.py",
+    # ... and the topology/content classification it checks against. The
+    # SAME map the builder's citation_dump.py strips by: a second copy on
+    # this side could only agree with the producer by accident, and the
+    # check exists precisely to catch the case where it does not.
+    "citation_columns.py",
     # Rebuilds citation_graph after the dump restores (see its own comment
     # on why LOAD 'age' cannot be a bare statement inside the DO block).
     "init/02_project_graph.sql",

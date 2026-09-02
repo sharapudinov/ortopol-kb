@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from typing import IO
 
+from citation_columns import blanked_cast
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import CitationMode
 from pg_common import run_sql
@@ -66,14 +67,6 @@ _SOURCE = {
 # reuse an id already taken.
 _SERIAL_TABLES = ("work", "crawl_step")
 
-# Columns forced NULL under CitationMode.TOPOLOGY_ONLY, with the cast an
-# untyped NULL in a COPY select's column list would otherwise need Postgres
-# to guess (and some psql builds refuse to restore).
-_BLANKED = {
-    "work": {"abstract": "text", "evidence": "jsonb"},
-    "cites": {"evidence": "jsonb"},
-}
-
 _COLUMNS_SQL = """
 SELECT a.attname
 FROM pg_attribute a
@@ -94,8 +87,17 @@ def table_columns(env: dict, table: str) -> list[str]:
 
 
 def _select_expression(table: str, column: str, mode: str) -> str:
-    cast = _BLANKED.get(table, {}).get(column) if mode == CitationMode.TOPOLOGY_ONLY else None
-    if cast:
+    """One column's projection under `mode`.
+
+    Every column is classified, in every mode -- citation_columns.
+    blanked_cast() raises on one that is not, so a column added to the
+    schema and forgotten here stops the build instead of shipping by
+    default. The catalog is what says a column exists (table_columns), the
+    classification is what says whether it may leave; both are consulted
+    for every column, which is the point.
+    """
+    cast = blanked_cast(table, column)
+    if cast and mode == CitationMode.TOPOLOGY_ONLY:
         return f"NULL::{cast} AS {column}"
     return f"{TABLE_ALIASES[table]}.{column}"
 

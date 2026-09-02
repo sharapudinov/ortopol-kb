@@ -13,6 +13,7 @@ from pathlib import Path
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import citation_columns
 import citation_content_checks
 import dump_scan
 from manifest_contract import CitationMode, Key
@@ -87,13 +88,13 @@ class CheckCitationSchemaMatchesModeTests(unittest.TestCase):
 
 class CheckTopologyOnlyStripsTests(unittest.TestCase):
     def test_non_topology_only_mode_is_a_trivial_pass(self):
-        ok, detail = citation_content_checks.check_topology_only_strips_abstract_and_evidence(
+        ok, detail = citation_content_checks.check_topology_only_strips_content(
             {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}}, {"citation_leaked": ["x"]},
         )
         self.assertTrue(ok, detail)
 
     def test_topology_only_passes_when_nothing_leaked(self):
-        ok, detail = citation_content_checks.check_topology_only_strips_abstract_and_evidence(
+        ok, detail = citation_content_checks.check_topology_only_strips_content(
             {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}, {"citation_leaked": []},
         )
         self.assertTrue(ok, detail)
@@ -103,7 +104,7 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
                             [["1", "k1", "an abstract", "\\N"]])
         scans, facts = _scan(dump)
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-        ok, detail = citation_content_checks.check_topology_only_strips_abstract_and_evidence(
+        ok, detail = citation_content_checks.check_topology_only_strips_content(
             manifest, facts,
         )
         self.assertFalse(ok)
@@ -114,18 +115,46 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
                             [["1", "2", '{"src": "openalex"}']])
         _scans, facts = _scan(dump)
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-        ok, detail = citation_content_checks.check_topology_only_strips_abstract_and_evidence(
+        ok, detail = citation_content_checks.check_topology_only_strips_content(
             manifest, facts,
         )
         self.assertFalse(ok)
         self.assertIn("evidence", detail)
+
+    def test_topology_only_fails_when_the_journal_prose_leaked(self):
+        """crawl_step is not scanned for facts, only for content -- so the
+        visitor has to be registered from the classification map rather than
+        by hand, or the one table nobody collects anything from ships its
+        prose unchecked.
+        """
+        dump = _copy_block("citation.crawl_step", ["id", "action", "reason"],
+                            [["1", "keep", "kept"]])
+        _scans, facts = _scan(dump)
+        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
+        ok, detail = citation_content_checks.check_topology_only_strips_content(
+            manifest, facts,
+        )
+        self.assertFalse(ok)
+        self.assertIn("crawl_step.reason", detail)
+
+    def test_every_content_column_of_every_table_is_watched(self):
+        """The checker's coverage IS the map's content set -- no column
+        classified content can be one nothing here looks at.
+        """
+        visitors: dict = {}
+        citation_content_checks.attach_visitors(visitors)
+        for table, columns in citation_columns.CITATION_COLUMN_CLASS.items():
+            content = {c for c, kind in columns.items()
+                       if kind == citation_columns.CONTENT}
+            if content:
+                self.assertIn(f"citation.{table}", visitors, table)
 
     def test_topology_only_passes_when_evidence_is_null(self):
         dump = _copy_block("citation.work", ["id", "key", "abstract", "evidence"],
                             [["1", "k1", "\\N", "\\N"]])
         _scans, facts = _scan(dump)
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-        ok, detail = citation_content_checks.check_topology_only_strips_abstract_and_evidence(
+        ok, detail = citation_content_checks.check_topology_only_strips_content(
             manifest, facts,
         )
         self.assertTrue(ok, detail)

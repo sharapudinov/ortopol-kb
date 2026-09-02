@@ -11,11 +11,16 @@ Checks:
                            carries NEITHER of) citation.work/citation.cites,
                            and their row counts equal
                            manifest.citation.work_count/cites_count
-  topology-only stripped  no citation.work row carries a non-empty abstract
-                           or evidence, and no citation.cites row carries
-                           evidence, whenever manifest.citation.mode is
+  topology-only stripped  no row of any dumped table carries a non-empty
+                           value in a column citation_columns classifies as
+                           content, whenever manifest.citation.mode is
                            topology-only (a no-op check, trivially true,
-                           under the other two modes)
+                           under the other two modes). The column list is
+                           IMPORTED from citation_columns, never restated
+                           here: a second copy of the classification could
+                           only agree with the producer by accident, and
+                           the one column it forgot was the whole finding
+                           that put this module and the dump on one map
   work -> document holds  every citation.work.document_id in the dump names
                            a corpus.documents row the SAME dump carries.
                            citation.work.document_id is a foreign key across
@@ -36,12 +41,11 @@ row callbacks to that same pass instead of asking for a second one.
 from __future__ import annotations
 
 import dump_scan
+from citation_columns import CITATION_COLUMN_CLASS, content_columns
 from manifest_contract import CitationMode, Key
 
 WORK_TABLE = "citation.work"
 CITES_TABLE = "citation.cites"
-ABSTRACT_COLUMN = "abstract"
-EVIDENCE_COLUMN = "evidence"
 ID_COLUMN = "id"
 DOCUMENT_ID_COLUMN = "document_id"
 CITING_COLUMN = "citing"
@@ -59,11 +63,26 @@ def attach_visitors(row_visitors: dict) -> dict:
     work_ids: set[str] = set()
     edge_endpoints: set[str] = set()
 
+    def content_visitor(table: str, name_of):
+        """Reports every non-empty content column of `table`, whatever the
+        classification currently says they are -- so a column promoted to
+        content in citation_columns.py is checked here without this module
+        being edited at all.
+        """
+        columns = content_columns(table.split(".", 1)[1])
+
+        def visit(row: dict) -> None:
+            for column in columns:
+                if row.get(column, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
+                    leaked.append(f"{table}.{column}:{name_of(row)}")
+        return visit
+
+    leaked_work = content_visitor(WORK_TABLE, lambda row: row.get("key", "?"))
+    leaked_cites = content_visitor(
+        CITES_TABLE, lambda row: f"{row.get('citing', '?')}->{row.get('cited', '?')}")
+
     def on_work(row: dict) -> None:
-        if row.get(ABSTRACT_COLUMN, "") not in ("", dump_scan.NULL_FIELD):
-            leaked.append(f"{WORK_TABLE}.{ABSTRACT_COLUMN}:{row.get('key', '?')}")
-        if row.get(EVIDENCE_COLUMN, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
-            leaked.append(f"{WORK_TABLE}.{EVIDENCE_COLUMN}:{row.get('key', '?')}")
+        leaked_work(row)
         if ID_COLUMN in row:
             work_ids.add(row[ID_COLUMN])
         document_id = row.get(DOCUMENT_ID_COLUMN, dump_scan.NULL_FIELD)
@@ -71,16 +90,22 @@ def attach_visitors(row_visitors: dict) -> dict:
             work_documents.setdefault(document_id, row.get("key", "?"))
 
     def on_cites(row: dict) -> None:
-        if row.get(EVIDENCE_COLUMN, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
-            leaked.append(
-                f"{CITES_TABLE}.{EVIDENCE_COLUMN}:{row.get('citing', '?')}->{row.get('cited', '?')}"
-            )
+        leaked_cites(row)
         for column in (CITING_COLUMN, CITED_COLUMN):
             if column in row:
                 edge_endpoints.add(row[column])
 
     row_visitors[WORK_TABLE] = on_work
     row_visitors[CITES_TABLE] = on_cites
+    # The tables with no facts of their own to collect still carry content
+    # columns, and a table whose visitor nobody registered is a table the
+    # scan never opens: crawl_step.reason shipped unchecked for exactly that
+    # reason before the classification became one map.
+    for table in CITATION_COLUMN_CLASS:
+        qualified = f"citation.{table}"
+        if qualified not in row_visitors and content_columns(table):
+            row_visitors[qualified] = content_visitor(
+                qualified, lambda row: row.get("id", "?"))
     return {
         "citation_leaked": leaked,
         "citation_work_documents": work_documents,
@@ -145,7 +170,7 @@ def check_citation_schema_matches_mode(manifest: dict, scans: dict) -> tuple[boo
                 f"cites rows={cites_rows} (manifest {want_cites})")
 
 
-def check_topology_only_strips_abstract_and_evidence(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_topology_only_strips_content(manifest: dict, facts: dict) -> tuple[bool, str]:
     citation = manifest.get(Key.CITATION, {})
     if citation.get(Key.CITATION_MODE) != CitationMode.TOPOLOGY_ONLY:
         return True, "mode is not topology-only -- nothing to strip"

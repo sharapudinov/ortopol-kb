@@ -16,10 +16,13 @@ citation.public_policy's own CHECK):
 
   full-skeleton   citation.work (every column, abstract/evidence included)
                   + cites (with evidence) + crawl_step + public_policy.
-  topology-only   citation.work with abstract/evidence forced NULL; cites
-                  with evidence forced NULL; crawl_step and public_policy
-                  ship whole -- both are OUR OWN journal/decision record, no
-                  third-party content in either.
+  topology-only   every column deploy/citation_columns.py classifies as
+                  content is forced NULL -- work.abstract, work.evidence,
+                  cites.evidence and crawl_step.reason -- and everything
+                  else ships. That map, not a list here, is the authority:
+                  it covers every column of every dumped table, and an
+                  unclassified one fails the build instead of shipping by
+                  default.
   none            citation is not dumped at all: no CREATE SCHEMA, no table,
                   no row. The FULL profile still carries everything
                   regardless of this table (see build_package.py's own
