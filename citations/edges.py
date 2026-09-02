@@ -13,6 +13,7 @@ the reference would not yet resolve to a node.
 from __future__ import annotations
 
 from citation_vocab import Relation
+from .gathering import principal_hit
 from .openalex_client import short_id
 
 
@@ -43,9 +44,13 @@ def among_known(registry, frontier_keys, candidates,
 
     for key in frontier_keys:
         emit(key, sorted(registry.nodes[key].referenced_works), Relation.REFERENCED, key)
+    # One name per edge, from the SET the candidate was reached from
+    # (gathering.principal_hit): the column holds one, and the level's own
+    # per-node counters are where the whole set is accounted for.
     provenance: dict[str, tuple[str, str]] = {}
-    for record, relation, source_key in candidates:
-        provenance.setdefault(short_id(record.get("id")), (relation, source_key))
+    for record, relation, hits in candidates:
+        provenance.setdefault(short_id(record.get("id")),
+                              (relation, principal_hit(hits)))
     for openalex_id, reference_ids in references.items():
         key = registry.resolve_openalex(openalex_id)
         if key is None:

@@ -20,8 +20,19 @@ node, so nothing points at it: the `drop` journal row carrying tau and the
 score is the entire record of it.
 
 The journal follows the shape of crawl_step's columns: one `fetch` row per
-expanded frontier node (n_found candidates from it, n_kept of them), one
-`keep`/`drop` row per candidate, `seed`/`seed-missing` at depth 0.
+expanded frontier node, one `keep`/`drop` row per candidate,
+`seed`/`seed-missing` at depth 0.
+
+Discovery is many-to-many -- a citer can cite several members of the
+frontier, a work can be referenced by several of them -- so a candidate
+carries the SET of frontier nodes it was reached from. The fetch row's
+n_found and n_kept are counted over that set: n_found is how many of this
+level's candidates this node contributed to, n_kept how many of THOSE
+passed tau, so the pair is two counts of one population and every node gets
+credit for every candidate it brought. Where only one name fits -- the
+keep/drop row's frontier_key, the node's own evidence, an edge's provenance
+-- it is the smallest key of the set (gathering.principal_hit), a
+representative and not a claim of sole discovery.
 
 Every keep and every drop carries its score and the tau it was measured
 against in columns of their own, so the score distribution at depths the tau
@@ -33,12 +44,11 @@ calibration never saw is a query, not a re-crawl:
 from __future__ import annotations
 
 from citation_vocab import CrawlAction, Relation, WorkKind
+from . import candidates as candidates_mod
 from . import edges as edges_mod
 from . import gathering, journal, seeding
 from .frontier import vectors_for as frontier_vectors
-from .scoring import cosine_unit
-from .openalex_client import short_id
-from .registry import WorkRegistry, scoring_fields
+from .registry import WorkRegistry
 
 # A node cited more than this is not asked "who cites you": the answer is
 # tens of thousands of works about the field, not about the node. Default
@@ -152,69 +162,38 @@ class Snowball:
         return gathering.gather(self.client, self.registry, frontier_keys, self.hub_cap)
 
     def scores_of(self, holders) -> dict[str, tuple[float, list[float] | None]]:
-        """{key: (score, vector)} for `holders` -- registry.ScoringFields
-        triples, or anything else carrying key/title/abstract -- embedded a
-        batch at a time,
-        and the vector of anything below tau dropped as soon as its score is
-        known.
-
-        Batched by vectors_for(), because the vector is the expensive thing
-        here: 1024 floats per candidate, and a depth-2 level is thousands of
-        candidates (~4262 distinct references measured at tau=0.50) of which
-        the filter keeps a fraction. vectors_for() yields a chunk at a time
-        and this loop scores each pair as it arrives, so the vectors alive
-        at once are one chunk plus what passed tau -- a function of the KEPT
-        set, not of the candidate set.
-        """
-        scored: dict[str, tuple[float, list[float] | None]] = {}
-        for holder, vector in self.vectors_for(holders):
-            score = cosine_unit(vector, self.centroid)
-            scored[holder.key] = (score, vector if score >= self.tau else None)
-        return scored
+        """{key: (score, vector)} for `holders`, delegated to candidates.py
+        with this crawl's centroid and tau bound."""
+        return candidates_mod.scores_of(self.vectors_for, self.centroid, self.tau,
+                                        holders)
 
     def score(self, candidates) -> list[dict]:
-        """Cosine to the seed centroid for every NEW candidate.
+        """This level's NEW candidates, scored -- candidates.py with this
+        crawl's registry and measurement bound.
 
-        A candidate with no title carries no semantic content (the predicate
-        pg_embed.py applies to a page) and is scored -1.0 rather than
-        embedded: an empty string would land somewhere arbitrary on the
-        sphere instead of being visibly unusable.
-
-        A candidate is scored as registry.ScoringFields (key, title, and
-        the abstract still inverted), never as a Node: it becomes a node in
-        registry.add(), after it has passed tau, and only then is its
-        record absorbed."""
-        fresh, seen = [], set()
-        for record, relation, source_key in candidates:
-            identity = short_id(record.get("id"))
-            if identity in seen or self.registry.find(record) is not None:
-                continue
-            seen.add(identity)
-            fresh.append((record, relation, source_key))
-
-        holders = [scoring_fields(record) for record, _relation, _source in fresh]
-        scored = self.scores_of([h for h in holders if h.title])
-
-        out = []
-        for record, relation, source_key in fresh:
-            key = short_id(record.get("id"))
-            score, vector = scored.get(key, (-1.0, None))
-            out.append({
-                "record": record, "relation": relation, "discovered_from": source_key,
-                "candidate_key": key, "score": score, "vector": vector,
-                "title": record.get("title") or record.get("display_name"),
-                "year": record.get("publication_year"),
-            })
-        return out
+        Kept as a method so the crawl reads as one object, implemented
+        there so this file stays about traversal: the same division seed()
+        makes with seeding.py and gather() with gathering.py.
+        """
+        return candidates_mod.score(self.registry, self.scores_of, candidates)
 
     def expand(self, frontier_keys: list[str], depth: int) -> list[str]:
         """One level, written. Returns the keys kept at this level."""
-        candidates, found, hubs, references = self.gather(frontier_keys)
+        candidates, hubs, references = self.gather(frontier_keys)
         scored = self.score(candidates)
         steps, kept_keys = [], []
         for key, cited_by in hubs:
             steps.append(journal.hub_skip(self.crawl_id, depth, key, cited_by, self.hub_cap))
+        # Both counters over ONE population -- the candidates this level
+        # judged -- and both crediting EVERY frontier node a candidate was
+        # reached from. Counting what the frontier points at against what
+        # the filter kept compared a set of references with a set of
+        # candidates, and crediting one arbitrary hit lost the rest.
+        found: dict[str, int] = {key: 0 for key in frontier_keys}
         kept_per_frontier: dict[str, int] = {key: 0 for key in frontier_keys}
+        for item in scored:
+            for key in item["hits"]:
+                found[key] = found.get(key, 0) + 1
 
         for item in scored:
             if item["score"] < self.tau:
@@ -239,8 +218,8 @@ class Snowball:
             if is_new:
                 node.score, node.embedding = item["score"], item["vector"]
                 kept_keys.append(node.key)
-            kept_per_frontier[item["discovered_from"]] = \
-                kept_per_frontier.get(item["discovered_from"], 0) + 1
+            for key in item["hits"]:
+                kept_per_frontier[key] = kept_per_frontier.get(key, 0) + 1
             steps.append(journal.keep(
                 self.crawl_id, depth, item["candidate_key"], node.key,
                 item["score"], self.tau, item["relation"], item["discovered_from"]))
@@ -289,7 +268,7 @@ class Snowball:
         that badly (measured: 15177 references against 4262 distinct works --
         neighbours cite the same things), so the cost table needs the sets.
         """
-        candidates, _found, _hubs, references = self.gather(self.seed_keys)
+        candidates, _hubs, references = self.gather(self.seed_keys)
         self.candidate_refs = {key: set(refs) for key, refs in references.items()}
         return [{"candidate_key": item["candidate_key"], "depth": 1,
                  "relation": item["relation"], "score": item["score"],

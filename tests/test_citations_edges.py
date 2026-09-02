@@ -73,8 +73,9 @@ class DerivationCostTests(unittest.TestCase):
         kept = work("W_KEEP", title="Near", refs=["W_SEED"])
         registry.add(kept, kind="external-skeleton", depth=1)
         dropped = [work(f"W_DROP{i}", title="Far") for i in range(20)]
-        candidates = ([(kept, "cites", "W_SEED")]
-                      + [(record, "cites", "W_SEED") for record in dropped])
+        hits = frozenset({"W_SEED"})
+        candidates = ([(kept, "cites", hits)]
+                      + [(record, "cites", hits) for record in dropped])
         # What crawl.py hands over: only the candidates that became nodes.
         references = {"W_KEEP": ["W_SEED"]}
         return registry, candidates, references

@@ -1,10 +1,15 @@
 """citations/gathering.gather() on its own: what ONE level asks for.
 
 Driven directly with a fake client and a registry, not through
-Snowball.expand(): the hub exclusion, the attribution of a citer to the
-frontier node it actually cites, and the found-counts are properties of
-this function, and a test that reaches them through the crawl's wiring goes
-on passing when only that wiring is right.
+Snowball.expand(): the hub exclusion and the attribution of a candidate to
+the frontier nodes it was actually reached from are properties of this
+function, and a test that reaches them through the crawl's wiring goes on
+passing when only that wiring is right.
+
+Attribution is a SET, in both directions: a citer can cite several members
+of the frontier and a work can be referenced by several of them. What each
+node then brought in is counted by the crawl, over the candidates it
+judged -- see tests/test_citations_crawl.py for the journal side.
 """
 from __future__ import annotations
 
@@ -48,7 +53,7 @@ class MixedFrontierTests(unittest.TestCase):
     def test_only_the_node_under_the_cap_is_asked_upward(self):
         client = FakeClient([work("W_R2", title="Reference")],
                             citers={"W_PLAIN": [self.citer], "W_HUB": [self.hub_only]})
-        _candidates, _found, hubs, _references = self._gather(client)
+        _candidates, hubs, _references = self._gather(client)
         self.assertEqual(client.cites_batches, [["W_PLAIN"]],
                          "хаб спрошен вверх вопреки колпаку")
         self.assertEqual(hubs, [("W_HUB", HUB_CAP + 1)])
@@ -59,8 +64,8 @@ class MixedFrontierTests(unittest.TestCase):
         """
         client = FakeClient([work("W_R2", title="Reference")],
                             citers={"W_PLAIN": [self.citer], "W_HUB": [self.hub_only]})
-        candidates, _found, _hubs, _references = self._gather(client)
-        arrived = {record["id"].rsplit("/", 1)[-1] for record, _rel, _from in candidates}
+        candidates, _hubs, _references = self._gather(client)
+        arrived = {record["id"].rsplit("/", 1)[-1] for record, _rel, _hits in candidates}
         self.assertIn("W_CITER", arrived)
         self.assertNotIn("W_HUBFAN", arrived)
 
@@ -72,46 +77,68 @@ class MixedFrontierTests(unittest.TestCase):
         both = work("W_BOTH", title="Cites both", refs=["W_HUB", "W_PLAIN"])
         client = FakeClient([work("W_R2", title="Reference")],
                             citers={"W_PLAIN": [both]})
-        candidates, found, _hubs, _references = self._gather(client)
+        candidates, _hubs, _references = self._gather(client)
         cites = [c for c in candidates if c[1] == "cites"]
-        self.assertEqual([(c[1], c[2]) for c in cites], [("cites", "W_PLAIN")])
-        self.assertEqual(found["W_HUB"], 1, "хабу засчитан чужой цитирующий")
+        self.assertEqual([(c[1], c[2]) for c in cites],
+                         [("cites", frozenset({"W_PLAIN"}))])
 
-    def test_found_counts_both_directions_for_the_node_that_earned_them(self):
-        """Upward for the node under the cap, downward for both: a hub's
-        references cost no request and still count as found.
-        """
-        client = FakeClient([work("W_R2", title="Reference")],
-                            citers={"W_PLAIN": [self.citer]})
-        _candidates, found, _hubs, _references = self._gather(client)
-        self.assertEqual(found, {"W_HUB": 1, "W_PLAIN": 2})
-
-    def test_every_frontier_key_gets_a_count_even_when_nothing_is_found(self):
-        registry = _registry((work("W_QUIET", title="Quiet"), 0))
-        _candidates, found, hubs, _references = gathering.gather(
-            FakeClient([]), registry, ["W_QUIET"], HUB_CAP)
-        self.assertEqual(found, {"W_QUIET": 0})
-        self.assertEqual(hubs, [])
-
-    def test_a_reference_the_source_does_not_return_is_still_counted(self):
-        """found is what the frontier POINTS AT, not what came back: the
-        journal must not read as if the node had fewer references than it
-        does because OpenAlex dropped one.
+    def test_a_reference_the_source_does_not_return_is_no_candidate(self):
+        """A reference the frontier points at is not the same thing as a
+        candidate: nothing came back, nothing was judged, and no keep or
+        drop row exists for it. What the node points AT is recoverable from
+        its own record (referenced_works_count in evidence).
         """
         client = FakeClient([], citers={})
-        _candidates, found, _hubs, references = self._gather(client)
-        self.assertEqual(found, {"W_HUB": 1, "W_PLAIN": 1})
+        candidates, _hubs, references = self._gather(client)
+        self.assertEqual(candidates, [])
         self.assertEqual(references, {})
 
     def test_a_reference_is_asked_for_once_and_credited_to_its_discoverer(self):
         client = FakeClient([work("W_R1", title="Hub reference"),
                              work("W_R2", title="Reference")])
-        candidates, _found, _hubs, _references = self._gather(client)
+        candidates, _hubs, _references = self._gather(client)
         self.assertEqual(sorted(client.id_batches[0]), ["W_R1", "W_R2"])
-        referenced = {record["id"].rsplit("/", 1)[-1]: discovered_from
-                      for record, relation, discovered_from in candidates
+        referenced = {record["id"].rsplit("/", 1)[-1]: hits
+                      for record, relation, hits in candidates
                       if relation == "referenced"}
-        self.assertEqual(referenced, {"W_R1": "W_HUB", "W_R2": "W_PLAIN"})
+        self.assertEqual(referenced, {"W_R1": frozenset({"W_HUB"}),
+                                      "W_R2": frozenset({"W_PLAIN"})})
+
+
+class ManyToManyTests(unittest.TestCase):
+    """Discovery is many-to-many in both directions, and a candidate says so.
+
+    The single name it used to carry was the alphabetically first hit, so a
+    citer of three frontier nodes credited one of them and left the other
+    two looking as if they had found nothing.
+    """
+
+    def setUp(self):
+        self.registry = _registry((work("W_ONE", title="One", refs=["W_SHARED"]), 3),
+                                  (work("W_TWO", title="Two", refs=["W_SHARED"]), 3))
+
+    def test_a_citer_of_two_frontier_nodes_names_both(self):
+        citer = work("W_CITER", title="Citer", refs=["W_ONE", "W_TWO"])
+        client = FakeClient([work("W_SHARED", title="Shared reference")],
+                            citers={"W_ONE": [citer]})
+        candidates, _hubs, _references = gathering.gather(
+            client, self.registry, ["W_ONE", "W_TWO"], HUB_CAP)
+        hits = {record["id"].rsplit("/", 1)[-1]: h for record, _rel, h in candidates}
+        self.assertEqual(hits["W_CITER"], frozenset({"W_ONE", "W_TWO"}))
+
+    def test_a_reference_both_nodes_point_at_names_both(self):
+        """First-writer-wins on the wanted map gave the shared reference to
+        whichever frontier node was walked first.
+        """
+        client = FakeClient([work("W_SHARED", title="Shared reference")], citers={})
+        candidates, _hubs, _references = gathering.gather(
+            client, self.registry, ["W_ONE", "W_TWO"], HUB_CAP)
+        hits = {record["id"].rsplit("/", 1)[-1]: h for record, _rel, h in candidates}
+        self.assertEqual(hits["W_SHARED"], frozenset({"W_ONE", "W_TWO"}))
+
+    def test_the_one_name_the_single_valued_places_use_is_deterministic(self):
+        self.assertEqual(gathering.principal_hit(frozenset({"W_TWO", "W_ONE"})), "W_ONE")
+        self.assertEqual(gathering.principal_hit(frozenset()), "")
 
 
 class CandidateShapeTests(unittest.TestCase):
@@ -124,10 +151,10 @@ class CandidateShapeTests(unittest.TestCase):
         registry = _registry((work("W_SEED", title="Seed"), 0))
         citer = work("W_CITER", title="Citer", refs=["W_SEED", "W_OTHER"])
         client = FakeClient([], citers={"W_SEED": [citer]})
-        candidates, _found, _hubs, references = gathering.gather(
+        candidates, _hubs, references = gathering.gather(
             client, registry, ["W_SEED"], HUB_CAP)
-        record, relation, discovered_from = candidates[0]
-        self.assertEqual((relation, discovered_from), ("cites", "W_SEED"))
+        record, relation, hits = candidates[0]
+        self.assertEqual((relation, hits), ("cites", frozenset({"W_SEED"})))
         self.assertNotIn("referenced_works", record)
         self.assertEqual(record["referenced_works_count"], 2,
                          "счётчик ссылок нужен отчёту и остаётся")

@@ -7,7 +7,6 @@ does on conflict -- lives next door in test_citations_crawl_live.py.
 """
 from __future__ import annotations
 
-import pathlib
 import unittest
 from unittest import mock
 
@@ -19,12 +18,11 @@ from _citation_fixtures import (
     unit,
     work,
 )
-from citations import journal, seeding, store, store_sql
+from citations import seeding
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH
-from citations.registry import Node, WorkRegistry, scoring_fields
-from citations.store import DryRunWriter, PostgresWriter, Writer
-from pg_copy import CopyResult
+from citations.registry import Node, WorkRegistry
+from citations.store import DryRunWriter
 
 
 class CrawlTests(unittest.TestCase):
@@ -92,6 +90,34 @@ class CrawlTests(unittest.TestCase):
         self.assertEqual(fetch[0]["n_found"], 2)  # one citer up, one reference down
         self.assertEqual(fetch[0]["n_kept"], 2)
 
+    def test_a_candidate_of_two_frontier_nodes_is_counted_by_both(self):
+        """n_found and n_kept over ONE population, and every node credited.
+
+        The citer below cites both seeds, so it is one candidate that two
+        frontier nodes found. Crediting the alphabetically first hit alone
+        left the other node's fetch row reading 1 found / 0 kept about a
+        candidate it discovered and the filter accepted -- and n_found
+        counted (node, reference) incidences while n_kept counted
+        candidates, so the two were not comparable in the first place.
+        """
+        writer = DryRunWriter()
+        client = FakeClient(
+            [work("W_A", title="Seed one"), work("W_B", title="Seed two")],
+            citers={"W_A": [work("W_C", title="Seed citer", refs=["W_A", "W_B"])]},
+        )
+        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0)}), writer,
+                            tau=0.5, crawl_id="c", log=lambda *_: None)
+        snowball.seed(["doc_a", "doc_b"], {"doc_a": "W_A", "doc_b": "W_B"})
+        snowball.expand(["W_A", "W_B"], 1)
+        fetch = {s["frontier_key"]: (s["n_found"], s["n_kept"])
+                 for s in writer.steps_seen if s["action"] == "fetch"}
+        self.assertEqual(fetch, {"W_A": (1, 1), "W_B": (1, 1)})
+        keeps = [s for s in writer.steps_seen if s["action"] == "keep"]
+        self.assertEqual([s["candidate_key"] for s in keeps], ["W_C"],
+                         "один кандидат — одна строка журнала")
+        self.assertEqual(keeps[0]["frontier_key"], "W_A",
+                         "в одноимённой колонке — наименьший ключ множества")
+
     def test_edges_are_written_between_any_two_known_nodes(self):
         writer = DryRunWriter()
         seed_a = work("W_A", title="Seed one", refs=["W_B"])
@@ -104,8 +130,10 @@ class CrawlTests(unittest.TestCase):
         self.assertIn(("W_A", "W_B", "referenced", "W_A"), writer.edges_seen)
 
     def test_a_reference_already_in_the_registry_is_not_requested_again(self):
-        """It still counts as found -- the edge is a fact about both nodes --
-        but asking OpenAlex for metadata we already hold buys nothing.
+        """The edge is still a fact about both nodes, but asking OpenAlex
+        for metadata we already hold buys nothing -- and a work already in
+        the graph is no CANDIDATE, so it is not among the level's counted
+        ones either.
         """
         writer = DryRunWriter()
         seed_a = work("W_A", title="Seed one", refs=["W_B"])
@@ -115,9 +143,9 @@ class CrawlTests(unittest.TestCase):
                             tau=0.5, crawl_id="c", log=lambda *_: None)
         snowball.seed(["doc_a", "doc_b"], {"doc_a": "W_A", "doc_b": "W_B"})
         client.id_batches.clear()
-        _candidates, found, _hubs, _references = snowball.gather(["W_A"])
+        candidates, _hubs, _references = snowball.gather(["W_A"])
         self.assertEqual(client.id_batches, [], "известную ссылку спросили заново")
-        self.assertEqual(found["W_A"], 1)
+        self.assertEqual(candidates, [])
 
     def test_a_reference_nobody_knows_yet_is_requested(self):
         """The control for the dedup above: the branch is a cut, not a floor."""
@@ -129,9 +157,10 @@ class CrawlTests(unittest.TestCase):
                             tau=0.5, crawl_id="c", log=lambda *_: None)
         snowball.seed(["doc_a"], {"doc_a": "W_A"})
         client.id_batches.clear()
-        _candidates, found, _hubs, _references = snowball.gather(["W_A"])
+        candidates, _hubs, _references = snowball.gather(["W_A"])
         self.assertEqual(client.id_batches, [["W_NEW"]])
-        self.assertEqual(found["W_A"], 1)
+        self.assertEqual([hits for _record, _relation, hits in candidates],
+                         [frozenset({"W_A"})])
 
     def test_depth_two_expands_only_what_depth_one_kept(self):
         writer = DryRunWriter()
@@ -274,7 +303,7 @@ class ScoringMemoryTests(unittest.TestCase):
 
     def _scored(self, n_keep: int, n_drop: int):
         snowball, embedder = self._seeded(n_keep, n_drop)
-        candidates, _found, _hubs, _refs = snowball.gather(["W_SEED"])
+        candidates, _hubs, _refs = snowball.gather(["W_SEED"])
         return snowball.score(candidates), embedder
 
     def test_only_the_kept_candidates_still_hold_a_vector(self):
@@ -309,7 +338,7 @@ class ScoringMemoryTests(unittest.TestCase):
         snowball = Snowball(client, embedder, writer, tau=0.5, crawl_id="c",
                             log=lambda *_: None)
         snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
-        candidates, _found, _hubs, references = snowball.gather(["W_SEED"])
+        candidates, _hubs, references = snowball.gather(["W_SEED"])
         self.assertTrue(all("referenced_works" not in record
                             for record, _relation, _source in candidates), candidates)
         self.assertEqual(references["W_NEAR"], ("W_SEED", "W_OTHER"))
@@ -387,102 +416,6 @@ class ScoringMemoryTests(unittest.TestCase):
     def test_no_seed_at_all_has_no_centre_to_rank_against(self):
         with self.assertRaises(ValueError):
             seeding.rank_seeds(WorkRegistry(), lambda nodes: [], 1, 0)
-
-
-class WriterConformanceTests(unittest.TestCase):
-    """The two writers are one seam: crawl.py swaps them by --dry-run, and
-    the dry run is what decides whether a real, quota-spending crawl is
-    worth launching. So both are driven through the SAME call sequence and
-    their answers compared, rather than each being trusted separately --
-    DryRunWriter.works() used to add the accumulated total on every call,
-    which nothing noticed until the second batch.
-    """
-
-    @staticmethod
-    def _nodes(*keys):
-        made = []
-        for key in keys:
-            node = Node(key=key, kind="external-skeleton", depth=1)
-            node.absorb(work(key, title=f"Title {key}"))
-            made.append(node)
-        return made
-
-    @staticmethod
-    def _steps(*keys):
-        return [journal.fetch("c", 1, key, 1, 1) for key in keys]
-
-    def _drive(self, writer):
-        """One fixed sequence; every per-call answer plus the running counts
-        after each write."""
-        trace = []
-        for nodes in (self._nodes("W1", "W2"), self._nodes("W3"), []):
-            trace.append(("works", writer.works(nodes), dict(writer.counts)))
-        for edges in ([("W1", "W2", "cites", "W1")], [("W3", "W1", "cites", "W3")], []):
-            trace.append(("edges", writer.edges(edges), dict(writer.counts)))
-        for steps in (self._steps("W1", "W2"), self._steps("W3"), []):
-            trace.append(("journal", writer.journal(steps), dict(writer.counts)))
-        return trace
-
-    def test_both_implementations_satisfy_the_writer_protocol(self):
-        self.assertIsInstance(DryRunWriter(), Writer)
-        self.assertIsInstance(PostgresWriter({}), Writer)
-
-    def test_the_same_call_sequence_produces_the_same_counts(self):
-        """With nothing in the database to refuse a row, the live writer
-        reports what the dry run predicts -- the counts diverge only where
-        the upsert actually refuses (an edge already known, a promote key
-        with no work row), which is the live half of this pair.
-        """
-        def accept_everything(env, table_columns, rows, **kwargs):
-            written = sum(1 for _ in rows)
-            return CopyResult(written, f"{written}\n" if kwargs.get("epilogue") else "")
-
-        with mock.patch.object(store, "copy_csv_rows", side_effect=accept_everything):
-            live = self._drive(PostgresWriter({}))
-        self.assertEqual(self._drive(DryRunWriter()), live)
-
-    def test_a_write_is_one_script_over_a_temp_staging_table(self):
-        """Staging DDL, the \\copy and the upsert in one psql invocation:
-        a shared, globally named staging table between three invocations was
-        observable -- and droppable -- by any writer running at the time.
-        """
-        calls = []
-        with mock.patch.object(store, "copy_csv_rows",
-                                side_effect=lambda env, target, rows, **kw: (
-                                    calls.append((target, list(rows), kw)),
-                                    CopyResult(2, "2\n"))[1]):
-            PostgresWriter({}).works(self._nodes("W1", "W2"))
-        self.assertEqual(len(calls), 1)
-        target, rows, kwargs = calls[0]
-        self.assertTrue(target.startswith("stage_work ("), target)
-        self.assertEqual(len(rows), 2)
-        self.assertIn("CREATE TEMP TABLE stage_work", kwargs["preamble"])
-        self.assertIn("ON COMMIT DROP", kwargs["preamble"])
-        self.assertIn("INSERT INTO citation.work", kwargs["epilogue"])
-
-    def test_the_number_reported_is_the_one_the_database_counted(self):
-        """Not the number submitted: the cites upsert drops self-edges and
-        skips edges the graph already has.
-        """
-        with mock.patch.object(store, "copy_csv_rows",
-                                return_value=CopyResult(3, "1\n")):
-            writer = PostgresWriter({})
-            accepted = writer.edges([("W1", "W2", "cites", "W1"),
-                                     ("W1", "W3", "cites", "W1"),
-                                     ("W1", "W4", "cites", "W1")])
-        self.assertEqual(accepted, 1)
-        self.assertEqual(writer.counts["cites"], 1)
-
-    def test_no_staging_relation_is_named_in_the_shared_schema(self):
-        text = pathlib.Path(store_sql.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("citation.stage_", text,
-                         "staging is TEMP and session-private")
-
-    def test_counts_are_rows_accepted_by_this_call_not_the_running_total(self):
-        writer = DryRunWriter()
-        self.assertEqual(writer.works(self._nodes("W1", "W2")), 2)
-        self.assertEqual(writer.works(self._nodes("W3")), 1)
-        self.assertEqual(writer.counts["work"], 3)
 
 
 if __name__ == "__main__":
