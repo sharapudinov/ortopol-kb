@@ -28,6 +28,15 @@ Switched 2026-09-02 from `pgvector/pgvector:pg17` (17.10) to this image
 -p 127.0.0.1:5470:5432 -v ortopol-pg-data:/var/lib/postgresql/data:z` with
 the same POSTGRES_* env, then `CREATE EXTENSION IF NOT EXISTS age;`.
 
+The base image moved from Debian 12 to 13, i.e. glibc 2.36 -> 2.41, and
+Postgres logged `collation version mismatch` for every database: btree
+indexes over text columns (documents_pkey among them) are ordered by the
+old glibc and may miss rows under the new one. Done right after the switch:
+`REINDEX DATABASE ortopol;` (0.8 s here) then `ALTER DATABASE <db> REFRESH
+COLLATION VERSION;` for ortopol, template1 and postgres. Any later image
+change that moves glibc again needs the same two steps -- including a
+rollback to the Debian 12 image.
+
 ## Rollback
 
 Live: `DROP EXTENSION age CASCADE;` FIRST -- the extension's catalog objects
