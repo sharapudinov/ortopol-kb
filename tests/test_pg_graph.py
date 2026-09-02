@@ -243,15 +243,20 @@ class ProjectionDiffTests(unittest.TestCase):
     def test_returns_the_four_counts_in_relational_then_graph_order(self):
         with mock.patch.object(pg_graph_common, "graph_exists", return_value=True), \
              mock.patch.object(pg_graph_common, "scalar", side_effect=["438", "2425"]), \
-             mock.patch.object(pg_graph_common, "graph_counts", return_value=(438, 2424)):
-            self.assertEqual(pg_graph_common.projection_diff({}), (438, 2425, 438, 2424))
+             mock.patch.object(pg_graph_common, "graph_counts", return_value=(438, 2424)), \
+             mock.patch.object(pg_graph_common, "content_fingerprints",
+                               return_value=("a", "a", "b", "b")):
+            seen = pg_graph_common.projection_diff({})
+        self.assertEqual(seen[:4], (438, 2425, 438, 2424))
 
     def test_check_renders_the_diff_as_an_exit_code(self):
+        # The content half of the reading lives in test_pg_graph_projection.py.
+        faithful = pg_graph_common.Projection(5, 3, 5, 3, "w", "w", "c", "c")
         with mock.patch.object(pg_graph_common, "projection_diff",
-                               return_value=(5, 3, 5, 3)):
+                               return_value=faithful):
             self.assertEqual(pg_graph_common.check({}), 0)
         with mock.patch.object(pg_graph_common, "projection_diff",
-                               return_value=(5, 3, 4, 3)):
+                               return_value=faithful._replace(vertex_n=4)):
             self.assertEqual(pg_graph_common.check({}), 1)
         with mock.patch.object(pg_graph_common, "projection_diff", return_value=None):
             self.assertEqual(pg_graph_common.check({}), 1)

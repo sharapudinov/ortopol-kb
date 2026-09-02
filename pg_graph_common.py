@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from pg_common import run_sql, run_sql_file, scalar, scalar_row
 
@@ -145,32 +146,130 @@ def graph_counts(env: dict[str, str]) -> tuple[int, int]:
 def compare_counts(work_n: int, cites_n: int, vertex_n: int, edge_n: int) -> tuple[int, int]:
     """(diff_vertices, diff_edges) = (actual graph count - relational count).
 
-    Both zero means the graph is a faithful projection of the relational
-    tables; pulled out as a pure function so the comparison itself has a
-    unit test that needs no live database.
+    Cardinality only, and cardinality is not faithfulness -- see
+    projection_faults() for the other half. Pulled out as a pure function
+    so the arithmetic has a unit test that needs no live database.
     """
     return (vertex_n - work_n, edge_n - cites_n)
 
 
-def projection_diff(env: dict[str, str]) -> tuple[int, int, int, int] | None:
-    """(work_n, cites_n, vertex_n, edge_n), or None when there is no graph.
+# The projection's CONTENT, as two md5 pairs. The graph does not merely
+# have to be the right SIZE: the read path serves graph properties
+# (pg_graph_cypher's citers query returns key/title/year/kind straight out
+# of the label table), and citations/store.py updates title/kind/year on
+# rows that already exist -- a row-count-preserving change that leaves the
+# graph carrying yesterday's title while every count still matches.
+#
+# Both sides of each pair are built from the same field order and the same
+# separators, and ordered under COLLATE "C" so the digest does not depend
+# on the database's collation. chr(10) rather than an escaped literal: the
+# statement travels through a psql script, where one backslash convention
+# fewer is one hazard fewer. An empty table digests as md5('') on both
+# sides, so an empty graph over empty tables is faithful, not "unknown".
+_FINGERPRINT_SQL = """
+SELECT
+ (SELECT md5(coalesce(string_agg(
+    coalesce(w.key,'')||'|'||coalesce(w.kind,'')||'|'
+    ||coalesce(w.year::text,'')||'|'||coalesce(w.title,''),
+    chr(10) ORDER BY w.key COLLATE "C"), ''))
+  FROM citation.work w),
+ (SELECT md5(coalesce(string_agg(
+    v.key||'|'||v.kind||'|'||v.year||'|'||v.title,
+    chr(10) ORDER BY v.key COLLATE "C"), ''))
+  FROM (SELECT coalesce(properties->>'"key"','') AS key,
+               coalesce(properties->>'"kind"','') AS kind,
+               coalesce(properties->>'"year"','') AS year,
+               coalesce(properties->>'"title"','') AS title
+        FROM {graph}."Work") v),
+ (SELECT md5(coalesce(string_agg(
+    a.key||'|'||b.key||'|'||ci.source,
+    chr(10) ORDER BY a.key COLLATE "C", b.key COLLATE "C", ci.source COLLATE "C"), ''))
+  FROM citation.cites ci
+  JOIN citation.work a ON a.id = ci.citing
+  JOIN citation.work b ON b.id = ci.cited),
+ (SELECT md5(coalesce(string_agg(
+    e.citing||'|'||e.cited||'|'||e.source,
+    chr(10) ORDER BY e.citing COLLATE "C", e.cited COLLATE "C", e.source COLLATE "C"), ''))
+  FROM (SELECT coalesce(s.properties->>'"key"','') AS citing,
+               coalesce(t.properties->>'"key"','') AS cited,
+               coalesce(c.properties->>'"source"','') AS source
+        FROM {graph}."CITES" c
+        JOIN {graph}."Work" s ON s.id = c.start_id
+        JOIN {graph}."Work" t ON t.id = c.end_id) e);
+"""
 
-    The whole reading behind "is the projection faithful", in one place:
-    does the graph exist at all, how many rows do the relational tables
-    hold, how many does AGE hold. compare_counts() is the arithmetic over
-    the result and every asker renders it differently -- an exit code
+
+class Projection(NamedTuple):
+    """One reading of the projection: how big both sides are, and what both
+    sides say. The fingerprints are the content half of "faithful"; the
+    counts stay separate because they are what a human can act on.
+    """
+
+    work_n: int
+    cites_n: int
+    vertex_n: int
+    edge_n: int
+    work_digest: str
+    graph_work_digest: str
+    cites_digest: str
+    graph_cites_digest: str
+
+
+def content_fingerprints(env: dict[str, str]) -> tuple[str, str, str, str]:
+    """(work, graph work, cites, graph cites) md5s, in one round trip.
+
+    Measured on the live 438-work / 2425-edge graph (AGE 1.7.0, PostgreSQL
+    17.11): 13 ms for all four digests together, i.e. the content reading
+    costs the check nothing a caller would notice.
+    """
+    return tuple(graph_sql(
+        env,
+        _FINGERPRINT_SQL.format(graph=GRAPH_NAME),
+        extra_args=["-t", "-A", "-F", FIELD_SEP],
+    ).stdout.strip().split(FIELD_SEP))
+
+
+def projection_diff(env: dict[str, str]) -> Projection | None:
+    """The whole reading behind "is the projection faithful", or None when
+    there is no graph.
+
+    Does the graph exist at all, how many rows does each side hold, and
+    what does each side actually carry. projection_faults() is the verdict
+    over the result and every asker renders it differently -- an exit code
     (check), a list of problem strings (citation_checks), an (ok, detail)
-    pair against the manifest (deploy/smoke_checks) -- but the reads, the
-    graph-missing branch and the order of the four numbers are this
-    function's, not each caller's. Three copies of that sequence is what
-    compare_counts() was already meant to prevent, one level shallower.
+    pair against the manifest (deploy/smoke_checks) -- but the reads and
+    the graph-missing branch are this function's, not each caller's.
     """
     if not graph_exists(env):
         return None
     work_n = int(scalar(env, "SELECT count(*) FROM citation.work;"))
     cites_n = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
     vertex_n, edge_n = graph_counts(env)
-    return work_n, cites_n, vertex_n, edge_n
+    return Projection(work_n, cites_n, vertex_n, edge_n, *content_fingerprints(env))
+
+
+def projection_faults(seen: Projection) -> list[str]:
+    """Every way `seen` is not a faithful projection, worded once here.
+
+    Empty means faithful. A digest mismatch stands on its own: equal counts
+    with unequal content is the normal shape of the failure, not an exotic
+    one, so it is reported even when the arithmetic agrees.
+    """
+    faults = []
+    diff_v, diff_e = compare_counts(
+        seen.work_n, seen.cites_n, seen.vertex_n, seen.edge_n)
+    if diff_v != 0 or diff_e != 0:
+        faults.append(
+            f"work={seen.work_n} vertices={seen.vertex_n} (diff {diff_v}); "
+            f"cites={seen.cites_n} edges={seen.edge_n} (diff {diff_e})")
+    for what, ours, theirs in (
+        ("вершины (key|kind|year|title)", seen.work_digest, seen.graph_work_digest),
+        ("рёбра (citing|cited|source)", seen.cites_digest, seen.graph_cites_digest),
+    ):
+        if ours != theirs:
+            faults.append(f"content fingerprint differs: {what} — "
+                          f"таблицы {ours}, граф {theirs}")
+    return faults
 
 
 def check(env: dict[str, str]) -> int:
@@ -179,21 +278,16 @@ def check(env: dict[str, str]) -> int:
     Here rather than in the CLI because two entry points ask the question
     -- `pg_graph.py project --check` and pg_load_citations.py after a crawl
     -- and a second implementation of the comparison is exactly what
-    compare_counts() exists to prevent.
+    projection_faults() exists to prevent.
     """
-    diff = projection_diff(env)
-    if diff is None:
+    seen = projection_diff(env)
+    if seen is None:
         print(f"проекция не строилась: графа {GRAPH_NAME} нет в ag_catalog.ag_graph",
               file=sys.stderr)
         return 1
-    work_n, cites_n, vertex_n, edge_n = diff
-    diff_v, diff_e = compare_counts(work_n, cites_n, vertex_n, edge_n)
-    if diff_v == 0 and diff_e == 0:
-        print(f"OK: |V|={vertex_n} |E|={edge_n}")
+    faults = projection_faults(seen)
+    if not faults:
+        print(f"OK: |V|={seen.vertex_n} |E|={seen.edge_n}")
         return 0
-    print(
-        f"MISMATCH: work={work_n} vertices={vertex_n} (diff {diff_v}); "
-        f"cites={cites_n} edges={edge_n} (diff {diff_e})",
-        file=sys.stderr,
-    )
+    print("MISMATCH: " + "; ".join(faults), file=sys.stderr)
     return 1

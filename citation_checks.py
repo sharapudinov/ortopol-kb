@@ -94,16 +94,12 @@ def _projection_stale(env: dict) -> list[str]:
     completeness problems -- pg_graph_common.projection_diff() owns the
     reading, this owns only the wording.
     """
-    diff = pg_graph_common.projection_diff(env)
-    if diff is None:
+    seen = pg_graph_common.projection_diff(env)
+    if seen is None:
         return ["PROJECTION STALE: citation_graph is not projected "
                 "(python3 pg_graph.py project)"]
-    work_n, cites_n, vertex_n, edge_n = diff
-    diff_v, diff_e = pg_graph_common.compare_counts(work_n, cites_n, vertex_n, edge_n)
-    if diff_v == 0 and diff_e == 0:
-        return []
-    return [f"PROJECTION STALE: work={work_n} vertices={vertex_n} (diff {diff_v}); "
-            f"cites={cites_n} edges={edge_n} (diff {diff_e})"]
+    return [f"PROJECTION STALE: {fault}"
+            for fault in pg_graph_common.projection_faults(seen)]
 
 
 _NO_SEMANTIC_KEY_SQL = """

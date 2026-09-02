@@ -164,24 +164,24 @@ def check_citation_projection(env: dict, manifest: dict) -> tuple[bool | None, s
     mode = citation.get(Key.CITATION_MODE)
     if mode is None or mode == CitationMode.NONE:
         return None, f"citation mode={mode!r} -- профиль не несёт граф, проверять нечего"
-    diff = pg_graph_common.projection_diff(env)
-    if diff is None:
+    seen = pg_graph_common.projection_diff(env)
+    if seen is None:
         return False, "citation_graph не спроецирован после restore (init/02_project_graph.sql?)"
-    # The reading is projection_diff()'s; what this check adds is WHICH
-    # counts the graph is held against. Two comparisons, not one: the graph
-    # against the restored tables (the projection ran and is faithful) and
-    # the restored tables against the manifest (the dump carries what the
-    # package says it carries). Only the first was made here before, so a
-    # dump short of its own manifest passed as long as the projection
-    # reproduced the shortfall faithfully.
-    work_n, cites_n, vertex_n, edge_n = diff
+    # The reading (counts AND content digests) is projection_diff()'s; what
+    # this check adds is WHICH counts the graph is held against. Two
+    # comparisons, not one: the graph against the restored tables (the
+    # projection ran and is faithful) and the restored tables against the
+    # manifest (the dump carries what the package says it carries). Only the
+    # first was made here before, so a dump short of its own manifest passed
+    # as long as the projection reproduced the shortfall faithfully.
+    faults = pg_graph_common.projection_faults(seen)
     want_work = citation.get(Key.WORK_COUNT, 0)
     want_cites = citation.get(Key.CITES_COUNT, 0)
-    diff_v, diff_e = pg_graph_common.compare_counts(work_n, cites_n, vertex_n, edge_n)
-    ok = diff_v == 0 and diff_e == 0 and work_n == want_work and cites_n == want_cites
-    return ok, (f"vertices={vertex_n} (work {work_n}, diff {diff_v}), "
-                f"edges={edge_n} (cites {cites_n}, diff {diff_e}); "
-                f"манифест: work {want_work}, cites {want_cites}")
+    ok = not faults and seen.work_n == want_work and seen.cites_n == want_cites
+    return ok, (f"vertices={seen.vertex_n} (work {seen.work_n}), "
+                f"edges={seen.edge_n} (cites {seen.cites_n}); "
+                f"манифест: work {want_work}, cites {want_cites}"
+                + ("; " + "; ".join(faults) if faults else ""))
 
 
 # blob_sha256/check_blob_roundtrip/check_blob_corruption_detected now live in

@@ -55,6 +55,11 @@ GRAPH_IS_PROJECTION [HARD, 2026-09-02]: истина графа цитирова
   артефакт пересоздаёт проекцию init-скриптом 02_project_graph.sql; писать в граф
   мимо таблиц запрещено — `pg_graph.py project --check` и corpus_completeness
   (citation_checks.py) ловят расхождение как PROJECTION STALE.
+  Верность проекции — КОНТЕНТНАЯ, не количественная: читатели берут из графа
+  свойства (key/kind/year/title, source ребра), а UPDATE title/kind на
+  существующей строке счётчиков не меняет. Отпечатки обеих сторон считает
+  pg_graph_common.content_fingerprints(), вердикт — projection_faults();
+  сравнение только |V|/|E| в новом коде запрещено как класс.
 CITATION_POLICY_IS_DATA [HARD, 2026-09-02]: режим схемы citation в профиле public —
   строка citation.public_policy (full-skeleton | topology-only | none), пишет
   владелец; без строки public-сборка отказывается (тот же принцип, что
