@@ -13,12 +13,18 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
 import pg_graph_common
 import pg_graph_queries as pgq
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
+
+
+# Enough to defeat the default --limit where a live test has to find one
+# specific fixture pair in a graph whose real pairs outrank it.
+ALL_PAIRS = 100_000
 
 
 def _live_env() -> dict[str, str]:
@@ -143,6 +149,40 @@ class CandidatesRankingTests(unittest.TestCase):
         self.assertEqual([r["key"] for r in ranked], ["a", "z"])
 
 
+class CocitationSqlTests(unittest.TestCase):
+    """The self-join is bounded on BOTH sides: which citers may generate
+    pairs at all, and how many pairs come back.
+    """
+
+    SQL = pgq._COCITATION_SQL
+
+    def test_out_degree_cap_is_applied_before_the_self_join(self):
+        citers = self.SQL[self.SQL.index("WITH citers AS ("):self.SQL.index("pairs AS (")]
+        self.assertIn("HAVING count(*) <= :max_out_degree", citers)
+        self.assertLess(self.SQL.index(":max_out_degree"),
+                        self.SQL.index("JOIN citation.cites c2"))
+
+    def test_the_self_join_only_sees_capped_citers(self):
+        self.assertIn("JOIN citers ON citers.citing = c1.citing", self.SQL)
+
+    def test_result_is_limited_and_ordered_deterministically(self):
+        self.assertIn("ORDER BY p.n DESC, wa.key, wb.key", self.SQL)
+        self.assertIn("LIMIT :limit", self.SQL)
+        self.assertLess(self.SQL.index("ORDER BY p.n DESC"), self.SQL.index("LIMIT :limit"))
+
+    def test_defaults_are_named_once_and_reach_the_query(self):
+        seen = {}
+
+        def fake_graph_sql(env, sql, variables=None, extra_args=None):
+            seen.update(variables or {})
+            return mock.Mock(stdout="")
+
+        with mock.patch.object(pgq.pg_graph_common, "graph_sql", side_effect=fake_graph_sql):
+            pgq.cocitation({})
+        self.assertEqual(seen["max_out_degree"], str(pgq.MAX_OUT_DEGREE))
+        self.assertEqual(seen["limit"], str(pgq.COCITATION_LIMIT))
+
+
 class VosviewerExportTests(unittest.TestCase):
     """Format: https://app.vosviewer.com/docs/file-types/map-and-network-file-type/
     -- tab-delimited; map file has a header row and one row per distinct
@@ -262,9 +302,67 @@ class LiveConsumersTests(unittest.TestCase):
         citer_keys = {r["key"] for r in pgq.citers(self.env, "INDEX", depth=1)}
         self.assertIn(f"{self.PREFIX}b", citer_keys)
 
-        pairs = pgq.cocitation(self.env, min_count=1)
+        # ALL_PAIRS: the fixture's pair is co-cited once, so it sits at the
+        # very end of the count-ordered answer -- the default --limit is a
+        # human-sized table, not a set to search for one row in.
+        pairs = pgq.cocitation(self.env, min_count=1, limit=ALL_PAIRS)
         found = {(p["a_key"], p["b_key"]) for p in pairs} | {(p["b_key"], p["a_key"]) for p in pairs}
         self.assertIn((f"{self.PREFIX}a", f"{self.PREFIX}c"), found)
+
+    def test_a_citer_past_the_out_degree_cap_generates_no_pairs(self):
+        """The fixture's one citer cites three works, so it would produce
+        three pairs; under a cap of two it produces none, and the pairs its
+        under-cap sibling produces are unaffected.
+        """
+        self.addCleanup(self._cleanup)
+        run_sql(
+            self.env,
+            f"""
+            INSERT INTO citation.work (key, title, source, kind) VALUES
+              ('{self.PREFIX}fat', 'Bibliography', 'manual', 'external-skeleton'),
+              ('{self.PREFIX}thin', 'Ordinary citer', 'manual', 'external-skeleton'),
+              ('{self.PREFIX}x', 'X', 'manual', 'external-skeleton'),
+              ('{self.PREFIX}y', 'Y', 'manual', 'external-skeleton'),
+              ('{self.PREFIX}z', 'Z', 'manual', 'external-skeleton');
+            INSERT INTO citation.cites (citing, cited, source)
+            SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
+            WHERE x.key = '{self.PREFIX}fat'
+              AND y.key IN ('{self.PREFIX}x', '{self.PREFIX}y', '{self.PREFIX}z');
+            INSERT INTO citation.cites (citing, cited, source)
+            SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
+            WHERE x.key = '{self.PREFIX}thin'
+              AND y.key IN ('{self.PREFIX}x', '{self.PREFIX}y');
+            """,
+        )
+        ours = {f"{self.PREFIX}x", f"{self.PREFIX}y", f"{self.PREFIX}z"}
+
+        def pairs_under(cap):
+            return {(p["a_key"], p["b_key"])
+                    for p in pgq.cocitation(self.env, min_count=1, max_out_degree=cap,
+                                            limit=ALL_PAIRS)
+                    if p["a_key"] in ours and p["b_key"] in ours}
+
+        self.assertEqual(len(pairs_under(3)), 3, "все три пары «жирного» цитирующего")
+        self.assertEqual(pairs_under(2), {(f"{self.PREFIX}x", f"{self.PREFIX}y")},
+                         "под кэпом остаётся только пара от цитирующего в пределах кэпа")
+
+    def test_limit_caps_the_answer_at_the_most_co_cited_pairs(self):
+        self.addCleanup(self._cleanup)
+        run_sql(
+            self.env,
+            f"""
+            INSERT INTO citation.work (key, title, source, kind) VALUES
+              ('{self.PREFIX}c1', 'Citer', 'manual', 'external-skeleton'),
+              ('{self.PREFIX}x', 'X', 'manual', 'external-skeleton'),
+              ('{self.PREFIX}y', 'Y', 'manual', 'external-skeleton'),
+              ('{self.PREFIX}z', 'Z', 'manual', 'external-skeleton');
+            INSERT INTO citation.cites (citing, cited, source)
+            SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
+            WHERE x.key = '{self.PREFIX}c1'
+              AND y.key IN ('{self.PREFIX}x', '{self.PREFIX}y', '{self.PREFIX}z');
+            """,
+        )
+        self.assertEqual(len(pgq.cocitation(self.env, min_count=1, limit=2)), 2)
 
     def test_candidates_and_hybrid_answer_from_the_same_fixture(self):
         """candidates() must find an external-skeleton node linked to one of

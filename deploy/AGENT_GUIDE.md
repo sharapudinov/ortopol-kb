@@ -314,7 +314,7 @@ WHERE family && array['meixner'];
 cd corpus_lib
 python3 pg_graph.py --pgenv ../.pgenv citers <document_id> [--depth N]        # кто (транзитивно, N ≤ 3) цитирует документ
 python3 pg_graph.py --pgenv ../.pgenv candidates [--top K] [--query "текст"] [--min-links N]  # внешние узлы, ближайшие по смыслу/связям к корпусу
-python3 pg_graph.py --pgenv ../.pgenv cocitation [--min-count M] [--export-vosviewer DIR]     # пары, процитированные вместе; экспорт в VOSviewer
+python3 pg_graph.py --pgenv ../.pgenv cocitation [--min-count M] [--max-out-degree D] [--limit L] [--export-vosviewer DIR]  # пары, процитированные вместе (цитирующие с большим числом ссылок пар не порождают); экспорт в VOSviewer
 python3 pg_graph.py --pgenv ../.pgenv hybrid "вопрос" [--top K] [--show-sql]  # ближайшие по эмбеддингу узлы + их соседи в графе
 ```
 

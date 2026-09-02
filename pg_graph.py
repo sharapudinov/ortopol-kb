@@ -13,7 +13,8 @@ Usage:
     python3 pg_graph.py project --check       # compares graph vs relational counts
     python3 pg_graph.py citers <document_id> [--depth N]
     python3 pg_graph.py candidates [--top K] [--query "<текст>"] [--min-links N]
-    python3 pg_graph.py cocitation [--min-count M] [--export-vosviewer <dir>]
+    python3 pg_graph.py cocitation [--min-count M] [--max-out-degree D] [--limit L]
+                                   [--export-vosviewer <dir>]
     python3 pg_graph.py hybrid "<вопрос>" [--top K] [--show-sql]
 """
 from __future__ import annotations
@@ -62,7 +63,8 @@ def cmd_candidates(args, env) -> int:
 
 
 def cmd_cocitation(args, env) -> int:
-    pairs = pgq.cocitation(env, min_count=args.min_count)
+    pairs = pgq.cocitation(env, min_count=args.min_count,
+                           max_out_degree=args.max_out_degree, limit=args.limit)
     if args.export_vosviewer:
         map_path, network_path, n_nodes, n_edges = pgq.write_vosviewer_export(pairs, Path(args.export_vosviewer))
         print(f"{map_path}: {n_nodes} узлов")
@@ -114,6 +116,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     cocitation_parser = sub.add_parser("cocitation")
     cocitation_parser.add_argument("--min-count", type=int, default=2, dest="min_count")
+    cocitation_parser.add_argument(
+        "--max-out-degree", type=int, default=pgq.MAX_OUT_DEGREE, dest="max_out_degree",
+        help="a citing work with more outgoing references than this generates no pairs "
+             f"(default {pgq.MAX_OUT_DEGREE}; see pg_graph_queries._COCITATION_SQL)",
+    )
+    cocitation_parser.add_argument(
+        "--limit", type=int, default=pgq.COCITATION_LIMIT,
+        help=f"how many of the most co-cited pairs to return (default {pgq.COCITATION_LIMIT})",
+    )
     cocitation_parser.add_argument("--export-vosviewer", default=None, dest="export_vosviewer")
 
     hybrid_parser = sub.add_parser("hybrid")

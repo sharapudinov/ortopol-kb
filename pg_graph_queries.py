@@ -167,28 +167,68 @@ def candidates(env, top: int = 20, query: str | None = None, min_links: int = 0)
 
 # ------------------------------------------------------------- cocitation --
 
+# A citing work with more outgoing references than this generates no pairs
+# at all. The self-join below is quadratic in the per-citer reference count
+# -- one citer with k references materialises k*(k-1)/2 pairs BEFORE the
+# min_count aggregate can discard any of them -- and the works with the
+# largest k are bibliographies, surveys and handbooks, whose "these two are
+# cited together" says something about the field rather than about the two.
+# Measured on the present graph (2026-09-02): 365 citing works, mean
+# out-degree 6.6, maximum 54, so the default cuts nothing here; it exists so
+# that a depth-2 crawl pulling in a review with several hundred references
+# cannot turn one node into a hundred thousand intermediate pairs.
+MAX_OUT_DEGREE = 200
+# ... and however many citers survive the cap, the answer itself is a table
+# a human reads: the most co-cited pairs, not every pair above min_count
+# (2425 edges already yield 1005 pairs at min_count=4).
+COCITATION_LIMIT = 500
+
 # Co-citation, not bibliographic coupling: a pair (a, b) counts once per
 # THIRD work that cites both -- c1.citing = c2.citing is the shared citer,
 # c1.cited < c2.cited both dedupes the unordered pair and orders it so
 # (a, b) and (b, a) are never counted as two different pairs.
+#
+# The cap is a CTE over the aggregate, applied before the join rather than
+# as a HAVING over the pairs: filtering afterwards would already have paid
+# for generating them. The ORDER BY carries the two keys after the count so
+# that two runs over unchanged data return the same LIMIT-ed set, not an
+# arbitrary slice of the ties (rank_candidates's reason, applied here in
+# SQL because the cut is the database's).
 _COCITATION_SQL = """
-SELECT wa.key, coalesce(wa.title, ''), wb.key, coalesce(wb.title, ''), n::text
-FROM (
-    SELECT LEAST(c1.cited, c2.cited) AS a_id, GREATEST(c1.cited, c2.cited) AS b_id,
-           count(DISTINCT c1.citing) AS n
+WITH citers AS (
+    SELECT citing
+    FROM citation.cites
+    GROUP BY citing
+    HAVING count(*) <= :max_out_degree
+),
+pairs AS (
+    SELECT c1.cited AS a_id, c2.cited AS b_id, count(DISTINCT c1.citing) AS n
     FROM citation.cites c1
-    JOIN citation.cites c2 ON c1.citing = c2.citing AND c1.cited < c2.cited
-    GROUP BY a_id, b_id
+    JOIN citers ON citers.citing = c1.citing
+    JOIN citation.cites c2 ON c2.citing = c1.citing AND c1.cited < c2.cited
+    GROUP BY c1.cited, c2.cited
     HAVING count(DISTINCT c1.citing) >= :min_count
-) pairs
-JOIN citation.work wa ON wa.id = pairs.a_id
-JOIN citation.work wb ON wb.id = pairs.b_id
-ORDER BY n DESC;
+)
+SELECT wa.key, coalesce(wa.title, ''), wb.key, coalesce(wb.title, ''), p.n::text
+FROM pairs p
+JOIN citation.work wa ON wa.id = p.a_id
+JOIN citation.work wb ON wb.id = p.b_id
+ORDER BY p.n DESC, wa.key, wb.key
+LIMIT :limit;
 """
 
 
-def cocitation(env, min_count: int = 2) -> list[dict]:
-    result = pg_graph_common.graph_sql(env, _COCITATION_SQL, variables={"min_count": str(min_count)},
+def cocitation(env, min_count: int = 2, max_out_degree: int = MAX_OUT_DEGREE,
+               limit: int = COCITATION_LIMIT) -> list[dict]:
+    """The `limit` most co-cited pairs, counting only citers under the
+    out-degree cap. Both bounds travel with the result: the VOSviewer
+    export is written from exactly the pairs returned here, so the map and
+    the printed table can never describe different sets.
+    """
+    variables = {"min_count": str(int(min_count)),
+                 "max_out_degree": str(int(max_out_degree)),
+                 "limit": str(int(limit))}
+    result = pg_graph_common.graph_sql(env, _COCITATION_SQL, variables=variables,
                                  extra_args=ROW_ARGS)
     pairs = []
     for rec in split_records(result.stdout):
