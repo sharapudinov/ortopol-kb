@@ -110,13 +110,21 @@ def citers(env, document_id: str, depth: int = 1) -> list[dict]:
 # citation.work on `key`, alongside a pgvector nearest-neighbour CTE over
 # the same table. One SQL statement, two extensions.
 #
-# The traversal is BOUNDED by the seeds it will be joined to. An unfiltered
-# `MATCH (a:Work)-[:CITES]->(b:Work)` materialised the entire edge set on
-# every call -- cast to text, hashed and then joined against `top` (10) rows
-# -- so a query touching at most ten seeds and their 1-hop neighbours paid
-# for the whole graph. Restricting the MATCH to the seed keys makes the work
-# proportional to `top`, and the answer is identical: no edge outside that
-# neighbourhood could survive either join below.
+# The MATCH is restricted to the seed keys, and what that buys is the
+# MATERIALISATION, not the traversal. AGE 1.7 indexes no vertex property by
+# itself (pg_schema_citation_graph.sql's own measured note: even a btree on
+# the key property does not rescue a property MATCH), so the WHERE cannot
+# reach an index and the label scan happens either way. Measured on this
+# instance, EXPLAIN (ANALYZE, BUFFERS) of the edges CTE with and without the
+# WHERE, at 438 vertices / 2425 edges: both plans seq-scan "CITES" (2425
+# rows) and both "Work" tables (438 rows each); the filtered one is a Hash
+# Join with "Rows Removed by Join Filter: 2150", returning 275 rows in
+# 2.9 ms against 2425 rows in 4.4 ms. So the traversal stays O(|E|) and only
+# the agtype->text cast, the hashing and the joins below shrink to the seed
+# neighbourhood. Worth keeping -- the answer is identical, since no edge
+# outside that neighbourhood survives either join below -- but the call is
+# not proportional to `top`, and the shape will have to change, not merely
+# be re-filtered, once |E| starts to matter.
 #
 # The keys are spliced as Cypher literals, not bound: cypher()'s second
 # argument must be a dollar-quoted constant (see pg_schema_citation.sql's

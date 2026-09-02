@@ -262,9 +262,11 @@ class VosviewerExportTests(unittest.TestCase):
 
 class HybridSqlTests(unittest.TestCase):
     """The AGE+pgvector demonstration stays exactly that -- cypher() in a
-    FROM clause, JOINed against citation.work -- but the traversal is
-    bounded by the seeds it will actually be joined to, so its cost is
-    proportional to `top` and not to |E|.
+    FROM clause, JOINed against citation.work -- with the MATCH restricted
+    to the seeds it will actually be joined to. What the restriction buys
+    is measured beside the statement itself: on AGE 1.7 the label scan
+    happens either way, and it is the agtype materialisation and the joins
+    below that shrink, not the traversal.
     """
 
     SEEDS = [("k1", "k1", "0.742"), ("k2", "k2", "0.5")]
@@ -292,10 +294,10 @@ class HybridSqlTests(unittest.TestCase):
         self.assertIn("citation.cypher_literal(key)", pgc._NEAREST_SEEDS_SQL)
         self.assertIn("LIMIT :top", pgc._NEAREST_SEEDS_SQL)
 
-    def test_traversal_is_bounded_by_the_seed_keys(self):
+    def test_the_match_is_restricted_to_the_seed_keys(self):
         self.assertIn("a.key IN ['k1', 'k2']", self.SQL)
         self.assertIn("b.key IN ['k1', 'k2']", self.SQL)
-        # ... and no longer asks for the whole edge set.
+        # ... and no longer materialises the whole edge set into SQL.
         self.assertNotIn("MATCH (a:Work)-[:CITES]->(b:Work)\n        RETURN", self.SQL)
 
     def test_keys_are_spliced_already_escaped_not_re_escaped_here(self):
