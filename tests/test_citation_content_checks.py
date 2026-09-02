@@ -28,13 +28,17 @@ def _copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def _scan(dump_text: str) -> tuple[dict, dict]:
+def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict, dict]:
+    """A real scan of `dump_text` under `mode`. Topology-only by default:
+    that is the mode the content hunt exists for, and the mode most of
+    these tests are about.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         dump_path = Path(tmp) / "dump.sql.gz"
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
         row_visitors: dict = {}
-        facts = citation_content_checks.attach_visitors(row_visitors)
+        facts = citation_content_checks.attach_visitors(row_visitors, mode)
         scans = dump_scan.scan(dump_path, row_visitors)
     return scans, dict(facts)
 
@@ -144,7 +148,7 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
         classified content can be one nothing here looks at.
         """
         visitors: dict = {}
-        citation_content_checks.attach_visitors(visitors)
+        citation_content_checks.attach_visitors(visitors, CitationMode.TOPOLOGY_ONLY)
         for table, columns in citation_columns.CITATION_COLUMN_CLASS.items():
             content = {c for c, kind in columns.items()
                        if kind == citation_columns.CONTENT}
@@ -225,6 +229,58 @@ class CheckEdgesReferenceShippedWorksTests(unittest.TestCase):
             self.MANIFEST, facts)
         self.assertFalse(ok)
         self.assertIn("2", detail)
+
+
+class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
+    """The content hunt is a no-op under every mode but topology-only, and
+    a no-op that is registered is not free: dump_scan builds a dict per row
+    for every table that HAS a visitor, and citation.crawl_step grows by
+    ~100k rows per depth-2 crawl.
+    """
+
+    CONTENT_TABLES = sorted(
+        f"citation.{table}" for table, columns
+        in citation_columns.CITATION_COLUMN_CLASS.items()
+        if any(kind == citation_columns.CONTENT for kind in columns.values())
+    )
+
+    def test_topology_only_watches_every_table_with_content(self):
+        visitors: dict = {}
+        citation_content_checks.attach_visitors(visitors, CitationMode.TOPOLOGY_ONLY)
+        for table in self.CONTENT_TABLES:
+            self.assertIn(table, visitors)
+
+    def test_full_skeleton_registers_only_the_two_that_carry_facts(self):
+        visitors: dict = {}
+        citation_content_checks.attach_visitors(visitors, CitationMode.FULL_SKELETON)
+        self.assertEqual(sorted(visitors), ["citation.cites", "citation.work"])
+        extra = [t for t in self.CONTENT_TABLES
+                 if t not in ("citation.work", "citation.cites")]
+        self.assertTrue(extra, "нет таблицы, на которой видна разница")
+        for table in extra:
+            self.assertNotIn(table, visitors)
+
+    def test_full_skeleton_collects_no_leak_facts_while_scanning(self):
+        """The rows go past the work/cites visitors either way -- what must
+        not happen is `leaked` filling up with findings nobody reads.
+        """
+        dump = (
+            _copy_block("citation.work", ["id", "key", "abstract"],
+                        [["1", "k1", "an abstract that ships in this mode"]])
+            + _copy_block("citation.cites", ["citing", "cited", "evidence"],
+                          [["1", "1", "{cited by p. 5}"]])
+        )
+        _scans, facts = _scan(dump, CitationMode.FULL_SKELETON)
+        self.assertEqual(facts["citation_leaked"], [])
+        self.assertEqual(facts["citation_work_ids"], {"1"})
+        self.assertEqual(facts["citation_edge_endpoints"], {"1"})
+
+    def test_the_same_dump_under_topology_only_does_report_them(self):
+        """The complement, so the quiet mode cannot pass by never looking."""
+        dump = _copy_block("citation.work", ["id", "key", "abstract"],
+                            [["1", "k1", "an abstract that must not ship"]])
+        _scans, facts = _scan(dump, CitationMode.TOPOLOGY_ONLY)
+        self.assertEqual(facts["citation_leaked"], ["citation.work.abstract:k1"])
 
 
 class PolicySourceTests(unittest.TestCase):

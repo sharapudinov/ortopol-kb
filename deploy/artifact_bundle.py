@@ -50,6 +50,10 @@ DEPLOY_FILES = [
     # corpus, which is the builder's job, not the recipient's.
     "profile_checks.py",
     "dump_scan.py",
+    # ... and the manifest-only legal vocabulary its checks reason over,
+    # split off for module size: without it profile_checks.py does not
+    # import at all on the recipient's side.
+    "manifest_classes.py",
     # Static verification of the citation-schema slice of the dump:
     # profile_checks.py's run_checks() calls into it ...
     "citation_content_checks.py",

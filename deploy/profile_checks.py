@@ -35,6 +35,10 @@ Checks:
                                an artifact whose citation mode was forced
                                with --policy-override fails here rather
                                than being certified as publishable
+  legal vocabulary             which ids the manifest says are carried, and
+                               in which shape, is manifest_classes.py
+                               (module size): a manifest-only reading, with
+                               no dump byte in it
   citation slice holds         the citation-schema checks live in
                                citation_content_checks.py (module size) and
                                run in this same pass -- including the two
@@ -58,7 +62,9 @@ from pathlib import Path
 
 import citation_content_checks
 import dump_scan
-from manifest_contract import Key, Profile
+import manifest_classes
+from manifest_classes import classes, content_expectation, expected_ids
+from manifest_contract import Key
 
 # Column names the checks reason about, from corpus.documents/corpus.pages.
 BLOB_COLUMN = "source_blob"
@@ -70,58 +76,6 @@ TSV_COLUMN = "tsv"
 
 DOCUMENTS_TABLE = "corpus.documents"
 PAGES_TABLE = "corpus.pages"
-
-
-def _classes(manifest: dict) -> tuple[dict[str, list[str]], list[str], list[str]]:
-    """(documents_by_distribution, full_content_distributions,
-    shipped_distributions) from the manifest's legal block.
-
-    A manifest missing shipped_distributions yields an empty list, not the
-    vocabulary's default: read with a default, an artifact that silently
-    dropped a class would look exactly like one that carries it. The empty
-    list makes every content check fail, and
-    check_classification_complete() says why.
-    """
-    legal = manifest.get(Key.LEGAL, {})
-    return (
-        legal.get(Key.DOCUMENTS_BY_DISTRIBUTION, {}),
-        legal.get(Key.FULL_CONTENT_DISTRIBUTIONS, []),
-        legal.get(Key.SHIPPED_DISTRIBUTIONS, []),
-    )
-
-
-def _ids(by_distribution: dict[str, list[str]], names: list[str]) -> set[str]:
-    return {doc_id for name in names for doc_id in by_distribution.get(name, [])}
-
-
-def _expected_ids(manifest: dict) -> tuple[set[str], set[str]]:
-    """(ids the artifact must contain, ids it must not contain at all).
-
-    The FULL profile carries the whole corpus whatever the classification --
-    it is the owner's own backup, and the legal cut is the public profile's
-    job alone.
-    """
-    by_distribution, _full_content, shipped = _classes(manifest)
-    everything = {doc_id for ids in by_distribution.values() for doc_id in ids}
-    if manifest.get(Key.PROFILE) != Profile.PUBLIC:
-        return everything, set()
-    shipped_ids = _ids(by_distribution, shipped)
-    return shipped_ids, everything - shipped_ids
-
-
-def _content_expectation(manifest: dict) -> tuple[set[str], set[str]]:
-    """(ids that must carry full content, ids that must ship stripped).
-
-    For the FULL profile nothing is stripped -- the artifact carries
-    everything regardless of class, and that is exactly what these checks
-    then assert about it.
-    """
-    by_distribution, full_content, _shipped = _classes(manifest)
-    present, _absent = _expected_ids(manifest)
-    if manifest.get(Key.PROFILE) != Profile.PUBLIC:
-        return present, set()
-    full_ids = _ids(by_distribution, full_content) & present
-    return full_ids, present - full_ids
 
 
 def check_schemas(dump_path: Path, manifest: dict) -> tuple[bool, str]:
@@ -139,10 +93,10 @@ def check_classification_complete(manifest: dict, scans: dict) -> tuple[bool, st
             "artifact carries cannot be inferred; rebuild it with the current packager"
         )
     unclassified = legal.get(Key.UNCLASSIFIED_DOCUMENTS)
-    by_distribution, _full_content, _shipped = _classes(manifest)
+    by_distribution, _full_content, _shipped = classes(manifest)
     all_listed = [doc_id for ids in by_distribution.values() for doc_id in ids]
     duplicated = sorted({i for i in all_listed if all_listed.count(i) > 1})
-    expected, _absent = _expected_ids(manifest)
+    expected, _absent = expected_ids(manifest)
     documents = scans.get(DOCUMENTS_TABLE)
     dumped = documents.rows if documents else 0
     ok = unclassified == 0 and not duplicated and dumped == len(expected)
@@ -160,7 +114,7 @@ def check_excluded_absent(manifest: dict, facts: dict) -> tuple[bool, str]:
     bytes: "the SELECT filtered it out" is a claim about the packager, this
     is a claim about the file.
     """
-    _expected, absent = _expected_ids(manifest)
+    _expected, absent = expected_ids(manifest)
     leaked_documents = sorted(absent & facts["documents"])
     leaked_pages = sorted(absent & facts["page_documents"])
     ok = not leaked_documents and not leaked_pages
@@ -195,7 +149,8 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dict, dict]:
             with_body.add(row[DOCUMENT_ID_COLUMN])
 
     row_visitors = {DOCUMENTS_TABLE: on_document, PAGES_TABLE: on_page}
-    citation_facts = citation_content_checks.attach_visitors(row_visitors)
+    citation_facts = citation_content_checks.attach_visitors(
+        row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE))
 
     scans = dump_scan.scan(dump_path, row_visitors)
     facts = {
@@ -207,7 +162,7 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dict, dict]:
 
 
 def check_metadata_only_stripped(manifest: dict, facts: dict) -> tuple[bool, str]:
-    _full_ids, stripped = _content_expectation(manifest)
+    _full_ids, stripped = content_expectation(manifest)
     leaked_blob = sorted(stripped & facts["with_blob"])
     leaked_body = sorted(stripped & facts["with_body"])
     ok = not leaked_blob and not leaked_body
@@ -218,7 +173,7 @@ def check_metadata_only_stripped(manifest: dict, facts: dict) -> tuple[bool, str
 
 
 def check_full_content_intact(manifest: dict, facts: dict) -> tuple[bool, str]:
-    full_ids, _stripped = _content_expectation(manifest)
+    full_ids, _stripped = content_expectation(manifest)
     missing_blob = sorted(full_ids - facts["with_blob"])
     missing_body = sorted(full_ids - facts["with_body"])
     ok = not missing_blob and not missing_body

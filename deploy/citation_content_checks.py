@@ -59,11 +59,24 @@ CITING_COLUMN = "citing"
 CITED_COLUMN = "cited"
 
 
-def attach_visitors(row_visitors: dict) -> dict:
+def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
     """Registers this module's row callbacks into `row_visitors` (mutated in
     place) and returns the fact containers they fill -- read them back after
     dump_scan.scan() has actually run. profile_checks.py merges the returned
     dict into its own facts, so the keys are namespaced.
+
+    `mode` is the manifest's citation mode, and it decides how much gets
+    registered. The content hunt only means anything under topology-only --
+    check_topology_only_strips_content() returns "nothing to strip" for
+    every other mode -- and registering a visitor is not free: dump_scan
+    builds a dict(zip(columns, fields)) per row ONLY for tables that have
+    one, and citation.crawl_step grows by ~100k rows per depth-2 crawl. So
+    under any other mode the extra tables get no visitor at all and
+    `leaked` stays the empty list it would have ended as anyway.
+
+    work and cites keep their visitors either way: work_documents /
+    work_ids / edge_endpoints feed the two checks that hold the citation
+    cut to the document cut, and those run under every shipping mode.
     """
     leaked: list[str] = []
     work_documents: dict[str, str] = {}
@@ -84,9 +97,16 @@ def attach_visitors(row_visitors: dict) -> dict:
                     leaked.append(f"{table}.{column}:{name_of(row)}")
         return visit
 
-    leaked_work = content_visitor(WORK_TABLE, lambda row: row.get("key", "?"))
+    def no_content_hunt(_row: dict) -> None:
+        return None
+
+    stripping = mode == CitationMode.TOPOLOGY_ONLY
+    leaked_work = content_visitor(
+        WORK_TABLE, lambda row: row.get("key", "?")) if stripping else no_content_hunt
     leaked_cites = content_visitor(
-        CITES_TABLE, lambda row: f"{row.get('citing', '?')}->{row.get('cited', '?')}")
+        CITES_TABLE,
+        lambda row: f"{row.get('citing', '?')}->{row.get('cited', '?')}",
+    ) if stripping else no_content_hunt
 
     def on_work(row: dict) -> None:
         leaked_work(row)
@@ -107,12 +127,15 @@ def attach_visitors(row_visitors: dict) -> dict:
     # The tables with no facts of their own to collect still carry content
     # columns, and a table whose visitor nobody registered is a table the
     # scan never opens: crawl_step.reason shipped unchecked for exactly that
-    # reason before the classification became one map.
-    for table in CITATION_COLUMN_CLASS:
-        qualified = f"citation.{table}"
-        if qualified not in row_visitors and content_columns(table):
-            row_visitors[qualified] = content_visitor(
-                qualified, lambda row: row.get("id", "?"))
+    # reason before the classification became one map. They exist for the
+    # content hunt and nothing else, so they are registered only when there
+    # is a hunt.
+    if stripping:
+        for table in CITATION_COLUMN_CLASS:
+            qualified = f"citation.{table}"
+            if qualified not in row_visitors and content_columns(table):
+                row_visitors[qualified] = content_visitor(
+                    qualified, lambda row: row.get("id", "?"))
     return {
         "citation_leaked": leaked,
         "citation_work_documents": work_documents,
