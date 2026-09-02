@@ -15,9 +15,10 @@ import pg_graph_candidates as pgcand
 
 
 class CandidatesSqlTests(unittest.TestCase):
-    """The ranking is the DATABASE's job: an HNSW-ordered top-K and a
-    pre-aggregated link count, not every external-skeleton row shipped
-    through psql for Python to sort.
+    """The ranking is the DATABASE's job: an HNSW-ordered top-K and, per
+    row of it, two index-served counts -- not every external-skeleton row
+    shipped through psql for Python to sort, and not an aggregate over
+    every edge in the graph to decorate at most :top of them.
     """
 
     SQL = pgcand.build_candidates_sql(":'vec'::vector", 0)
@@ -33,7 +34,7 @@ class CandidatesSqlTests(unittest.TestCase):
         self.assertIn("CROSS JOIN LATERAL", nearest)
         self.assertNotIn("links", nearest)
         self.assertNotIn("JOIN citation.", nearest)
-        self.assertLess(self.SQL.index("LIMIT :top"), self.SQL.index("LEFT JOIN links"))
+        self.assertLess(self.SQL.index("LIMIT :top"), self.SQL.index("LEFT JOIN LATERAL"))
 
     def test_the_target_is_evaluated_once_per_statement(self):
         """Spliced into both the score and the ORDER BY, the centroid was
@@ -47,22 +48,37 @@ class CandidatesSqlTests(unittest.TestCase):
             self.assertIn("target AS MATERIALIZED", sql)
             self.assertEqual(sql.count("t.v"), 2, "счёт и порядок читают одно и то же")
 
-    def test_link_count_is_a_grouped_aggregate_not_a_per_row_subquery(self):
-        # The OR across two columns (citing = w.id OR cited = w.id) is what
-        # no index can serve; UNION ALL of the two directions, aggregated
-        # once, is what replaced it.
-        self.assertIn("UNION ALL", self.SQL)
-        self.assertIn("GROUP BY e.id", self.SQL)
+    def test_the_two_directions_are_counted_per_row_not_over_the_whole_table(self):
+        """Each half is an index lookup -- the primary key (citing, cited,
+        source) downward, cites_cited_idx upward -- driven from ONE top-K
+        row. The shapes this replaced both read every edge in the graph:
+        the OR across two columns (`citing = w.id OR cited = w.id`), which
+        no single index scan can serve, and then a grouped CTE over the
+        whole of citation.cites joined on `l.id = n.id`, a qualifier the
+        planner cannot push down into the aggregate.
+        """
+        self.assertIn("LEFT JOIN LATERAL", self.SQL)
+        self.assertIn("WHERE c.citing = n.id", self.SQL)
+        self.assertIn("WHERE c.cited = n.id", self.SQL)
+        self.assertNotIn("UNION ALL", self.SQL)
+        self.assertNotIn("GROUP BY", self.SQL)
         self.assertNotIn("c.citing = w.id OR c.cited = w.id", self.SQL)
 
-    def test_min_links_is_a_join_above_the_top_k_not_a_lookup_per_row(self):
+    def test_the_count_is_of_edges_to_our_own_documents(self):
+        """Whichever direction the edge runs, the OTHER endpoint is what
+        has to be one of ours -- the count is "ties to our corpus", not
+        "degree".
+        """
+        self.assertIn("o.id = c.cited AND o.kind = 'our-document'", self.SQL)
+        self.assertIn("o.id = c.citing AND o.kind = 'our-document'", self.SQL)
+
+    def test_min_links_is_a_filter_above_the_top_k_not_a_lookup_per_row(self):
         # Measured with EXPLAIN on this instance (enable_seqscan=off): any
-        # membership test against `links` INSIDE `nearest` -- a correlated
-        # subquery, an IN, or a join -- makes the planner drop
-        # work_embedding_hnsw and sort instead. Above the LIMIT the index
-        # scan survives and `links` is hashed once.
+        # membership test INSIDE `nearest` -- a correlated subquery, an IN,
+        # or a join -- makes the planner drop work_embedding_hnsw and sort
+        # instead. Above the LIMIT the index scan survives.
         sql = pgcand.build_candidates_sql(":'vec'::vector", 2)
-        self.assertIn("JOIN links l ON l.id = n.id AND l.n >= :min_links", sql)
+        self.assertIn("WHERE links.n >= :min_links", sql)
         self.assertGreater(sql.index(":min_links"), sql.index("LIMIT :top"))
         nearest = sql[sql.index("nearest AS ("):sql.index("LIMIT :top")]
         self.assertNotIn("links", nearest)
@@ -70,7 +86,8 @@ class CandidatesSqlTests(unittest.TestCase):
 
     def test_no_min_links_keeps_every_top_k_row_with_its_count(self):
         self.assertNotIn(":min_links", self.SQL)
-        self.assertIn("LEFT JOIN links l ON l.id = n.id", self.SQL)
+        self.assertIn("LEFT JOIN LATERAL", self.SQL)
+        self.assertIn("coalesce(links.n, 0)", self.SQL)
 
 
 class CandidatesRankingTests(unittest.TestCase):

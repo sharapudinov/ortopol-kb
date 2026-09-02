@@ -52,29 +52,31 @@ _CENTROID_EXPR = (
 #                  construction -- computed a 1024-dimension distance for
 #                  each, shipped them all through psql and sorted them in
 #                  Python for a 20-row answer.
-#   `links`        aggregates the two edge directions ONCE, as a UNION ALL
-#                  keyed on the endpoint id, and is joined ABOVE the LIMIT,
-#                  i.e. for at most :top rows. The earlier form was a
-#                  correlated subquery per candidate row whose predicate was
-#                  `citing = w.id OR cited = w.id` -- an OR across two
-#                  columns no single index scan can serve, so it degraded
-#                  toward re-reading citation.cites per candidate.
-#   {links_join}   --min-links, when asked for, turns that LEFT JOIN into
-#                  an inner one carrying `l.n >= :min_links`: the answer is
-#                  "of the K nearest, the ones with at least N links to our
-#                  own documents", so it can be shorter than K. The cut
-#                  cannot move below the LIMIT to decide eligibility
-#                  instead: measured with EXPLAIN on this instance
-#                  (enable_seqscan=off), EVERY membership test against
-#                  `links` inside `nearest` -- the correlated subquery this
-#                  replaced, `IN (SELECT ...)`, or a join -- makes the
-#                  planner drop work_embedding_hnsw and sort the candidates
-#                  instead, which is the one thing this shape exists to
-#                  prevent. The correlated form also re-scanned the
-#                  materialised (hence unindexed) `links` CTE once per row
-#                  the index scan examined. Above the LIMIT the index scan
-#                  survives and `links` is hashed once. Omitted entirely at
-#                  the default 0 rather than written as a tautological >= 0.
+#   `links`        two counts per top-K row, evaluated in a LEFT JOIN
+#                  LATERAL ABOVE the LIMIT: measured on this instance
+#                  (EXPLAIN, enable_seqscan=off) an Index Only Scan using
+#                  cites_pkey downward and a Bitmap Index Scan using
+#                  cites_cited_idx upward, both driven from that row's id.
+#                  Both earlier forms answered the same question over the
+#                  WHOLE of citation.cites: a correlated subquery whose
+#                  predicate was `citing = w.id OR cited = w.id` -- an OR
+#                  across two columns no single index scan can serve -- and
+#                  then a grouped CTE that aggregated every edge in the graph
+#                  and was joined on `l.id = n.id`, a qualifier the planner
+#                  cannot push into the grouped subquery. So the full O(|E|)
+#                  scan ran on every call, however small --top was, to
+#                  attach a number to at most :top rows.
+#   {links_cut}    --min-links, when asked for, filters that lateral's count
+#                  above the LIMIT: the answer is "of the K nearest, the ones
+#                  with at least N links to our own documents", so it can be
+#                  shorter than K. The cut cannot move below the LIMIT to
+#                  decide eligibility instead: measured with EXPLAIN on this
+#                  instance (enable_seqscan=off), EVERY membership test
+#                  inside `nearest` makes the planner drop
+#                  work_embedding_hnsw and sort the candidates instead, which
+#                  is the one thing this shape exists to prevent. Omitted
+#                  entirely at the default 0 rather than written as a
+#                  tautological >= 0.
 #
 # {target_expr} is module-owned SQL, never caller input: either the bound
 # query vector or the corpus centroid subquery -- and it is spliced ONCE,
@@ -94,15 +96,7 @@ _CENTROID_EXPR = (
 # is that the index becomes available as the graph grows, which the previous
 # one never allowed.
 _CANDIDATES_SQL = """
-WITH links AS (
-    SELECT e.id, count(*) AS n
-    FROM (SELECT citing AS id, cited AS other FROM citation.cites
-          UNION ALL
-          SELECT cited AS id, citing AS other FROM citation.cites) e
-    JOIN citation.work o ON o.id = e.other AND o.kind = '{our_document}'
-    GROUP BY e.id
-),
-target AS MATERIALIZED (
+WITH target AS MATERIALIZED (
     SELECT {target_expr} AS v
 ),
 nearest AS (
@@ -118,20 +112,27 @@ nearest AS (
     ) n
 )
 SELECT n.key, coalesce(n.year::text, ''), coalesce(n.title, ''),
-       n.score::text, coalesce(l.n, 0)::text
+       n.score::text, coalesce(links.n, 0)::text
 FROM nearest n
-{links_join}
+LEFT JOIN LATERAL (
+    SELECT (SELECT count(*) FROM citation.cites c
+            JOIN citation.work o ON o.id = c.cited AND o.kind = '{our_document}'
+            WHERE c.citing = n.id)
+         + (SELECT count(*) FROM citation.cites c
+            JOIN citation.work o ON o.id = c.citing AND o.kind = '{our_document}'
+            WHERE c.cited = n.id) AS n
+) links ON true
+{links_cut}
 ORDER BY n.score DESC;
 """
 
-_LINKS_KEPT = "LEFT JOIN links l ON l.id = n.id"
-_LINKS_CUT = "JOIN links l ON l.id = n.id AND l.n >= :min_links"
+_LINKS_CUT = "WHERE links.n >= :min_links"
 
 
 def build_candidates_sql(target_expr: str, min_links: int) -> str:
     return _CANDIDATES_SQL.format(
         target_expr=target_expr,
-        links_join=_LINKS_CUT if min_links > 0 else _LINKS_KEPT,
+        links_cut=_LINKS_CUT if min_links > 0 else "",
         our_document=WorkKind.OUR_DOCUMENT,
         external_skeleton=WorkKind.EXTERNAL_SKELETON)
 

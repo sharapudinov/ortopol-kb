@@ -155,6 +155,28 @@ class LiveConsumersTests(unittest.TestCase):
         self.assertIn("work_embedding_hnsw", plan, plan)
         self.assertIn("Order By: (embedding <=> t.v)", plan, plan)
 
+    def test_the_link_counts_are_index_lookups_per_row(self):
+        """The other half of the shape: the two directions are counted from
+        the top-K row's own id, so each is an index lookup -- the primary
+        key downward, cites_cited_idx upward -- and nothing reads the whole
+        of citation.cites. A grouped aggregate over every edge would show
+        as a HashAggregate with a Seq/Index Scan on cites underneath it,
+        and would run whatever --top asked for.
+        """
+        vec = "[" + ",".join(["0.1"] * 1024) + "]"
+        plan = run_sql(
+            self.env,
+            "SET enable_seqscan = off;\nEXPLAIN (COSTS OFF)\n"
+            + pgcand.build_candidates_sql(":'vec'::vector", 0),
+            variables={"vec": vec, "top": "20"},
+            extra_args=["-t", "-A"],
+        ).stdout
+        self.assertIn("cites_pkey", plan, plan)
+        self.assertIn("cites_cited_idx", plan, plan)
+        self.assertIn("Index Cond: (citing = n.id)", plan, plan)
+        self.assertIn("Index Cond: (cited = n.id)", plan, plan)
+        self.assertNotIn("HashAggregate", plan, plan)
+
     def test_candidates_and_hybrid_answer_from_the_same_fixture(self):
         """candidates() must find an external-skeleton node linked to one of
         our own documents, ranked by the embedding it was given; hybrid()
