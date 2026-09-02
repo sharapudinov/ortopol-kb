@@ -11,19 +11,15 @@ depth-2 от всех 382 узлов depth-1 не записала НИ ОДНО
 
 Всё считается из уже имеющегося: citation.work (evidence несёт сырые записи
 OpenAlex с cited_by_count и referenced_works_count) и кэш ответов в
-corpus/cache/openalex (meta.count батчей). Сети не нужно — прогон
-воспроизводится при исчерпанной квоте.
+corpus/cache/openalex (meta.count батчей — их считает hub_cache.py). Сети не
+нужно — прогон воспроизводится при исчерпанной квоте.
 
 Вердикта здесь нет: его пишет основная сессия.
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-from pg_common import run_sql, scalar
-
-from . import openalex_client
+from pg_common import run_sql
+from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
 
 SPIKE = "research/citation-frontier-hub-expansion"
 REPORT_PATH = "research/citation-frontier/hub-expansion.md"
@@ -118,61 +114,6 @@ VERIFY_QUERY = (
 )
 
 
-# Как OpenAlex формулирует запрос «кто цитирует эти 50» в meta.x_query.oql.
-# Проверено на всём кэше: маркер стоит ровно у 253 страниц батчей cites: и
-# ни у одной из 6 страниц направления «вниз» (openalex id).
-CITES_MARKER = "works where it cites"
-# Сколько байт головы страницы читается на префильтр. meta идёт первым
-# объектом тела, x_query — вторым полем meta, так что маркер лежит в первых
-# сотнях байт; запас на порядки. Если в голове нет даже x_query, страница
-# устроена иначе, и решает уже разбор целиком, а не догадка.
-HEAD_BYTES = 65536
-
-
-def batch_note(path: Path) -> dict | None:
-    """{filter, oql, count} страницы кэша: из сайдкара, иначе разбором.
-
-    Сайдкар пишет сам клиент рядом со страницей
-    (openalex_client.page_index), но кэш долговечен и не стирается: 259
-    страниц лежат с тех пор, когда сайдкаров не было. Для них — один проход:
-    префильтр по СЫРОМУ тексту головы (страница батча «вниз» весит десятки
-    мегабайт, и разбирать её ради двух полей нечего), затем разбор и запись
-    сайдкара, чтобы следующий прогон читал килобайты.
-    """
-    sidecar = openalex_client.sidecar_path(path)
-    try:
-        if sidecar.is_file():
-            return json.loads(sidecar.read_text(encoding="utf-8"))
-        with path.open(encoding="utf-8") as handle:
-            head = handle.read(HEAD_BYTES)
-        if CITES_MARKER not in head and '"x_query"' in head:
-            return None
-        note = openalex_client.page_index(json.loads(path.read_text(encoding="utf-8")))
-    except (ValueError, OSError):
-        return None
-    try:
-        sidecar.write_text(json.dumps(note, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        pass
-    return note
-
-
-def batch_counts(cache_dir: Path) -> list[int]:
-    """meta.count каждого батча `cites:` из кэша — по одному числу на батч."""
-    seen: dict[str, int] = {}
-    for path in sorted(Path(cache_dir).glob("*.json")):
-        if path.name.endswith(openalex_client.SIDECAR_SUFFIX):
-            continue
-        note = batch_note(path)
-        if note is None:
-            continue
-        oql = note.get("oql") or ""
-        if "cites" not in oql or "openalex id" in oql:
-            continue
-        seen.setdefault(note.get("filter") or "", note.get("count") or 0)
-    return sorted(seen.values(), reverse=True)
-
-
 def stats(env, run_id: int) -> list[list[str]]:
     out = run_sql(
         env,
@@ -181,9 +122,9 @@ def stats(env, run_id: int) -> list[list[str]]:
         "FROM measurements.citation_hub_expansion WHERE run_id = :run "
         "GROUP BY relation ORDER BY sum(cited_by_count) DESC;",
         variables={"run": str(int(run_id))},
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
-    return [line.split("\x1f") for line in out.split("\n") if line]
+        extra_args=ROW_ARGS,
+    ).stdout
+    return [record.split(FIELD_SEP) for record in split_records(out)]
 
 
 def worst_nodes(env, run_id: int, limit: int = 10) -> list[list[str]]:
@@ -194,9 +135,9 @@ def worst_nodes(env, run_id: int, limit: int = 10) -> list[list[str]]:
         "FROM measurements.citation_hub_expansion h JOIN citation.work w ON w.key = h.work_key "
         f"WHERE h.run_id = :run ORDER BY h.cited_by_count DESC LIMIT {int(limit)};",
         variables={"run": str(int(run_id))},
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
-    return [line.split("\x1f") for line in out.split("\n") if line]
+        extra_args=ROW_ARGS,
+    ).stdout
+    return [record.split(FIELD_SEP) for record in split_records(out)]
 
 
 def run_fields(counts: list[int], rows: list[list[str]]) -> dict:

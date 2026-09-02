@@ -32,6 +32,7 @@ from citations.openalex_client import (
 )
 from citations.store import csv_rows, vector_literal
 from pg_common import sql_literal
+from pg_graph_common import FIELD_SEP, RECORD_SEP
 
 # Verbatim from research/citation-sources/data/openalex_works_A5066843289_p1.json
 # (W2074536792). Kept whole rather than trimmed: a truncated index would let a
@@ -140,7 +141,8 @@ class KnownEmbeddingsTests(unittest.TestCase):
     """The read that makes the crawl stop re-buying vectors it already has."""
 
     def test_parses_the_pgvector_array_and_keys_it(self):
-        stdout = "W1\x1f[1.0, 0.0, 0.5]\nW2\x1f[0.25, 1.0, 0.0]\n"
+        stdout = (f"W1{FIELD_SEP}[1.0, 0.0, 0.5]{RECORD_SEP}"
+                  f"W2{FIELD_SEP}[0.25, 1.0, 0.0]{RECORD_SEP}")
         with mock.patch.object(inputs, "run_sql", return_value=mock.Mock(stdout=stdout)):
             self.assertEqual(inputs.known_embeddings({}, ["W1", "W2", "W3"]),
                              {"W1": [1.0, 0.0, 0.5], "W2": [0.25, 1.0, 0.0]})

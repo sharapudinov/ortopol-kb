@@ -17,6 +17,7 @@ import _pathfix  # noqa: F401
 import paths
 import pg_load_citations
 from citations import inputs
+from pg_graph_common import FIELD_SEP, RECORD_SEP
 
 CITATIONS_DIR = Path(inputs.__file__).resolve().parent
 LOADER = Path(pg_load_citations.__file__).resolve()
@@ -67,7 +68,8 @@ class SeedPredicateTests(unittest.TestCase):
 
     def test_both_readings_go_through_that_one_query(self):
         seen = []
-        rows = "doc_a\x1fhttps://mathnet.ru/eng/sm123\ndoc_b\x1f\n"
+        rows = (f"doc_a{FIELD_SEP}https://mathnet.ru/eng/sm123{RECORD_SEP}"
+                f"doc_b{FIELD_SEP}{RECORD_SEP}")
 
         class _Result:
             stdout = rows
@@ -87,6 +89,52 @@ class SeedPredicateTests(unittest.TestCase):
         finally:
             inputs.run_sql = original
         self.assertEqual(seen, [inputs._SEED_DOCUMENTS_SQL] * 2)
+
+
+class RowProtocolTests(unittest.TestCase):
+    """The psql row protocol is pg_graph_common's, for the crawl too.
+
+    A title, an abstract or a reason can carry a comma, a tab and a newline,
+    and third-party titles from OpenAlex/zbMATH/Math-Net are exactly what
+    these readers select. FIELD_SEP/RECORD_SEP/ROW_ARGS/split_records() are
+    one contract in one place; a module re-spelling "\x1f" and splitting on
+    "\n" answers a change to that contract by not noticing it, and unpacks a
+    multi-line title into the wrong positions in the meantime.
+    """
+
+    MODULES = sorted(CITATIONS_DIR.glob("*.py"))
+
+    def test_no_module_spells_a_separator_itself(self):
+        for path in self.MODULES:
+            text = path.read_text(encoding="utf-8")
+            for sep, name in (("\x1f", "FIELD_SEP"), ("\x1e", "RECORD_SEP")):
+                self.assertNotIn(
+                    sep, text,
+                    f"{path.name}: import {name} from pg_graph_common")
+
+    def test_no_module_cuts_psql_output_into_lines(self):
+        for path in self.MODULES:
+            text = path.read_text(encoding="utf-8")
+            for spelling in ('.split("\n")', ".splitlines("):
+                self.assertNotIn(
+                    spelling, text,
+                    f"{path.name}: rows come from split_records(), not from lines")
+
+    def test_every_read_asks_psql_for_the_shared_flags(self):
+        """extra_args is ROW_ARGS or the read is a scalar (pg_common.scalar).
+
+        A hand-written flag list is the other half of the same drift: -F
+        without -R produces exactly the newline-delimited output the parse
+        above must not assume.
+        """
+        for path in self.MODULES:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.keyword) or node.arg != "extra_args":
+                    continue
+                self.assertTrue(
+                    isinstance(node.value, ast.Name) and node.value.id == "ROW_ARGS",
+                    f"{path.name}: extra_args must be pg_graph_common.ROW_ARGS")
 
 
 class LoaderIsADispatcherTests(unittest.TestCase):

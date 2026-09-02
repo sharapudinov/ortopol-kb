@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 
 from pg_common import run_sql
-from pg_graph_common import kind_counts
+from pg_graph_common import FIELD_SEP, ROW_ARGS, kind_counts, split_records
 
 from . import journal, twins
 
@@ -42,13 +42,11 @@ def corpus_years(env) -> dict[str, list[int]]:
         env,
         "SELECT document_id, coalesce(external_ids->>'years', '[]') "
         "FROM citation.work WHERE kind = 'our-document' AND document_id IS NOT NULL;",
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
+        extra_args=ROW_ARGS,
+    ).stdout
     years: dict[str, list[int]] = {}
-    for line in out.split("\n"):
-        if not line:
-            continue
-        document_id, _, raw = line.partition("\x1f")
+    for record in split_records(out):
+        document_id, _, raw = record.partition(FIELD_SEP)
         try:
             years[document_id] = [int(y) for y in json.loads(raw)]
         except (ValueError, TypeError):
@@ -70,13 +68,11 @@ def seed_titles(env) -> list[dict]:
         "     THEN lower(regexp_replace(d.source_url, '^.*/', '')) ELSE '' END "
         "FROM citation.work w JOIN corpus.documents d ON d.id = w.document_id "
         "WHERE w.kind = 'our-document' AND w.document_id IS NOT NULL ORDER BY w.key;",
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
+        extra_args=ROW_ARGS,
+    ).stdout
     seeds = []
-    for line in out.split("\n"):
-        if not line:
-            continue
-        parts = (line.split("\x1f") + ["", "", ""])[:4]
+    for record in split_records(out):
+        parts = (record.split(FIELD_SEP) + ["", "", ""])[:4]
         key, document_id, raw, identifier = parts
         try:
             titles = [t for t in json.loads(raw) if t]
@@ -94,13 +90,11 @@ def skeleton_nodes(env):
         env,
         "SELECT key, coalesce(title, ''), coalesce(year::text, ''), coalesce(doi, '') "
         "FROM citation.work WHERE kind = 'external-skeleton' ORDER BY key;",
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
+        extra_args=ROW_ARGS,
+    ).stdout
     rows = []
-    for line in out.split("\n"):
-        if not line:
-            continue
-        key, title, year, doi = (line.split("\x1f") + ["", "", ""])[:4]
+    for record in split_records(out):
+        key, title, year, doi = (record.split(FIELD_SEP) + ["", "", ""])[:4]
         rows.append((key, title, int(year) if year.isdigit() else None, doi))
     return rows
 

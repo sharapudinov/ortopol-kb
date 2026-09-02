@@ -24,7 +24,7 @@ from pathlib import Path
 
 from pg_common import run_sql
 
-from . import calibration, hub_report, threshold_store
+from . import calibration, hub_cache, hub_report, threshold_store
 
 
 class MeasurementsWriter:
@@ -130,7 +130,7 @@ def record_hub_report(env, cache_dir, data_root: Path, writer, hub_cap: int) -> 
               "и пустой каталог это не «ноль батчей», а «нечего мерить»; укажите "
               "--cache-dir того прогона, цену которого меряем", file=sys.stderr)
         return 1
-    counts = hub_report.batch_counts(cache_path)
+    counts = hub_cache.batch_counts(cache_path)
     if not counts:
         print(f"в кэше {cache_path} нет ни одного батча cites: — мерить нечего; "
               "это кэш другого прогона либо страницы направления «вниз»",

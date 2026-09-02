@@ -22,7 +22,7 @@ import _pathfix  # noqa: F401
 
 import pg_graph_common
 import pg_load_citations
-from citations import hub_report, seed_metadata, spike_runs, threshold_store
+from citations import hub_cache, hub_report, seed_metadata, spike_runs, threshold_store
 from citations.openalex_client import QuotaExhausted
 from citations.store import DryRunWriter, PostgresWriter
 from paths import default_corpus_dir
@@ -73,7 +73,7 @@ class DryRunTouchesNothingTests(unittest.TestCase):
         # the mode does anything at all, which would let this pass for the
         # wrong reason (see HubReportRefusesAnEmptyMeasurementTests).
         with tempfile.TemporaryDirectory() as cache, \
-             mock.patch.object(hub_report, "batch_counts", return_value=[51652]):
+             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]):
             code, harness = self._run(["--hub-report", "--dry-run", "--cache-dir", cache])
         self.assertEqual(code, 0)
         harness.init_schema.assert_not_called()
@@ -230,7 +230,7 @@ class HubReportWriteOrderTests(unittest.TestCase):
         writer = self._Writer()
         rows = [["cites", "384", "9000", "1200", "3", "15000"]]
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_report, "batch_counts", return_value=[51652]), \
+             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]), \
              mock.patch.object(hub_report, "stats", return_value=rows), \
              mock.patch.object(hub_report, "worst_nodes", return_value=[]):
             code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
@@ -254,7 +254,7 @@ class HubReportWriteOrderTests(unittest.TestCase):
         writer.update_run_fields = lambda spike, fields: seen.update(fields)
         rows = [["cites", "384", "9000", "1200", "3", "15000"]]
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_report, "batch_counts", return_value=[51652]), \
+             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]), \
              mock.patch.object(hub_report, "stats", return_value=rows), \
              mock.patch.object(hub_report, "worst_nodes", return_value=[]):
             spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
@@ -336,7 +336,7 @@ class HubReportRefusesAnEmptyMeasurementTests(unittest.TestCase):
     def test_a_cache_with_no_cites_batches_is_refused_and_writes_nothing(self):
         writer = self._writer()
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_report, "batch_counts", return_value=[]), \
+             mock.patch.object(hub_cache, "batch_counts", return_value=[]), \
              mock.patch("sys.stderr"):
             code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
         self.assertEqual(code, 1)
@@ -348,7 +348,7 @@ class HubReportRefusesAnEmptyMeasurementTests(unittest.TestCase):
         """
         writer = spike_runs.DryRunMeasurementsWriter()
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_report, "batch_counts", return_value=[]), \
+             mock.patch.object(hub_cache, "batch_counts", return_value=[]), \
              mock.patch("sys.stderr"):
             code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
         self.assertEqual(code, 1)

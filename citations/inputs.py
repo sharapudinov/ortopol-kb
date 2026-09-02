@@ -18,7 +18,8 @@ from __future__ import annotations
 import json
 
 from paths import IIS_SOURCE_DIR
-from pg_common import run_sql, sql_literal
+from pg_common import run_sql, scalar, sql_literal
+from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
 
 # The measurement that established which OpenAlex/zbMATH record each of our
 # documents is (measurements.citation_source_coverage). A run number, i.e. a
@@ -47,13 +48,11 @@ def corpus_seed_documents(env, source_dir: str = IIS_SOURCE_DIR) -> list[tuple[s
     out = run_sql(
         env, _SEED_DOCUMENTS_SQL,
         variables={"dir": source_dir},
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
+        extra_args=ROW_ARGS,
+    ).stdout
     rows = []
-    for line in out.split("\n"):
-        if not line:
-            continue
-        document_id, _, url = line.partition("\x1f")
+    for record in split_records(out):
+        document_id, _, url = record.partition(FIELD_SEP)
         rows.append((document_id, url))
     return rows
 
@@ -69,13 +68,11 @@ def seed_matches(env, run_id: int, source: str) -> dict[str, str]:
         "WHERE run_id = :run AND source = :'source' AND matched_id IS NOT NULL "
         "ORDER BY document_id;",
         variables={"run": str(int(run_id)), "source": source},
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
+        extra_args=ROW_ARGS,
+    ).stdout
     matches = {}
-    for line in out.split("\n"):
-        if not line:
-            continue
-        document_id, _, matched_id = line.partition("\x1f")
+    for record in split_records(out):
+        document_id, _, matched_id = record.partition(FIELD_SEP)
         matches[document_id] = matched_id
     return matches
 
@@ -96,13 +93,12 @@ def stored_zbmath_abstracts(env) -> dict[str, str]:
     field separator saves a value that contains one (kb/CLAUDE.md, "что
     легко сломать"). json_agg escapes it and the whole answer is one line.
     """
-    out = run_sql(
+    out = scalar(
         env,
         "SELECT coalesce(json_agg(json_build_array(document_id, abstract)), '[]') "
         "FROM citation.work WHERE document_id IS NOT NULL AND abstract IS NOT NULL "
         "AND evidence->>'abstract_source' = 'zbmath';",
-        extra_args=["-t", "-A"],
-    ).stdout.strip()
+    )
     return {document_id: abstract
             for document_id, abstract in json.loads(out or "[]") if abstract}
 
@@ -120,9 +116,9 @@ def fresh_keys(env, days: int) -> set[str]:
     out = run_sql(
         env,
         f"SELECT key FROM citation.work WHERE fetched_at > now() - interval {interval};",
-        extra_args=["-t", "-A"],
-    ).stdout.strip()
-    return {line for line in out.split("\n") if line}
+        extra_args=ROW_ARGS,
+    ).stdout
+    return set(split_records(out))
 
 
 # How many keys travel in one `key IN (...)` list. The same reason the
@@ -162,11 +158,9 @@ def known_embeddings(env, keys) -> dict[str, list[float]]:
             env,
             "SELECT key, embedding FROM citation.work "
             f"WHERE embedding IS NOT NULL AND key IN ({listed});",
-            extra_args=["-t", "-A", "-F", "\x1f"],
-        ).stdout.strip()
-        for line in rows.split("\n"):
-            if not line:
-                continue
-            key, _, vector = line.partition("\x1f")
+            extra_args=ROW_ARGS,
+        ).stdout
+        for record in split_records(rows):
+            key, _, vector = record.partition(FIELD_SEP)
             out[key] = json.loads(vector)
     return out
