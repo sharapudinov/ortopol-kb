@@ -158,8 +158,25 @@ class ShippedRowPredicateTests(unittest.TestCase):
         self.assertEqual(sql.count("s.frontier_key"), 2)
         self.assertEqual(sql.count("s.candidate_key"), 2)
         self.assertEqual(sql.count("strpos(coalesce(s.reason, '')"), 2)
-        self.assertIn("corpus.documents d", sql)
-        self.assertIn("citation.work w", sql)
+        self.assertIn("cut_documents", sql)
+        self.assertIn("cut_keys", sql)
+
+    def test_crawl_step_predicate_is_membership_not_a_per_row_derivation(self):
+        # Every crawl_step row used to re-scan corpus.documents and the whole
+        # of citation.work; the derivation belongs to the statement, once.
+        sql = citation_profile.shipped_crawl_step_sql("s")
+        self.assertNotIn("corpus.documents", sql)
+        self.assertNotIn("citation.work", sql)
+        self.assertNotIn("public_distribution", sql)
+
+    def test_the_cut_sets_are_derived_once_in_the_ctes(self):
+        ctes = citation_profile.crawl_step_cut_ctes()
+        self.assertTrue(ctes.startswith("WITH cut_documents AS ("), ctes[:40])
+        self.assertEqual(ctes.count("FROM corpus.documents d"), 1)
+        self.assertEqual(ctes.count("cut_keys AS ("), 1)
+        self.assertIn("FROM citation.work w", ctes)
+        # LEGAL_IS_DATA: still the column, never a list of ids.
+        self.assertIn("public_distribution IN (", ctes)
 
 
 class ShippedOnlyCountsTests(unittest.TestCase):

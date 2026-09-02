@@ -107,6 +107,22 @@ class CliLayerTests(unittest.TestCase):
             self.assertTrue(hasattr(pg_graph_common, name))
 
 
+class CrawlStepIndexTests(unittest.TestCase):
+    """crawl_step is the largest table in the schema and the public cut
+    matches two of its columns by equality, once per name it removes.
+    """
+
+    SCHEMA = pg_graph_common.SCHEMA_PATH.read_text(encoding="utf-8")
+
+    def test_the_cut_columns_are_indexed_idempotently(self):
+        for column in ("frontier_key", "candidate_key"):
+            self.assertIn(
+                f"CREATE INDEX IF NOT EXISTS crawl_step_{column}_idx "
+                f"ON citation.crawl_step ({column});",
+                self.SCHEMA,
+            )
+
+
 class ProjectionShapeTests(unittest.TestCase):
     """The projection's COST is a property of its shape, and the shape is
     readable without a database: two bulk INSERT ... SELECT statements into

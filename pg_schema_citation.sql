@@ -121,6 +121,16 @@ ALTER TABLE citation.crawl_step ADD CONSTRAINT crawl_step_action_check
 
 CREATE INDEX IF NOT EXISTS crawl_step_crawl_depth_idx ON citation.crawl_step (crawl_id, depth);
 
+-- The public artifact's journal cut asks, for every row, whether it names a
+-- document or a work the package leaves behind (deploy/citation_profile.py's
+-- shipped_crawl_step_sql). Two of the three columns it matches are equality
+-- lookups against a small set of cut names, so they are worth an index on
+-- the largest table in this schema; the third (reason) is a substring match
+-- no index can serve, which is why the cut sets are materialised once per
+-- statement rather than re-derived per row.
+CREATE INDEX IF NOT EXISTS crawl_step_frontier_key_idx ON citation.crawl_step (frontier_key);
+CREATE INDEX IF NOT EXISTS crawl_step_candidate_key_idx ON citation.crawl_step (candidate_key);
+
 -- Escapes a plain string for safe use inside a *Cypher* single-quoted string
 -- literal (backslash-style escaping, like Cypher/JSON -- NOT SQL's
 -- quote-doubling). This is the ONLY thing standing between a title/key

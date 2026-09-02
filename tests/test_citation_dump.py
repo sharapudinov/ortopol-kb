@@ -13,6 +13,8 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import citation_dump
+import citation_profile
+from legal_profile import SHIPPED_SQL
 from manifest_contract import CitationMode
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
@@ -179,6 +181,18 @@ class LegalCutSqlTests(unittest.TestCase):
         self.assertIn("wa.document_id IS NULL", sql)
         self.assertIn("wb.document_id IS NULL", sql)
 
+    def test_crawl_step_select_carries_the_cut_sets_as_ctes(self):
+        sql = citation_dump.copy_select("crawl_step", ["id"], CitationMode.FULL_SKELETON)
+        self.assertTrue(sql.startswith("COPY (WITH cut_documents AS ("), sql[:60])
+        self.assertIn("cut_keys AS (", sql)
+        # The predicate is membership in them, once per statement.
+        self.assertEqual(sql.count("FROM corpus.documents d"), 1)
+
+    def test_only_crawl_step_gets_the_cut_set_prefix(self):
+        for table in ("work", "cites", "public_policy"):
+            sql = citation_dump.copy_select(table, ["id"], CitationMode.FULL_SKELETON)
+            self.assertNotIn("cut_documents", sql, table)
+
     def test_crawl_step_select_drops_rows_naming_a_cut_document_or_work(self):
         sql = citation_dump.copy_select("crawl_step", ["id", "frontier_key", "reason"],
                                         CitationMode.FULL_SKELETON)
@@ -219,14 +233,17 @@ class LiveLegalCutTests(unittest.TestCase):
     def setUpClass(cls):
         cls.env = _live_env()
 
-    def _rows(self, table: str, columns: list[str], fixture: str) -> list[str]:
-        select = citation_dump.copy_select(table, columns, CitationMode.FULL_SKELETON)
+    def _run(self, select: str, fixture: str) -> list[str]:
         out = run_sql(
             self.env,
             "BEGIN;\n" + fixture + "\n" + select + ";\nROLLBACK;\n",
             extra_args=["-t", "-A"],
         ).stdout
         return [line for line in out.splitlines() if line.strip()]
+
+    def _rows(self, table: str, columns: list[str], fixture: str) -> list[str]:
+        return self._run(citation_dump.copy_select(table, columns, CitationMode.FULL_SKELETON),
+                         fixture)
 
     FIXTURE = """
     INSERT INTO corpus.documents (id, filename, extraction_state, legal_class,
@@ -263,6 +280,30 @@ class LiveLegalCutTests(unittest.TestCase):
         baseline = len(self._rows("cites", ["citing", "cited"], ""))
         rows = self._rows("cites", ["citing", "cited"], self.FIXTURE)
         self.assertEqual(len(rows), baseline + 1, "ребро на вырезанный узел вышло в дамп")
+
+    def test_the_cut_set_form_selects_exactly_what_the_per_row_form_did(self):
+        """The predicate moved from "re-derive both cut sets for every
+        crawl_step row" to "is this row's name in either set", and the sets
+        are now materialised once per statement. Same rows, or it is not a
+        performance change but a policy change.
+        """
+        # No id: a BIGSERIAL advances even in a rolled-back transaction, so
+        # the two runs' fixture rows carry different ones. The comparison is
+        # about WHICH rows the predicate lets through.
+        columns = ["crawl_id", "depth", "frontier_key", "candidate_key", "reason"]
+        projection = ",\n       ".join(f"s.{c}" for c in columns)
+        per_row = (
+            "COPY (SELECT " + projection + "\nFROM citation.crawl_step s WHERE "
+            "(NOT EXISTS (SELECT 1 FROM corpus.documents d "
+            f"WHERE NOT ({SHIPPED_SQL}) AND ("
+            + citation_profile._STEP_MENTIONS.format(alias="s", ref="d.id") + ")) "
+            "AND NOT EXISTS (SELECT 1 FROM citation.work w "
+            f"WHERE NOT {citation_profile.shipped_work_sql('w')} AND ("
+            + citation_profile._STEP_MENTIONS.format(alias="s", ref="w.key") + ")))"
+            " ORDER BY s.id) TO STDOUT"
+        )
+        self.assertEqual(self._rows("crawl_step", columns, self.FIXTURE),
+                         self._run(per_row, self.FIXTURE))
 
     def test_journal_rows_naming_the_cut_document_or_work_do_not_ship(self):
         rows = self._rows("crawl_step", ["crawl_id", "depth", "frontier_key",

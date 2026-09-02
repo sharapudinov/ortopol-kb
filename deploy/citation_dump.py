@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import IO
 
-from citation_profile import shipped_crawl_step_sql, shipped_work_sql
+from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import CitationMode
 from pg_common import run_sql
 from pg_stream import stream_stdout
@@ -109,9 +109,17 @@ def _source_clause(table: str) -> str:
     )
 
 
+# The journal cut is membership in two CTEs, so the statement carries them
+# in front of its SELECT (citation_profile.crawl_step_cut_ctes: derived once
+# per statement, not once per row). Keyed by table, so a table with no
+# prefix cannot silently acquire one.
+_QUERY_PREFIX = {"crawl_step": crawl_step_cut_ctes}
+
+
 def copy_select(table: str, columns: list[str], mode: str) -> str:
     projection = ",\n       ".join(_select_expression(table, c, mode) for c in columns)
-    return f"COPY (SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
+    prefix = _QUERY_PREFIX[table]() if table in _QUERY_PREFIX else ""
+    return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
 def _setval_sql(table: str) -> bytes:

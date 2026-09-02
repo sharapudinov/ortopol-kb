@@ -82,14 +82,51 @@ def shipped_work_sql(alias: str = "w") -> str:
     )
 
 
+# The two names the cut removes, each derived ONCE per statement instead of
+# per journal row. The earlier form inlined the derivations into the
+# predicate, so every crawl_step row re-scanned corpus.documents AND the
+# whole of citation.work (the strpos() disjunct is not sargable, so no index
+# could rescue it) -- quadratic on the largest table in the schema, and
+# crawl_step is where a depth-2 crawl's growth lands. Both sets are tiny by
+# construction: they hold only what the artifact leaves behind.
+#
+# cut_keys is the works cut BECAUSE of those documents, i.e. exactly the
+# rows shipped_work_sql() rejects: it rejects a row iff document_id is
+# non-NULL and names an unshipped document, and citation.work.document_id
+# REFERENCES corpus.documents(id), so "names an unshipped document" is the
+# join below. One scan of corpus.documents for the whole statement.
+_CUT_CTES = """WITH cut_documents AS (
+    SELECT d.id AS ref FROM corpus.documents d WHERE NOT ({shipped})
+), cut_keys AS (
+    SELECT w.key AS ref
+    FROM citation.work w JOIN cut_documents ON cut_documents.ref = w.document_id
+)
+"""
+
+
+def crawl_step_cut_ctes() -> str:
+    """The WITH clause shipped_crawl_step_sql()'s predicate reads.
+
+    Returned separately because a COPY (SELECT ...) needs it in front of
+    the SELECT, not inside the WHERE; the two belong to one statement and
+    neither is valid without the other (citation_dump.copy_select pairs
+    them, and its tests check the pairing).
+    """
+    return _CUT_CTES.format(shipped=SHIPPED_SQL)
+
+
 def shipped_crawl_step_sql(alias: str = "s") -> str:
-    """SQL boolean: this journal row names nothing the cut removed."""
+    """SQL boolean: this journal row names nothing the cut removed.
+
+    Valid ONLY inside a statement prefixed with crawl_step_cut_ctes() --
+    the predicate is membership in those two CTEs, not a re-derivation of
+    them.
+    """
     return (
-        "(NOT EXISTS (SELECT 1 FROM corpus.documents d "
-        f"WHERE NOT ({SHIPPED_SQL}) AND ({_STEP_MENTIONS.format(alias=alias, ref='d.id')})) "
-        "AND NOT EXISTS (SELECT 1 FROM citation.work w "
-        f"WHERE NOT {shipped_work_sql('w')} "
-        f"AND ({_STEP_MENTIONS.format(alias=alias, ref='w.key')})))"
+        "(NOT EXISTS (SELECT 1 FROM cut_documents r "
+        f"WHERE {_STEP_MENTIONS.format(alias=alias, ref='r.ref')}) "
+        "AND NOT EXISTS (SELECT 1 FROM cut_keys r "
+        f"WHERE {_STEP_MENTIONS.format(alias=alias, ref='r.ref')}))"
     )
 
 _SCHEMA_EXISTS_SQL = "SELECT to_regclass('citation.work') IS NOT NULL;"
