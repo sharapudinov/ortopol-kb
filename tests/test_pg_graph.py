@@ -1,18 +1,23 @@
-"""Tests for pg_graph.py and the citation.cypher_literal / citation.
-project_graph SQL functions it wraps (pg_schema_citation.sql).
+"""Tests for pg_graph_common.py (the plumbing pg_graph.py's CLI drives) and
+the citation.cypher_literal / citation.project_graph SQL functions it wraps
+(pg_schema_citation.sql).
 
-compare_counts is pure Python and always runs. Everything that touches the
-live graph skips (not fails) when Postgres is unreachable, same convention
-as test_pg_semantic.py -- the citation schema depends on the AGE extension
+compare_counts is pure Python and always runs, and so does the check that
+the CLI layer stayed a CLI layer. Everything that touches the live graph
+skips (not fails) when Postgres is unreachable, same convention as
+test_pg_semantic.py -- the citation schema depends on the AGE extension
 being present, which is a live-instance fact, not something a stub can
 stand in for.
 """
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
 
 import _pathfix  # noqa: F401
 import pg_graph
+import pg_graph_common
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
@@ -47,14 +52,59 @@ class CompareCountsTests(unittest.TestCase):
     """Pure function, no database: the arithmetic project() --check reports on."""
 
     def test_matching_counts_are_zero_diff(self):
-        self.assertEqual(pg_graph.compare_counts(3, 2, 3, 2), (0, 0))
+        self.assertEqual(pg_graph_common.compare_counts(3, 2, 3, 2), (0, 0))
 
     def test_check_reports_count_mismatch(self):
         # Fewer vertices than work rows -- the graph is missing something.
-        self.assertEqual(pg_graph.compare_counts(5, 2, 3, 2), (-2, 0))
+        self.assertEqual(pg_graph_common.compare_counts(5, 2, 3, 2), (-2, 0))
         # More edges than cites rows -- the graph has something the relational
         # tables no longer do (e.g. a stale projection after a DELETE).
-        self.assertEqual(pg_graph.compare_counts(3, 2, 3, 5), (0, 3))
+        self.assertEqual(pg_graph_common.compare_counts(3, 2, 3, 5), (0, 3))
+
+
+class CliLayerTests(unittest.TestCase):
+    """pg_graph.py parses arguments, dispatches and prints; the plumbing its
+    consumers need lives in pg_graph_common.py. The one function-level
+    import it is allowed is the optional paths.py shim (pg_search.py's main()
+    carries the same one for the same reason: paths.py is not bundled into
+    the deploy artifact). A deferred import of a graph module would mean the
+    cycle that forced one is back.
+    """
+
+    SOURCE = Path(pg_graph.__file__).read_text(encoding="utf-8")
+    TREE = ast.parse(SOURCE)
+
+    def _function_level_imports(self) -> set[str]:
+        names = set()
+        for node in ast.walk(self.TREE):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Import):
+                    names |= {alias.name for alias in inner.names}
+                elif isinstance(inner, ast.ImportFrom):
+                    names.add(inner.module or "")
+        return names
+
+    def test_no_import_lives_inside_a_function(self):
+        self.assertEqual(self._function_level_imports(), set())
+
+    def test_the_query_layer_is_imported_at_module_level(self):
+        imported = {
+            alias.name
+            for node in self.TREE.body if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        self.assertIn("pg_graph_queries", imported)
+        self.assertIn("pg_graph_common", imported)
+
+    def test_the_plumbing_is_not_defined_here(self):
+        defined = {node.name for node in self.TREE.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for name in ("graph_sql", "split_records", "graph_exists", "graph_counts",
+                     "compare_counts", "project", "init_schema"):
+            self.assertNotIn(name, defined, f"{name}() belongs to pg_graph_common.py")
+            self.assertTrue(hasattr(pg_graph_common, name))
 
 
 class ProjectionShapeTests(unittest.TestCase):
@@ -66,7 +116,7 @@ class ProjectionShapeTests(unittest.TestCase):
     whole vertex label per edge (AGE indexes no property by itself).
     """
 
-    SCHEMA = pg_graph.SCHEMA_PATH.read_text(encoding="utf-8")
+    SCHEMA = pg_graph_common.SCHEMA_PATH.read_text(encoding="utf-8")
 
     def test_labels_are_filled_by_bulk_insert(self):
         self.assertIn('INSERT INTO citation_graph."Work" (id, properties)', self.SCHEMA)
@@ -103,8 +153,8 @@ class CitationGraphLiveTests(unittest.TestCase):
         self.assertEqual(got, _expected_cypher_literal(raw))
 
     def test_init_is_idempotent(self):
-        pg_graph.init_schema(self.env)
-        pg_graph.init_schema(self.env)  # must not raise the second time
+        pg_graph_common.init_schema(self.env)
+        pg_graph_common.init_schema(self.env)  # must not raise the second time
 
     def test_kind_constraints(self):
         # our-document without document_id: the FK to corpus.documents is the
@@ -139,7 +189,7 @@ class CitationGraphLiveTests(unittest.TestCase):
 
     def _delete_and_reproject(self, prefix: str) -> None:
         run_sql(self.env, f"DELETE FROM citation.work WHERE key LIKE '{prefix}%';")
-        pg_graph.project(self.env)
+        pg_graph_common.project(self.env)
 
     def test_project_is_idempotent_on_live_db(self):
         prefix = "test:pg_graph:project:"
@@ -159,11 +209,11 @@ class CitationGraphLiveTests(unittest.TestCase):
             WHERE a.key = '{prefix}b' AND b.key = '{prefix}c';
             """,
         )
-        first = pg_graph.project(self.env)
-        self.assertEqual(pg_graph.check(self.env), 0)
-        second = pg_graph.project(self.env)
+        first = pg_graph_common.project(self.env)
+        self.assertEqual(pg_graph_common.check(self.env), 0)
+        second = pg_graph_common.project(self.env)
         self.assertEqual(first, second, "повторная проекция дала другие |V|/|E|")
-        self.assertEqual(pg_graph.check(self.env), 0)
+        self.assertEqual(pg_graph_common.check(self.env), 0)
 
     def test_projection_carries_properties_through_agtype_unmangled(self):
         """A third-party title can hold quotes, backslashes and newlines.
@@ -182,11 +232,11 @@ class CitationGraphLiveTests(unittest.TestCase):
             "VALUES (:'key', :'title', 1997, 'manual', 'external-skeleton');",
             variables={"key": raw_key, "title": raw_title},
         )
-        pg_graph.project(self.env)
+        pg_graph_common.project(self.env)
         escaped = self._scalar("SELECT citation.cypher_literal(:'raw');", variables={"raw": raw_key})
         row = run_sql(
             self.env,
-            pg_graph._AGE_PREAMBLE
+            pg_graph_common.AGE_PREAMBLE
             + "SELECT t::text, y::text, k::text FROM ag_catalog.cypher('citation_graph', "
             + f"$CYPHERQ$MATCH (w:Work {{key: '{escaped}'}}) RETURN w.title, w.year, w.kind$CYPHERQ$) "
             + "AS (t agtype, y agtype, k agtype);",
@@ -214,7 +264,7 @@ class CitationGraphLiveTests(unittest.TestCase):
             f"INSERT INTO citation.work (key, source, kind) "
             f"VALUES ('{prefix}a', 'manual', 'external-skeleton');",
         )
-        pg_graph.project(self.env)
+        pg_graph_common.project(self.env)
         sparse = self._scalar(
             'SELECT count(*) FROM citation_graph."Work" '
             "WHERE (properties::text)::jsonb->>'key' = :'key' "

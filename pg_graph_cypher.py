@@ -15,24 +15,22 @@ What they share, and why they live together:
   pg_schema_citation.sql defines, which this module trusts and never
   re-derives -- and both then check the assembled command for the
   $CYPHERQ$ delimiter, because nothing stops a key from containing it;
-- both reach Postgres exclusively through `pg_graph.graph_sql()`, which
-  applies AGE's session-local LOAD + search_path preamble once per psql
-  invocation (see pg_graph.py's docstring for why it cannot be baked into
-  the server).
+- both reach Postgres exclusively through `pg_graph_common.graph_sql()`,
+  which applies AGE's session-local LOAD + search_path preamble once per
+  psql invocation (see that module's docstring for why it cannot be baked
+  into the server).
 
 Data functions only: CLI parsing, dispatch and table printing live in
-pg_graph.py's main(). This module imports pg_graph at its own top level, so
-pg_graph.py imports it (through pg_graph_queries) only lazily from inside
-main(), or the two would form a cycle.
+pg_graph.py, which imports this module through pg_graph_queries.
 """
 from __future__ import annotations
 
 import sys
 
-import pg_graph
+import pg_graph_common
 import pg_search
 from pg_common import scalar
-from pg_graph import FIELD_SEP, ROW_ARGS, split_records
+from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
 
 MIN_DEPTH, MAX_DEPTH = 1, 3
 
@@ -80,7 +78,7 @@ def citers(env, document_id: str, depth: int = 1) -> list[dict]:
     if not escaped:
         return []
     sql = build_citers_sql(escaped, depth)
-    result = pg_graph.graph_sql(env, sql, extra_args=ROW_ARGS)
+    result = pg_graph_common.graph_sql(env, sql, extra_args=ROW_ARGS)
     rows = []
     for rec in split_records(result.stdout):
         key, title, year, kind = rec.split(FIELD_SEP, 3)
@@ -177,12 +175,12 @@ def hybrid(env, question: str, top: int = 10) -> list[dict]:
         print("эмбеддинги недоступны, hybrid недоступен", file=sys.stderr)
         return []
     variables = {"vec": vec, "top": str(int(top))}
-    seeds = pg_graph.graph_sql(env, _NEAREST_KEYS_SQL, variables=variables,
+    seeds = pg_graph_common.graph_sql(env, _NEAREST_KEYS_SQL, variables=variables,
                                 extra_args=["-t", "-A"]).stdout.split("\n")
     sql = build_hybrid_sql([key for key in seeds if key.strip()])
     if sql is None:
         return []
-    result = pg_graph.graph_sql(env, sql, variables=variables,
+    result = pg_graph_common.graph_sql(env, sql, variables=variables,
                                  extra_args=ROW_ARGS)
     rows = []
     for rec in split_records(result.stdout):

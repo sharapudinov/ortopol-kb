@@ -25,7 +25,7 @@ from manifest_contract import (  # noqa: E402,F401 -- MANIFEST_SCHEMA_VERSION re
     Key,
 )
 from ollama_registry import served_model_digest  # noqa: E402
-import pg_graph  # noqa: E402
+import pg_graph_common  # noqa: E402
 from pg_common import scalar, scalar_row  # noqa: E402
 from vector_probe_check import (  # noqa: E402,F401 -- re-exported for smoke_test.py's `checks.*`
     VECTOR_PROBE_DISTANCE_TOLERANCE,
@@ -163,12 +163,12 @@ def check_citation_projection(env: dict, manifest: dict) -> tuple[bool | None, s
     mode = citation.get(Key.CITATION_MODE)
     if mode is None or mode == CitationMode.NONE:
         return None, f"citation mode={mode!r} -- профиль не несёт граф, проверять нечего"
-    if not pg_graph.graph_exists(env):
+    if not pg_graph_common.graph_exists(env):
         return False, "citation_graph не спроецирован после restore (init/02_project_graph.sql?)"
     want_work = citation.get(Key.WORK_COUNT, 0)
     want_cites = citation.get(Key.CITES_COUNT, 0)
-    vertex_n, edge_n = pg_graph.graph_counts(env)
-    diff_v, diff_e = pg_graph.compare_counts(want_work, want_cites, vertex_n, edge_n)
+    vertex_n, edge_n = pg_graph_common.graph_counts(env)
+    diff_v, diff_e = pg_graph_common.compare_counts(want_work, want_cites, vertex_n, edge_n)
     ok = diff_v == 0 and diff_e == 0
     return ok, (f"vertices={vertex_n} (work {want_work}, diff {diff_v}), "
                 f"edges={edge_n} (cites {want_cites}, diff {diff_e})")

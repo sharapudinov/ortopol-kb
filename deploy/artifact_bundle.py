@@ -61,16 +61,17 @@ CORPUS_LIB_FILES = [
     "pg_search.py",
     # smoke_checks.check_citation_projection reuses graph_exists/graph_counts/
     # compare_counts rather than reimplementing the |V|=|work|/|E|=|cites|
-    # comparison a second time (pg_graph.py's own module docstring: this is
-    # the thin CLI layer other consumers, in-repo or bundled, import for
-    # graph_sql()'s AGE-activation contract).
+    # comparison a second time; that plumbing, and graph_sql()'s
+    # AGE-activation contract, live here (see the module's own docstring).
+    "pg_graph_common.py",
+    # The CLI over it, because AGENT_GUIDE.md documents `pg_graph.py
+    # project --check` and the four query subcommands to the recipient ...
     "pg_graph.py",
-    # ... and the query layer behind its citers/candidates/cocitation/hybrid
-    # subcommands, which AGENT_GUIDE.md documents to the recipient. pg_graph.py
-    # imports pg_graph_queries lazily from main(), and that module re-exports
-    # the two Cypher consumers from pg_graph_cypher.py -- bundling only the
-    # CLI left every documented graph query raising ModuleNotFoundError on a
-    # package whose own guide says it can answer them.
+    # ... and the query layer behind citers/candidates/cocitation/hybrid,
+    # which re-exports the two Cypher consumers from pg_graph_cypher.py --
+    # bundling only the CLI left every documented graph query raising
+    # ModuleNotFoundError on a package whose own guide says it can answer
+    # them.
     "pg_graph_queries.py",
     "pg_graph_cypher.py",
 ]

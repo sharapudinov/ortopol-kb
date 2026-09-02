@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 import _pathfix  # noqa: F401
-import pg_graph
+import pg_graph_common
 import pg_graph_queries as pgq
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
@@ -237,7 +237,7 @@ class LiveConsumersTests(unittest.TestCase):
 
     def _cleanup(self):
         run_sql(self.env, f"DELETE FROM citation.work WHERE key LIKE '{self.PREFIX}%';")
-        pg_graph.project(self.env)
+        pg_graph_common.project(self.env)
 
     def test_citers_finds_citing_work_and_cocitation_finds_shared_target_pair(self):
         self.addCleanup(self._cleanup)
@@ -257,7 +257,7 @@ class LiveConsumersTests(unittest.TestCase):
             WHERE x.key = '{self.PREFIX}b' AND y.key = '{self.PREFIX}c';
             """,
         )
-        pg_graph.project(self.env)
+        pg_graph_common.project(self.env)
 
         citer_keys = {r["key"] for r in pgq.citers(self.env, "INDEX", depth=1)}
         self.assertIn(f"{self.PREFIX}b", citer_keys)
@@ -289,7 +289,7 @@ class LiveConsumersTests(unittest.TestCase):
             """,
             variables={"vec": vec},
         )
-        pg_graph.project(self.env)
+        pg_graph_common.project(self.env)
 
         ranked = pgq.candidates(self.env, top=400, min_links=1)
         by_key = {r["key"]: r for r in ranked}

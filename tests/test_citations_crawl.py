@@ -191,8 +191,8 @@ class IdempotencyLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.env = _live_env()
-        import pg_graph
-        pg_graph.init_schema(cls.env)
+        import pg_graph_common
+        pg_graph_common.init_schema(cls.env)
         documents = run_sql(
             cls.env,
             "SELECT id FROM corpus.documents WHERE source_dir = 'theory/iis' "

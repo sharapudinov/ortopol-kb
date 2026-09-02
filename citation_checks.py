@@ -22,8 +22,8 @@ What it refuses, and why:
   checked again here as a predicate rather than trusted to still hold on
   whatever database this is asked about;
 - a stale projection -- citation_graph must be a faithful copy of
-  citation.work/cites (pg_graph.py owns the comparison logic, reused here
-  rather than reimplemented, per pg_graph.compare_counts's own docstring);
+  citation.work/cites (pg_graph_common.py owns the comparison logic, reused
+  here rather than reimplemented, per its compare_counts's own docstring);
 - a work with a non-empty title and no embedding -- pg_embed.py's own
   contract ("every result record carries a semantic key", EXTENDING.md § 2)
   applied to the 'works' TARGETS entry;
@@ -39,7 +39,7 @@ extra a completeness run can be indifferent to.
 """
 from __future__ import annotations
 
-import pg_graph
+import pg_graph_common
 from paths import EXTERNAL_SOURCE_DIR, IIS_SOURCE_DIR
 from pg_common import run_sql, scalar
 
@@ -97,13 +97,13 @@ def self_loop_work_ids(env: dict) -> list[str]:
 
 
 def _projection_stale(env: dict) -> list[str]:
-    if not pg_graph.graph_exists(env):
+    if not pg_graph_common.graph_exists(env):
         return ["PROJECTION STALE: citation_graph is not projected "
                 "(python3 pg_graph.py project)"]
     work_n = int(scalar(env, "SELECT count(*) FROM citation.work;"))
     cites_n = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
-    vertex_n, edge_n = pg_graph.graph_counts(env)
-    diff_v, diff_e = pg_graph.compare_counts(work_n, cites_n, vertex_n, edge_n)
+    vertex_n, edge_n = pg_graph_common.graph_counts(env)
+    diff_v, diff_e = pg_graph_common.compare_counts(work_n, cites_n, vertex_n, edge_n)
     if diff_v == 0 and diff_e == 0:
         return []
     return [f"PROJECTION STALE: work={work_n} vertices={vertex_n} (diff {diff_v}); "

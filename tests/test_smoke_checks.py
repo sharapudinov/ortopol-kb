@@ -63,7 +63,7 @@ class ManifestComparisonTests(unittest.TestCase):
 class CitationProjectionTests(unittest.TestCase):
     """check_citation_projection: SKIP for an artifact that ships no
     citation mode (older artifact, or CitationMode.NONE), otherwise the same
-    |V|=work/|E|=cites comparison pg_graph.py's own `project --check` makes.
+    |V|=work/|E|=cites comparison `pg_graph.py project --check` makes.
     """
 
     def test_skips_when_manifest_has_no_citation_block(self):
@@ -73,29 +73,29 @@ class CitationProjectionTests(unittest.TestCase):
 
     def test_skips_under_none_mode(self):
         manifest = {"citation": {"mode": "none", "work_count": 0, "cites_count": 0}}
-        with mock.patch.object(smoke_checks.pg_graph, "graph_exists") as exists_mock:
+        with mock.patch.object(smoke_checks.pg_graph_common, "graph_exists") as exists_mock:
             ok, _detail = smoke_checks.check_citation_projection({}, manifest)
         self.assertIsNone(ok)
         exists_mock.assert_not_called()
 
     def test_fails_when_graph_was_never_projected(self):
         manifest = {"citation": {"mode": "full-skeleton", "work_count": 5, "cites_count": 3}}
-        with mock.patch.object(smoke_checks.pg_graph, "graph_exists", return_value=False):
+        with mock.patch.object(smoke_checks.pg_graph_common, "graph_exists", return_value=False):
             ok, detail = smoke_checks.check_citation_projection({}, manifest)
         self.assertFalse(ok)
         self.assertIn("02_project_graph.sql", detail)
 
     def test_matching_counts_pass(self):
         manifest = {"citation": {"mode": "topology-only", "work_count": 438, "cites_count": 2425}}
-        with mock.patch.object(smoke_checks.pg_graph, "graph_exists", return_value=True), \
-             mock.patch.object(smoke_checks.pg_graph, "graph_counts", return_value=(438, 2425)):
+        with mock.patch.object(smoke_checks.pg_graph_common, "graph_exists", return_value=True), \
+             mock.patch.object(smoke_checks.pg_graph_common, "graph_counts", return_value=(438, 2425)):
             ok, detail = smoke_checks.check_citation_projection({}, manifest)
         self.assertTrue(ok, detail)
 
     def test_mismatched_counts_fail(self):
         manifest = {"citation": {"mode": "full-skeleton", "work_count": 438, "cites_count": 2425}}
-        with mock.patch.object(smoke_checks.pg_graph, "graph_exists", return_value=True), \
-             mock.patch.object(smoke_checks.pg_graph, "graph_counts", return_value=(437, 2425)):
+        with mock.patch.object(smoke_checks.pg_graph_common, "graph_exists", return_value=True), \
+             mock.patch.object(smoke_checks.pg_graph_common, "graph_counts", return_value=(437, 2425)):
             ok, detail = smoke_checks.check_citation_projection({}, manifest)
         self.assertFalse(ok)
         self.assertIn("diff -1", detail)

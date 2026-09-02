@@ -49,8 +49,8 @@ from citations.mathnet import MathnetClient, mathnet_id
 from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 from paths import default_cache_dir, default_corpus_dir, default_mathnet_cache_dir
 from pg_common import PostgresUnavailable, load_pgenv, run_sql
-from pg_graph import check as graph_check
-from pg_graph import init_schema, project
+from pg_graph_common import check as graph_check
+from pg_graph_common import init_schema, project
 
 COVERAGE_RUN = 85
 

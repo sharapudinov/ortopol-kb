@@ -61,7 +61,8 @@ compose своим `--env-file` не разворачивает `$` и до `PGP
 `compose_lifecycle.py`, `dump_integrity.py`, `deploy_pathfix.py`,
 `ollama_registry.py`, `drift_probe.py`, `profile_checks.py`, `dump_scan.py`,
 `pg_rank_probe.py`), а также копии общих модулей репозитория
-(`corpus_lib/pg_common.py`, `corpus_lib/pg_search.py`, `corpus_lib/pg_graph.py`,
+(`corpus_lib/pg_common.py`, `corpus_lib/pg_search.py`,
+`corpus_lib/pg_graph_common.py`, `corpus_lib/pg_graph.py`,
 `corpus_lib/pg_graph_queries.py`, `corpus_lib/pg_graph_cypher.py`) лежат прямо
 здесь, рядом с дампом и `manifest.json` — запускаются без доступа к репозиторию:
 

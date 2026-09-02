@@ -5,27 +5,24 @@ Both read citation.work/citation.cites directly -- a nearest-neighbour
 ranking with a 1-hop link count, and a co-citation self-join, are plain SQL
 questions, and answering them through Cypher would buy nothing. The two
 graph-shaped consumers (citers, hybrid) live in pg_graph_cypher.py and are
-re-exported here, so pg_graph.py's main() and every other caller still see
-one module with all four.
+re-exported here, so pg_graph.py and every other caller still see one
+module with all four.
 
-Both talk to Postgres through `pg_graph.graph_sql()` like everything else
-that touches this schema -- see pg_graph.py's own docstring for why AGE's
-LOAD + search_path preamble has to be applied per psql invocation.
+Both talk to Postgres through `pg_graph_common.graph_sql()` like everything
+else that touches this schema -- see that module's own docstring for why
+AGE's LOAD + search_path preamble has to be applied per psql invocation.
 
 Data functions only: CLI argument parsing, dispatch and table printing live
-in pg_graph.py's main() (its docstring explains why: this module imports
-pg_graph at its own top level, so pg_graph.py must not import this module at
-ITS top level, only lazily from inside main(), or the two would form an
-import cycle).
+in pg_graph.py, which imports this module and is imported by nothing.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-import pg_graph
+import pg_graph_common
 import pg_search
-from pg_graph import FIELD_SEP, ROW_ARGS, split_records
+from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
 from pg_graph_cypher import (  # noqa: F401  (re-exported: see the docstring)
     MAX_DEPTH,
     MIN_DEPTH,
@@ -152,7 +149,7 @@ def candidates(env, top: int = 20, query: str | None = None, min_links: int = 0)
         variables = {"top": str(int(top))}
     if min_links > 0:
         variables["min_links"] = str(int(min_links))
-    result = pg_graph.graph_sql(env, sql, variables=variables,
+    result = pg_graph_common.graph_sql(env, sql, variables=variables,
                                  extra_args=ROW_ARGS)
     rows = []
     for rec in split_records(result.stdout):
@@ -191,7 +188,7 @@ ORDER BY n DESC;
 
 
 def cocitation(env, min_count: int = 2) -> list[dict]:
-    result = pg_graph.graph_sql(env, _COCITATION_SQL, variables={"min_count": str(min_count)},
+    result = pg_graph_common.graph_sql(env, _COCITATION_SQL, variables={"min_count": str(min_count)},
                                  extra_args=ROW_ARGS)
     pairs = []
     for rec in split_records(result.stdout):

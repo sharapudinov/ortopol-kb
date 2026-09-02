@@ -1,8 +1,8 @@
 """Unit tests for citation_checks.py: no live database (run_sql/scalar are
 stubbed with the exact FIELD_SEP-joined text psql produces, same convention
 as test_external_registry.py/test_legal_profile.py's `_psql_rows`).
-pg_graph.graph_exists/graph_counts/compare_counts are stubbed too --
-pg_graph's own live behaviour is test_pg_graph.py's job.
+pg_graph_common.graph_exists/graph_counts/compare_counts are stubbed too --
+that module's own live behaviour is test_pg_graph.py's job.
 
 A live-database class at the bottom exercises citation_problems() against
 the real corpus (skipped, not failed, when Postgres is unreachable -- same
@@ -82,23 +82,23 @@ class SelfLoopTests(unittest.TestCase):
 
 class ProjectionStaleTests(unittest.TestCase):
     def test_missing_graph_is_one_problem(self):
-        with mock.patch.object(citation_checks.pg_graph, "graph_exists", return_value=False):
+        with mock.patch.object(citation_checks.pg_graph_common, "graph_exists", return_value=False):
             problems = citation_checks._projection_stale({})
         self.assertEqual(len(problems), 1)
         self.assertIn("PROJECTION STALE", problems[0])
 
     def test_matching_counts_are_no_problem(self):
-        with mock.patch.object(citation_checks.pg_graph, "graph_exists", return_value=True), \
+        with mock.patch.object(citation_checks.pg_graph_common, "graph_exists", return_value=True), \
              mock.patch.object(citation_checks, "scalar", side_effect=["5", "3"]), \
-             mock.patch.object(citation_checks.pg_graph, "graph_counts", return_value=(5, 3)), \
-             mock.patch.object(citation_checks.pg_graph, "compare_counts", return_value=(0, 0)):
+             mock.patch.object(citation_checks.pg_graph_common, "graph_counts", return_value=(5, 3)), \
+             mock.patch.object(citation_checks.pg_graph_common, "compare_counts", return_value=(0, 0)):
             self.assertEqual(citation_checks._projection_stale({}), [])
 
     def test_mismatched_counts_are_one_problem_naming_the_diff(self):
-        with mock.patch.object(citation_checks.pg_graph, "graph_exists", return_value=True), \
+        with mock.patch.object(citation_checks.pg_graph_common, "graph_exists", return_value=True), \
              mock.patch.object(citation_checks, "scalar", side_effect=["5", "3"]), \
-             mock.patch.object(citation_checks.pg_graph, "graph_counts", return_value=(4, 3)), \
-             mock.patch.object(citation_checks.pg_graph, "compare_counts", return_value=(-1, 0)):
+             mock.patch.object(citation_checks.pg_graph_common, "graph_counts", return_value=(4, 3)), \
+             mock.patch.object(citation_checks.pg_graph_common, "compare_counts", return_value=(-1, 0)):
             problems = citation_checks._projection_stale({})
         self.assertEqual(len(problems), 1)
         self.assertIn("work=5", problems[0])
