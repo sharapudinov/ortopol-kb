@@ -105,7 +105,7 @@ DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py
   (citations/store.py для графа, citations/spike_runs.py для measurements и
   отчётов); запись мимо шва запрещена, потому что печатаемое обещание держится
   конструкцией, а не аккуратностью — уже однажды разошлось с делом.
-  Третий канал — HTTP-кэши в дереве данных: клиент получает объект кэша
+  Третий канал — кэши в дереве данных: читатель получает объект кэша
   (citations/http_cache.cache_for), и под --dry-run это ReadOnlyCache —
   попадания отдаёт, промахи не пишет, каталог не создаёт. Кэш берёт ОТТУДА
   не только клиент, а ЛЮБОЙ его читатель: у сайдкара батча оказалось два
@@ -116,9 +116,14 @@ DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py
   у канала НЕТ умолчания, как нет его у writer/measurements. Флаг
   `read_only_cache=False`, протянутый через слои, на каждом слое
   доставался в ПИШУЩУЮ реализацию — забытый keyword у вызова без
-  командной строки писал бы в дерево под --dry-run. Все три кэша строит
+  командной строки писал бы в дерево под --dry-run. Все ЧЕТЫРЕ кэша строит
   одно место (pg_load_citations.main) и передаёт объектами; проверяют
-  тесты test_citations_layering.CacheModeIsAnObjectTests.
+  тесты test_citations_layering.CacheModeIsAnObjectTests. Четвёртый — не
+  HTTP: citations/vector_cache.VectorMemo мемоизирует ВЕКТОРЫ кандидатов
+  (ключ = модель + sha256 текста, corpus/cache/embeddings), потому что
+  --calibrate пишет DryRunWriter'ом и ни одной строки citation.work после
+  себя не оставляет — известные из БД векторы его уровня не спасают, и
+  предписанная пара «калибровка → обход» платила ollama дважды.
 JOURNAL_FACTS_ARE_COLUMNS [HARD, 2026-09-02]: то, что читает КОД, живёт в
   колонке citation.crawl_step (node_key, score, tau рядом с frontier_key /
   candidate_key / n_found / n_kept), а reason — только проза для человека.

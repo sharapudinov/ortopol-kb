@@ -47,10 +47,12 @@ from citations.inputs import (
 from citations.seed_metadata import mathnet_names, zbmath_abstracts
 from citation_vocab import CrawlAction
 from citations.store import DryRunWriter, PostgresWriter
+from citations.vector_cache import VectorMemo
 from paths import (
     data_root,
     default_cache_dir,
     default_corpus_dir,
+    default_embedding_cache_dir,
     default_mathnet_cache_dir,
     default_zbmath_cache_dir,
 )
@@ -65,10 +67,6 @@ def build_client(args, cache) -> OpenAlexClient:
     return OpenAlexClient(cache=cache,
                           quota_floor=args.quota_floor,
                           max_quota_wait=args.max_quota_wait)
-
-
-def make_embedder(model: str, dims: int):
-    return lambda texts: frontier.embed_texts(texts, model, dims)
 
 
 def do_merge_twins(env, args) -> int:
@@ -251,18 +249,21 @@ def main(argv: list[str] | None = None) -> int:
 
     crawl_id = args.crawl_id or time.strftime("%Y%m%dT%H%M%S")
     writer = DryRunWriter() if (args.dry_run or args.calibrate) else PostgresWriter(env)
-    # Three caches in the data tree, all three chosen HERE and handed to
+    # Four caches in the data tree, all four chosen HERE and handed to
     # their readers as objects -- the same construction the two writers
     # above get, and for the same reason: --dry-run's promise about the tree
     # must not depend on a keyword nobody forgot (DRY_RUN_WRITES_NOTHING).
+    # The fourth memoises the VECTORS, which --calibrate buys and, writing
+    # no work row, leaves nowhere.
     client = build_client(args, cache_for(Path(args.cache_dir), read_only=args.dry_run))
     zbmath_cache = cache_for(default_zbmath_cache_dir(), read_only=args.dry_run)
     mathnet_cache = cache_for(default_mathnet_cache_dir(), read_only=args.dry_run)
+    memo = VectorMemo(cache_for(default_embedding_cache_dir(), read_only=args.dry_run), model)
     skip = fresh_keys(env, args.fresh_days) if args.resume else frozenset()
     if skip:
         print(f"--resume: {len(skip)} узлов свежее {args.fresh_days} дней не раскрываются")
 
-    snowball = Snowball(client, make_embedder(model, dims), writer,
+    snowball = Snowball(client, frontier.bound_embedder(model, dims, memo), writer,
                         tau=args.tau if args.tau is not None else float("inf"),
                         crawl_id=crawl_id, skip_keys=skip, hub_cap=args.hub_cap,
                         known_vectors=lambda keys: known_embeddings(env, keys))

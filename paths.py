@@ -104,6 +104,18 @@ def default_mathnet_cache_dir() -> Path:
     return data_root() / "corpus" / "cache" / "mathnet"
 
 
+def default_embedding_cache_dir() -> Path:
+    """Candidate vectors, cached for the reason the response bodies are.
+
+    An embedding is not an HTTP response, but it is bought the same way: the
+    calibration run and the crawl that follows meet the same depth-1
+    candidates by design, and a calibration writes no citation.work row for
+    the store read to find later. Data the tree keeps, not scratch --
+    thousands of bge-m3 inferences per level otherwise paid twice.
+    """
+    return data_root() / "corpus" / "cache" / "embeddings"
+
+
 def default_zbmath_cache_dir() -> Path:
     """zbMATH documents, keyed by the zbMATH id, for the same reason again.
 

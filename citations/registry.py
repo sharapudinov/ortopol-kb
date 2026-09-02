@@ -90,10 +90,12 @@ class ScoringFields(NamedTuple):
     The abstract stays INVERTED here and is restored on read. OpenAlex
     ships it as {word: [positions]}, and turning that back into text is a
     sort and a join per candidate -- work frontier.vectors_for() asks for
-    only where the vector is not already in citation.work, which on the
-    documented calibrate-then-crawl pair and on every --resume re-crawl is
-    a small minority of the level. Node.absorb() keeps its own eager
-    restore: the rows actually written need the text.
+    only where the vector is not already in citation.work, which on every
+    --resume re-crawl is a small minority of the level. (The text is what
+    the embedder's memo is keyed by, so a candidate the memo answers for is
+    restored and then not embedded; what the memo saves is the inference,
+    not the restore.) Node.absorb() keeps its own eager restore: the rows
+    actually written need the text.
     """
     key: str
     title: str | None

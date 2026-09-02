@@ -163,10 +163,11 @@ KEY_BATCH = 200
 def known_embeddings(env, keys) -> dict[str, list[float]]:
     """{key: stored vector} for those of `keys` citation.work already holds.
 
-    What makes a re-crawl (and the calibrate-then-crawl pair, which asks
-    OpenAlex the same depth-1 pages twice by design) stop paying ollama for
-    vectors already in the database. A miss is simply absent from the
-    answer: the caller embeds exactly the misses.
+    What makes a re-crawl stop paying ollama for vectors already in the
+    database. A miss is simply absent from the answer: the caller embeds
+    exactly the misses. The calibrate-then-crawl pair is NOT served from
+    here -- a calibration writes no work row at all -- and is served by the
+    embedder's memo in the data tree instead (citations/vector_cache.py).
 
     The vectors are the corpus model's -- store.py writes what the crawl
     embedded, and the crawl binds its embedder from pg_search.resolve_model()

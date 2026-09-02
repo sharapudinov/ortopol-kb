@@ -22,6 +22,7 @@ from pg_embedding_text import works_text
 from pg_search import EMBED_BATCH, OLLAMA_URL, embed_batch
 
 from .inputs import KEY_BATCH
+from .vector_cache import memoizing_embedder
 
 
 def candidate_text(title: str | None, abstract: str | None) -> str:
@@ -56,6 +57,21 @@ def embed_texts(
     return embed_batch(model, dims, texts, ollama_url=url, batch=batch, opener=opener)
 
 
+def bound_embedder(model: str, dims: int, memo):
+    """The crawl's embedder: embed_texts() bound to the corpus model, with
+    the data tree's vector memo in front of it (citations/vector_cache.py).
+
+    Both halves belong to this seam rather than to the caller. The model is
+    bound once, from corpus.embedding_model, because a vector from another
+    model is a plausible distance and not an error; the memo is what keeps
+    the documented `--calibrate` then crawl pair from buying the same level
+    of vectors twice. Which memo -- writing or read-only -- is the caller's,
+    and only the caller's: it is an http_cache object chosen by the run's
+    mode (pg_load_citations.main), never a flag threaded through here.
+    """
+    return memoizing_embedder(lambda texts: embed_texts(texts, model, dims), memo)
+
+
 def vectors_for(embed, known_vectors, holders):
     """(holder, vector) pairs for `holders` (anything carrying key/title/
     abstract), in order, a chunk at a time: read from the store where
@@ -65,12 +81,17 @@ def vectors_for(embed, known_vectors, holders):
     embedder above, `known_vectors` is list[str] -> {key: vector} over what
     the database already holds (citations/inputs.known_embeddings).
 
-    The read is not free either: --calibrate embeds every depth-1
-    candidate and writes no node, the crawl that follows meets the same
-    candidates, and a re-crawl without --resume meets every node it ever
-    wrote. At a depth-2 level (~4262 distinct candidates measured) that is
-    thousands of bge-m3 inferences and hundreds of round trips paid for
-    vectors already in Postgres.
+    The read is not free either: a re-crawl without --resume meets every
+    node it ever wrote. At a depth-2 level (~4262 distinct candidates
+    measured) that is thousands of bge-m3 inferences and hundreds of round
+    trips paid for vectors already in Postgres.
+
+    What the store read canNOT save is the `--calibrate` then crawl pair
+    the docs prescribe: a calibration writes no work row, so the level it
+    just embedded leaves nothing here to find. That saving belongs to the
+    embedder's own memo in the data tree (citations/vector_cache.py, bound
+    by bound_embedder above) -- this function's `embed` is already behind
+    it, and a miss here is a cache lookup before it is an inference.
 
     TWO batch sizes, because the two seams are charged differently. The
     store read is a psql round trip -- a temp script, a fork, a fresh
