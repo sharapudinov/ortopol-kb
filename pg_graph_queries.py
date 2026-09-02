@@ -70,13 +70,22 @@ _CENTROID_EXPR = (
 #                  `citing = w.id OR cited = w.id` -- an OR across two
 #                  columns no single index scan can serve, so it degraded
 #                  toward re-reading citation.cites per candidate.
-#   {links_cut}    --min-links, when asked for, is a filter on the base
-#                  relation INSIDE `nearest`: the cut has to decide which
-#                  rows are eligible for the top-K, not which of the K
-#                  survive. It costs a lookup per row the index scan
-#                  examines (the plan keeps the HNSW scan and adds a
-#                  Filter), which is why it is omitted entirely at the
-#                  default 0 rather than written as a tautological >= 0.
+#   {links_join}   --min-links, when asked for, turns that LEFT JOIN into
+#                  an inner one carrying `l.n >= :min_links`: the answer is
+#                  "of the K nearest, the ones with at least N links to our
+#                  own documents", so it can be shorter than K. The cut
+#                  cannot move below the LIMIT to decide eligibility
+#                  instead: measured with EXPLAIN on this instance
+#                  (enable_seqscan=off), EVERY membership test against
+#                  `links` inside `nearest` -- the correlated subquery this
+#                  replaced, `IN (SELECT ...)`, or a join -- makes the
+#                  planner drop work_embedding_hnsw and sort the candidates
+#                  instead, which is the one thing this shape exists to
+#                  prevent. The correlated form also re-scanned the
+#                  materialised (hence unindexed) `links` CTE once per row
+#                  the index scan examined. Above the LIMIT the index scan
+#                  survives and `links` is hashed once. Omitted entirely at
+#                  the default 0 rather than written as a tautological >= 0.
 #
 # {target_expr} is module-owned SQL, never caller input: either the bound
 # query vector or the corpus centroid subquery.
@@ -99,24 +108,25 @@ nearest AS (
     SELECT w.id, w.key, w.year, w.title,
            1 - (w.embedding <=> {target_expr}) AS score
     FROM citation.work w
-    WHERE w.kind = 'external-skeleton' AND w.embedding IS NOT NULL{links_cut}
+    WHERE w.kind = 'external-skeleton' AND w.embedding IS NOT NULL
     ORDER BY w.embedding <=> {target_expr}
     LIMIT :top
 )
 SELECT n.key, coalesce(n.year::text, ''), coalesce(n.title, ''),
        n.score::text, coalesce(l.n, 0)::text
 FROM nearest n
-LEFT JOIN links l ON l.id = n.id
+{links_join}
 ORDER BY n.score DESC;
 """
 
-_LINKS_CUT = ("\n      AND coalesce((SELECT n FROM links WHERE links.id = w.id), 0) "
-              ">= :min_links")
+_LINKS_KEPT = "LEFT JOIN links l ON l.id = n.id"
+_LINKS_CUT = "JOIN links l ON l.id = n.id AND l.n >= :min_links"
 
 
 def build_candidates_sql(target_expr: str, min_links: int) -> str:
     return _CANDIDATES_SQL.format(
-        target_expr=target_expr, links_cut=_LINKS_CUT if min_links > 0 else "")
+        target_expr=target_expr,
+        links_join=_LINKS_CUT if min_links > 0 else _LINKS_KEPT)
 
 
 def rank_candidates(rows: list[dict], min_links: int = 0, top: int | None = None) -> list[dict]:
@@ -137,6 +147,13 @@ def rank_candidates(rows: list[dict], min_links: int = 0, top: int | None = None
 
 
 def candidates(env, top: int = 20, query: str | None = None, min_links: int = 0) -> list[dict]:
+    """The `top` external-skeleton nodes nearest to `query` (or to the
+    corpus centroid), with their link counts.
+
+    min_links cuts that top-K rather than the pool it is drawn from, so
+    asking for links can return fewer than `top` rows -- see the shape note
+    on {links_join} above for the EXPLAIN measurement that decided it.
+    """
     if query:
         vec = pg_search.embed_query(query, env)
         if vec is None:

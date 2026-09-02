@@ -101,12 +101,22 @@ class CandidatesSqlTests(unittest.TestCase):
         self.assertIn("GROUP BY e.id", self.SQL)
         self.assertNotIn("c.citing = w.id OR c.cited = w.id", self.SQL)
 
-    def test_min_links_cuts_before_the_top_k_not_after(self):
+    def test_min_links_is_a_join_above_the_top_k_not_a_lookup_per_row(self):
+        # Measured with EXPLAIN on this instance (enable_seqscan=off): any
+        # membership test against `links` INSIDE `nearest` -- a correlated
+        # subquery, an IN, or a join -- makes the planner drop
+        # work_embedding_hnsw and sort instead. Above the LIMIT the index
+        # scan survives and `links` is hashed once.
         sql = pgq.build_candidates_sql(":'vec'::vector", 2)
-        self.assertLess(sql.index(":min_links"), sql.index("LIMIT :top"))
+        self.assertIn("JOIN links l ON l.id = n.id AND l.n >= :min_links", sql)
+        self.assertGreater(sql.index(":min_links"), sql.index("LIMIT :top"))
+        nearest = sql[sql.index("nearest AS ("):sql.index("LIMIT :top")]
+        self.assertNotIn("links", nearest)
+        self.assertNotIn("JOIN", nearest)
 
-    def test_no_min_links_leaves_no_tautological_filter_behind(self):
+    def test_no_min_links_keeps_every_top_k_row_with_its_count(self):
         self.assertNotIn(":min_links", self.SQL)
+        self.assertIn("LEFT JOIN links l ON l.id = n.id", self.SQL)
 
 
 class CandidatesRankingTests(unittest.TestCase):
