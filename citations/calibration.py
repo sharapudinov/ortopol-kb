@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+from citation_vocab import Relation
 from . import scoring
 
 SPIKE = "research/citation-frontier-threshold"
@@ -99,8 +100,9 @@ def calibration_report(rows, tau_hint: float | None, refs=None) -> str:
         "# Порог релевантности снежного кома: распределение depth-1",
         "",
         f"Кандидатов depth-1: {len(rows)} "
-        f"(цитирующие {sum(1 for r in rows if r['relation'] == 'cites')}, "
-        f"процитированные {sum(1 for r in rows if r['relation'] == 'referenced')}).",
+        f"(цитирующие {sum(1 for r in rows if r['relation'] == Relation.CITES)}, "
+        "процитированные "
+        f"{sum(1 for r in rows if r['relation'] == Relation.REFERENCED)}).",
         "Score = косинус между эмбеддингом `title + abstract` кандидата и центроидом",
         "нормированных эмбеддингов 56 семян; модель — та же, что у `corpus.pages`",
         "(`corpus.embedding_model`). Данные построчно:",

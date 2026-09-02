@@ -80,21 +80,30 @@ CITATION_POLICY_IS_DATA [HARD, 2026-09-02]: режим схемы citation в п
   настоящего артефакта той же даты. Схему он тоже не заменяет: override
   называет режим для схемы, которая ЕСТЬ.
 VOCABULARY_ONE_DECLARATION [HARD, 2026-09-02]: закрытый словарь колонки
-  (citation.work.kind, citation.crawl_step.action, citation.public_policy.mode)
-  объявлен ОДИН раз на Python-стороне (citation_vocab.WorkKind / CrawlAction /
-  PublicPolicyMode), SQL CHECK его зеркалит, а держит их вместе живой тест
+  (citation.work.kind, citation.crawl_step.action, citation.crawl_step.relation,
+  citation.public_policy.mode) объявлен ОДИН раз на Python-стороне
+  (citation_vocab.WorkKind / CrawlAction / Relation / PublicPolicyMode),
+  SQL CHECK его зеркалит, а держит их вместе живой тест
   (tests/test_citation_vocab.py, сравнение с pg_get_constraintdef в ОБЕ
   стороны) плюс AST-скан: строковый литерал словаря запрещён во всех модулях,
   называющих схему citation (в позиции значения или внутри SQL-строки; проза
-  в docstring — можно). Скан НЕ ходит в deploy/ (там «excluded» — словарь
-  corpus.documents, а «none» не отличимо от обычного слова), поэтому третий
-  словарь держат живой тест и то, что deploy/manifest_contract.CitationMode
-  НАСЛЕДУЕТ PublicPolicyMode, а не повторяет значения.
+  в docstring — можно). Позиция значения включает ЭЛЕМЕНТЫ кортежа/списка/
+  множества, если сама коллекция объявляющая (сравнение, присваивание,
+  return, keyword-аргумент) — `in ("keep", "drop")` и `A = ["seed", ...]`
+  скан ловит; позиционный аргумент не раскрывается (там строка вывода:
+  заголовок колонки в pg_graph.py). Что скан вообще что-то ловит,
+  проверяется позитивным контролем на синтетическом модуле. Скан НЕ ходит
+  в deploy/ (там «excluded» — словарь corpus.documents, а «none» не отличимо
+  от обычного слова), поэтому словарь mode держат живой тест и то, что
+  deploy/manifest_contract.CitationMode НАСЛЕДУЕТ PublicPolicyMode, а не
+  повторяет значения.
   Причина: журнал уезжает bulk COPY «всё или ничего», поэтому новое значение
   action, не добавленное в CHECK, теряет ВЕСЬ журнал уровня уже после того,
   как записаны work-строки и рёбра. Новое значение = строка в citation_vocab
-  И в pg_schema_citation.sql, одним коммитом. citation_vocab.py — КОРНЕВОЙ
-  модуль (DEPENDENCY_DIRECTION: общие инструменты не импортируют citations/,
+  И в pg_schema_citation_constraints.sql (kind/mode — inline CHECK в
+  pg_schema_citation.sql), одним коммитом; словарь crawl_step объявляется
+  вызовом citation.ensure_vocabulary_check, который сравнивает прежде чем
+  заменять. citation_vocab.py — КОРНЕВОЙ модуль (DEPENDENCY_DIRECTION: общие инструменты не импортируют citations/,
   а словарь нужен и citation_checks, и графовым запросам, которые уезжают
   в артефакт).
 DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py

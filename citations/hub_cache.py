@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 
+from citation_vocab import Relation
 from . import openalex_client
 
 # Сколько байт головы страницы читается. meta идёт ПЕРВЫМ объектом тела и
@@ -166,7 +167,7 @@ class HubCacheReader:
             if not name.endswith(".json") or name.endswith(openalex_client.SIDECAR_SUFFIX):
                 continue
             note = self.batch_note(name)
-            if note is None or openalex_client.note_direction(note) != "cites":
+            if note is None or openalex_client.note_direction(note) != Relation.CITES:
                 continue
             seen.setdefault(note.get("filter") or "", note.get("count") or 0)
         return sorted(seen.values(), reverse=True)

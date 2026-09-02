@@ -9,6 +9,14 @@ here is pure and takes a decoded body, so the shapes measured in run 85
 """
 from __future__ import annotations
 
+from citation_vocab import Relation
+
+# The OTHER direction a batch can be asked in, and not a relation at all:
+# `openalex_id:` fetches works BY id, which is how the down direction buys
+# the metadata for references it already knows. It has no crawl_step.relation
+# spelling because no journal row is ever about it.
+OPENALEX_ID = "openalex_id"
+
 
 def restore_abstract(inverted: dict | None) -> str | None:
     """`abstract_inverted_index` (word -> [positions]) back into text.
@@ -51,10 +59,10 @@ def sidecar_name(page: str) -> str:
 # their side classifies every page as not-a-batch, and the hub measurement
 # then reports "nothing to measure" against a cache full of what it wanted.
 DIRECTIONS = {
-    "referenced_works": "cites",
-    "cites": "cites",
-    "ids.openalex": "openalex_id",
-    "openalex_id": "openalex_id",
+    "referenced_works": Relation.CITES,
+    "cites": Relation.CITES,
+    "ids.openalex": OPENALEX_ID,
+    "openalex_id": OPENALEX_ID,
 }
 
 
@@ -63,7 +71,7 @@ def _filter_value(url: str) -> str:
 
 
 def direction_of(filter_value: str) -> str | None:
-    """'cites' | 'openalex_id' | None for a `filter=` value.
+    """Relation.CITES | OPENALEX_ID | None for a `filter=` value.
 
     None is an honest answer: a page fetched by some other filter belongs to
     neither direction, and so does one whose url carried no filter at all.

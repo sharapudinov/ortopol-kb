@@ -24,15 +24,16 @@ predates the columns converge on the same shape.
 """
 from __future__ import annotations
 
+from citation_vocab import Relation
 from pg_common import run_sql, scalar
 from pg_copy import copy_csv_rows
 
-THRESHOLD_DDL = """
+THRESHOLD_DDL = f"""
 CREATE TABLE IF NOT EXISTS measurements.citation_frontier_threshold (
     run_id        BIGINT NOT NULL REFERENCES measurements.run(id) ON DELETE CASCADE,
     candidate_key TEXT NOT NULL,
     depth         INTEGER NOT NULL,
-    relation      TEXT NOT NULL CHECK (relation IN ('cites', 'referenced')),
+    relation      TEXT NOT NULL CHECK (relation IN ({', '.join(repr(r) for r in Relation.ALL)})),
     score         DOUBLE PRECISION NOT NULL,
     title         TEXT,
     year          INTEGER,

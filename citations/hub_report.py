@@ -18,7 +18,7 @@ corpus/cache/openalex (meta.count батчей — их считает hub_cache
 """
 from __future__ import annotations
 
-from citation_vocab import CrawlAction
+from citation_vocab import CrawlAction, Relation
 from pg_common import run_sql
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
@@ -29,8 +29,8 @@ DDL = """
 CREATE TABLE IF NOT EXISTS measurements.citation_hub_expansion (
     run_id          BIGINT NOT NULL REFERENCES measurements.run(id) ON DELETE CASCADE,
     work_key        TEXT NOT NULL,
-    -- Как узел попал в граф: 'cites' (цитирует фронтир) или 'referenced'
-    -- (процитирован фронтиром). Это и есть варьируемая величина замера.
+    -- Как узел попал в граф: цитирует фронтир или процитирован им
+    -- (citation_vocab.Relation). Это и есть варьируемая величина замера.
     relation        TEXT NOT NULL,
     cited_by_count  BIGINT NOT NULL,
     n_references    INTEGER NOT NULL,
@@ -159,8 +159,8 @@ def run_fields(counts: list[int], rows: list[list[str]], cap: int) -> dict:
         "question": (
             "Сколько цитирующих затягивает расширение «вверх» от узлов depth-1 "
             "графа цитирований ИИШ и зависит ли это от типа входящей связи: "
-            "узел пришёл как цитирующий фронтир ('cites') или как процитированный "
-            "фронтиром ('referenced')?"
+            f"узел пришёл как цитирующий фронтир ({Relation.CITES}) или как "
+            f"процитированный фронтиром ({Relation.REFERENCED})?"
         ),
         "arbiter": (
             "Два независимых счёта. (1) meta.count батчей filter=cites: из кэша "

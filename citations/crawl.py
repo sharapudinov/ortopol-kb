@@ -32,7 +32,7 @@ calibration never saw is a query, not a re-crawl:
 """
 from __future__ import annotations
 
-from citation_vocab import CrawlAction, WorkKind
+from citation_vocab import CrawlAction, Relation, WorkKind
 from . import edges as edges_mod
 from . import gathering, journal, seeding
 from .frontier import vectors_for as frontier_vectors
@@ -140,7 +140,7 @@ class Snowball:
         """
         if depth <= 1:
             return list(keys)
-        return [k for k in keys if self.registry.nodes[k].relation == "cites"]
+        return [k for k in keys if self.registry.nodes[k].relation == Relation.CITES]
 
     def gather(self, frontier_keys: list[str]):
         """One level's candidates, delegated to gathering.py.

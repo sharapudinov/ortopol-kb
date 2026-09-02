@@ -31,6 +31,7 @@ import sys
 
 import pg_graph_common
 import pg_search
+from citation_vocab import Relation
 from pg_common import scalar, sql_literal
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
@@ -139,6 +140,13 @@ def citers(env, document_id: str, depth: int = 1) -> list[dict]:
 # here. The `nearest` CTE used to re-run that scan verbatim, so every hybrid
 # call paid for two top-K searches over the HNSW index and serialised the
 # 1024-float query vector into two psql scripts.
+# The two labels the answer carries in its `direction` column. The outgoing
+# one IS the crawl's relation word and is imported rather than re-spelled
+# (citation_vocab.Relation); the incoming one is its inverse and has no
+# crawl_step.relation counterpart, because no journal row is ever about it.
+# Substituted at import so `--show-sql` prints the statement, not a template.
+_OUTGOING, _INCOMING = Relation.CITES, "cited_by"
+
 _HYBRID_SQL = """
 WITH nearest(key, score) AS (
     VALUES {seeds}
@@ -152,20 +160,20 @@ edges AS (
     $CYPHERQ$) AS (citing_key agtype, cited_key agtype)
 )
 SELECT n.key, coalesce(s.year::text, ''), coalesce(s.title, ''), n.score::text,
-       'cites' AS direction, w.key, coalesce(w.title, '')
+       '{outgoing}' AS direction, w.key, coalesce(w.title, '')
 FROM nearest n
 JOIN citation.work s ON s.key = n.key
 JOIN edges e ON e.citing_key = n.key
 JOIN citation.work w ON w.key = e.cited_key
 UNION ALL
 SELECT n.key, coalesce(s.year::text, ''), coalesce(s.title, ''), n.score::text,
-       'cited_by' AS direction, w.key, coalesce(w.title, '')
+       '{incoming}' AS direction, w.key, coalesce(w.title, '')
 FROM nearest n
 JOIN citation.work s ON s.key = n.key
 JOIN edges e ON e.cited_key = n.key
 JOIN citation.work w ON w.key = e.citing_key
 ORDER BY 4 DESC, 1, 5;
-"""
+""".replace("{outgoing}", _OUTGOING).replace("{incoming}", _INCOMING)
 
 # The one vector scan of a hybrid call: the seeds, their keys already
 # escaped for Cypher by the database's own citation.cypher_literal(), and

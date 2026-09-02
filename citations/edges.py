@@ -12,6 +12,7 @@ the reference would not yet resolve to a node.
 """
 from __future__ import annotations
 
+from citation_vocab import Relation
 from .openalex_client import short_id
 
 
@@ -41,7 +42,7 @@ def among_known(registry, frontier_keys, candidates,
                 edges.add((citing_key, target, relation, source_key or citing_key))
 
     for key in frontier_keys:
-        emit(key, sorted(registry.nodes[key].referenced_works), "referenced", key)
+        emit(key, sorted(registry.nodes[key].referenced_works), Relation.REFERENCED, key)
     provenance: dict[str, tuple[str, str]] = {}
     for record, relation, source_key in candidates:
         provenance.setdefault(short_id(record.get("id")), (relation, source_key))

@@ -1,7 +1,7 @@
 """The closed vocabularies of the citation schema, declared once.
 
-citation.work.kind, citation.crawl_step.action and citation.public_policy.
-mode are CHECK-constrained columns, so every value written to them is a
+citation.work.kind, citation.crawl_step.action, citation.crawl_step.
+relation and citation.public_policy.mode are CHECK-constrained columns, so every value written to them is a
 contract with SQL written elsewhere (pg_schema_citation.sql). Spelled as
 bare literals on the Python side -- and they were, across the journal, the
 writer, the completeness checks and the query modules -- the two halves can
@@ -81,6 +81,30 @@ class CrawlAction:
     HUB_SKIP = "hub-skip"
     ERROR = "error"
     ALL = (SEED, SEED_MISSING, FETCH, KEEP, DROP, HUB_SKIP, ERROR)
+
+
+class Relation:
+    """citation.crawl_step.relation -- HOW a candidate reached the frontier.
+
+    CITES: the candidate cites a frontier node (the crawl asked "who cites
+    you"). REFERENCED: the frontier node cites the candidate (it came out
+    of the node's own reference list).
+
+    Not a label but a decision the crawl ACTS on: only a node reached as a
+    citer expands at depth >= 2, because the down direction pulls in
+    classics whose citers are about the field rather than about this corpus
+    (kb/CLAUDE.md SNOWBALL_FRONTIER). The hub measurement groups its whole
+    verdict by it, and citations/threshold_store.py mirrors the same pair on
+    the measurements table a calibration writes.
+
+    NULL is a legal value of the column and has no constant here: it means
+    the row is not ABOUT a relation (seed, error, hub-skip), not that the
+    relation is unknown.
+    """
+
+    CITES = "cites"
+    REFERENCED = "referenced"
+    ALL = (CITES, REFERENCED)
 
 
 class PublicPolicyMode:

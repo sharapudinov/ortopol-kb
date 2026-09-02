@@ -16,6 +16,7 @@ the caller frees what the filter dropped.
 """
 from __future__ import annotations
 
+from citation_vocab import Relation
 from .openalex_client import short_id
 
 
@@ -33,8 +34,8 @@ def without_references(record: dict) -> dict:
 def gather(client, registry, frontier_keys: list[str], hub_cap: int):
     """(candidates, found counts, hub skips, reference lists) for a level.
 
-    A candidate is (record, relation, discovered_from) with relation in
-    {'cites', 'referenced'}. Records already known to the registry are
+    A candidate is (record, relation, hits) with relation one of
+    citation_vocab.Relation's. Records already known to the registry are
     returned too -- their edges still count -- and the caller recognises
     them as not-new rather than re-scoring them.
 
@@ -67,7 +68,7 @@ def gather(client, registry, frontier_keys: list[str], hub_cap: int):
             continue
         for key in hit:
             found[key] += 1
-        candidates.append((without_references(record), "cites", hit[0]))
+        candidates.append((without_references(record), Relation.CITES, hit[0]))
         references[short_id(record.get("id"))] = cited
 
     wanted: dict[str, str] = {}
@@ -78,7 +79,7 @@ def gather(client, registry, frontier_keys: list[str], hub_cap: int):
                 wanted.setdefault(reference, node.key)
     for record in client.works_by_ids(sorted(wanted)):
         identity = short_id(record.get("id"))
-        candidates.append((without_references(record), "referenced",
+        candidates.append((without_references(record), Relation.REFERENCED,
                            wanted.get(identity, "")))
         references[identity] = tuple(
             short_id(r) for r in (record.get("referenced_works") or []))

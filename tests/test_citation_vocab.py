@@ -44,13 +44,13 @@ from pathlib import Path
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 import citation_vocab
-from citation_vocab import CrawlAction, PublicPolicyMode, WorkKind
-from citations import journal
+from citation_vocab import CrawlAction, PublicPolicyMode, Relation, WorkKind
+from citations import journal, threshold_store
 from manifest_contract import CitationMode
 from paths import default_corpus_dir, kb_root
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, scalar
 
-VALUES = tuple(WorkKind.ALL) + tuple(CrawlAction.ALL)
+VALUES = tuple(WorkKind.ALL) + tuple(CrawlAction.ALL) + tuple(Relation.ALL)
 VOCAB_FILE = Path(citation_vocab.__file__).resolve()
 
 SCHEMA_FILE = kb_root() / "pg_schema_citation.sql"
@@ -69,11 +69,14 @@ SQL_CLAUSES = {
     "kind": (SCHEMA_FILE, re.compile(r"CHECK \(kind IN \(([^)]*)\)\)")),
     "action": (CONSTRAINTS_FILE,
                re.compile(r"'crawl_step_action_check',\s*ARRAY\[([^\]]*)\]", re.S)),
+    "relation": (CONSTRAINTS_FILE,
+                 re.compile(r"'crawl_step_relation_check',\s*ARRAY\[([^\]]*)\]", re.S)),
     "mode": (SCHEMA_FILE, re.compile(r"CHECK \(mode IN \(([^)]*)\)\)")),
 }
 PYTHON_VOCABULARIES = {
     "kind": WorkKind.ALL,
     "action": CrawlAction.ALL,
+    "relation": Relation.ALL,
     "mode": PublicPolicyMode.ALL,
 }
 
@@ -122,44 +125,136 @@ def _value_positions(tree: ast.AST) -> set[int]:
     is not this vocabulary at all and must not be renamed to please a test.
     A quoted occurrence INSIDE a string -- `'our-document'`, i.e. an SQL
     literal -- is caught regardless of position.
+
+    A tuple, list or set is opened up and its elements counted too, because
+    that is the most natural way to re-declare a vocabulary and the one form
+    this scan used to be blind to: `if action in ("keep", "drop")` and
+    `ACTIONS = ["seed", "hub-skip"]` are second declarations exactly as much
+    as a bare keyword argument is. Opened up only where the COLLECTION is
+    itself a declaring position -- compared against, assigned, returned,
+    passed by keyword -- and not when it is a positional argument, which is
+    where a row of display text goes (the header list above is one). A dict
+    KEY is not a value position either: it names a table or a counter.
     """
-    out = set()
+    out: set[int] = set()
+    collections: list[ast.AST] = []
+
+    def value(node, declaring: bool = True) -> None:
+        if node is None:
+            return
+        out.add(id(node))
+        if declaring:
+            collections.append(node)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            out |= {id(a) for a in node.args}
-            out |= {id(k.value) for k in node.keywords}
+            for argument in node.args:
+                value(argument, declaring=False)
+            for word in node.keywords:
+                value(word.value)
         elif isinstance(node, ast.keyword):
-            out.add(id(node.value))
+            value(node.value)
         elif isinstance(node, ast.Compare):
-            out.add(id(node.left))
-            out |= {id(c) for c in node.comparators}
+            value(node.left)
+            for comparator in node.comparators:
+                value(comparator)
         elif isinstance(node, ast.Dict):
-            out |= {id(v) for v in node.values if v is not None}
+            for entry in node.values:
+                value(entry)
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.Return)):
-            if getattr(node, "value", None) is not None:
-                out.add(id(node.value))
+            value(getattr(node, "value", None))
+
+    while collections:
+        node = collections.pop()
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            for element in node.elts:
+                value(element)
     return out
+
+
+def bare_vocabulary(source: str) -> list[tuple[int, str]]:
+    """(line, value) for every vocabulary word `source` spells itself.
+
+    The scan, as one function, so the modules and the positive control below
+    are guarded by the SAME code -- a control exercising a second copy would
+    prove nothing about the one that runs.
+    """
+    tree = ast.parse(source)
+    skip = _docstrings(tree)
+    positions = _value_positions(tree)
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if id(node) in skip:
+            continue
+        for value in VALUES:
+            if f"'{value}'" in node.value or (node.value == value and id(node) in positions):
+                found.append((node.lineno, value))
+    return found
 
 
 class NoModuleSpellsTheVocabularyItselfTests(unittest.TestCase):
     def test_every_citation_module_reaches_for_the_constants(self):
         for path in _schema_modules():
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            skip = _docstrings(tree)
-            positions = _value_positions(tree)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
-                    continue
-                if id(node) in skip:
-                    continue
-                for value in VALUES:
-                    spelled = f"'{value}'" in node.value or (
-                        node.value == value and id(node) in positions)
-                    self.assertFalse(
-                        spelled,
-                        f"{path.name}:{node.lineno}: {value!r} spelled here -- import it "
-                        f"from citation_vocab (WorkKind/CrawlAction)",
-                    )
+            for line, value in bare_vocabulary(path.read_text(encoding="utf-8")):
+                self.fail(f"{path.name}:{line}: {value!r} spelled here -- import it "
+                          f"from citation_vocab (WorkKind/CrawlAction/Relation)")
+
+    def test_the_scan_walks_the_modules_that_name_the_schema(self):
+        """A guard that scans nothing passes for the wrong reason. The
+        crawl, the completeness checks and the graph query modules all name
+        citation.*; citation_vocab.py itself is the one declaration and is
+        excluded by construction.
+        """
+        names = {path.name for path in _schema_modules()}
+        for expected in ("crawl.py", "gathering.py", "journal.py", "store_sql.py",
+                         "hub_report.py", "threshold_store.py", "citation_checks.py",
+                         "pg_graph_candidates.py", "pg_graph_cypher.py"):
+            self.assertIn(expected, names)
+        self.assertNotIn("citation_vocab.py", names)
+
+
+class TheScanCatchesWhatItIsForTests(unittest.TestCase):
+    """Positive control on synthetic sources.
+
+    The scan is the only thing standing between a second declaration and
+    the CHECK, and until it was pointed at a planted one, "it passes" and
+    "it looks at nothing" were the same observation. Membership in a tuple
+    or list is the form it used to miss: the natural way to write the
+    re-declaration is exactly `in ("keep", "drop")`.
+    """
+
+    def _values(self, source: str) -> set[str]:
+        return {value for _line, value in bare_vocabulary(source)}
+
+    def test_a_tuple_membership_test_is_caught(self):
+        self.assertEqual(
+            self._values('def f(step):\n    return step["action"] in ("keep", "drop")\n'),
+            {"keep", "drop"})
+
+    def test_a_list_re_declaration_is_caught(self):
+        self.assertEqual(self._values('ACTIONS = ["seed", "hub-skip"]\n'),
+                         {"seed", "hub-skip"})
+
+    def test_a_set_of_relations_is_caught(self):
+        self.assertEqual(self._values('EXPANDS = {"cites", "referenced"}\n'),
+                         {"cites", "referenced"})
+
+    def test_an_sql_literal_anywhere_in_a_string_is_caught(self):
+        self.assertEqual(
+            self._values("SQL = \"SELECT 1 WHERE kind = 'our-document'\"\n"),
+            {"our-document"})
+
+    def test_prose_and_dict_keys_are_not_a_declaration(self):
+        """The distinction the scan exists to keep: a word in a docstring is
+        prose, and a dict KEY is a name (a table, a counter), not a value
+        written to the column.
+        """
+        self.assertEqual(
+            self._values('"""A seed is kept or dropped."""\n'
+                         'COUNTS = {"cites": 0, "keep": 0}\n'),
+            set())
 
 
 class JournalActionsAreTheVocabularyTests(unittest.TestCase):
@@ -189,6 +284,22 @@ class JournalActionsAreTheVocabularyTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             journal._step("c", 1, "hub-skipped")
         self.assertIn("hub-skipped", str(ctx.exception))
+
+
+class MeasurementsMirrorTheRelationTests(unittest.TestCase):
+    """citations/threshold_store.py declares its own table, with its own
+    CHECK over the same two values -- the calibration it records is one row
+    per scored candidate, and `relation` is the facet the report groups by.
+    A second spelling there is the same drift the schema's CHECK is held
+    against, so it reads the vocabulary too.
+    """
+
+    def test_the_calibration_table_checks_the_declared_pair(self):
+        found = re.search(r"CHECK \(relation IN \(([^)]*)\)\)",
+                          threshold_store.THRESHOLD_DDL)
+        self.assertIsNotNone(found, threshold_store.THRESHOLD_DDL)
+        self.assertEqual(set(re.findall(r"'([^']*)'", found.group(1))),
+                         set(Relation.ALL))
 
 
 class PackagerSharesTheDeclarationTests(unittest.TestCase):
@@ -238,6 +349,9 @@ class VocabularyMatchesTheSchemaFileTests(unittest.TestCase):
     def test_the_crawl_actions_are_the_ones_the_file_allows(self):
         self.assertEqual(self._literals("action"), set(CrawlAction.ALL))
 
+    def test_the_relations_are_the_ones_the_file_allows(self):
+        self.assertEqual(self._literals("relation"), set(Relation.ALL))
+
     def test_the_public_policy_modes_are_the_ones_the_file_allows(self):
         self.assertEqual(self._literals("mode"), set(PublicPolicyMode.ALL))
 
@@ -276,6 +390,16 @@ class VocabularyMatchesTheSchemaLiveTests(unittest.TestCase):
         self.assertEqual(
             self._check_vocabulary("citation.crawl_step", "crawl_step_action_check"),
             set(CrawlAction.ALL))
+
+    def test_the_relations_are_the_ones_the_check_allows(self):
+        """The last column promoted out of `reason` and the only one that
+        went unconstrained: the crawl BRANCHES on this value, so a fourth
+        spelling reaching the journal is a traversal decision made on a
+        typo.
+        """
+        self.assertEqual(
+            self._check_vocabulary("citation.crawl_step", "crawl_step_relation_check"),
+            set(Relation.ALL))
 
     def test_the_public_policy_modes_are_the_ones_the_check_allows(self):
         """The vocabulary the OWNER writes into, and the packager reads out
