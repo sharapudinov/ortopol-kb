@@ -75,6 +75,12 @@ CORPUS_LIB_FILES = [
     # them.
     "pg_graph_queries.py",
     "pg_graph_cypher.py",
+    # ... and the schema `pg_graph.py init` applies. pg_graph_common.
+    # SCHEMA_PATH resolves it NEXT TO THE MODULE, so it must land in
+    # corpus_lib/ or the artifact ships a documented first subcommand that
+    # cannot run -- a module-relative dependency the bundle list has to
+    # model, since nothing in an import graph mentions it.
+    "pg_schema_citation.sql",
 ]
 
 

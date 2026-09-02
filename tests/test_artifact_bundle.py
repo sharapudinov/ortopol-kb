@@ -7,6 +7,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,8 @@ import _pathfix_deploy  # noqa: F401
 
 import artifact_bundle
 from manifest_contract import CitationMode, Profile, schemas_for
+from paths import default_corpus_dir
+from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv
 
 
 class BundleRuntimeFilesTests(unittest.TestCase):
@@ -282,6 +285,26 @@ class ImportClosureTests(unittest.TestCase):
             f"inside the bundle: {result.stderr}",
         )
 
+    def test_every_module_relative_file_dependency_is_bundled_too(self):
+        """An import graph does not mention a data file a module opens next
+        to itself (pg_graph_common.SCHEMA_PATH is the one here), so no
+        import test can catch its absence: `pg_graph.py init` shipped
+        pointing at a schema file that was not in the package.
+        """
+        pattern = re.compile(r'parent\s*/\s*"([^"]+)"')
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            files = artifact_bundle.bundle_runtime_files(workdir)
+            for rel in files:
+                if not rel.endswith(".py"):
+                    continue
+                source = (workdir / rel).read_text(encoding="utf-8")
+                for needed in pattern.findall(source):
+                    self.assertTrue(
+                        (workdir / rel).parent.joinpath(needed).is_file(),
+                        f"{rel} opens {needed} beside itself, and it is not bundled",
+                    )
+
     def test_deploy_scripts_reach_the_graph_modules_through_the_pathfix(self):
         """The other entry point: a deploy script (smoke_checks) importing
         the graph modules must find them through deploy_pathfix's corpus_lib
@@ -299,6 +322,39 @@ class ImportClosureTests(unittest.TestCase):
                 cwd=workdir, capture_output=True, text=True,
             )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class BundledGraphCliLiveTests(unittest.TestCase):
+    """The recipient's first documented graph command, run the way a
+    recipient runs it: out of the extracted bundle, with an explicit
+    --pgenv and no repository on sys.path. Applying the schema is
+    idempotent (CREATE ... IF NOT EXISTS / CREATE OR REPLACE / DROP
+    CONSTRAINT IF EXISTS + ADD), which is what makes this safe to point at
+    the live instance -- and what the recipient's own re-run relies on.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            corpus_dir = default_corpus_dir()
+            env = load_pgenv(corpus_dir / ".pgenv")
+        except (PostgresUnavailable, RuntimeError) as exc:
+            raise unittest.SkipTest(f"Postgres not configured: {exc}")
+        if not check_postgres_available(env):
+            raise unittest.SkipTest("Postgres not reachable")
+        cls.pgenv = corpus_dir / ".pgenv"
+
+    def test_bundled_init_applies_the_schema_and_repeats_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            artifact_bundle.bundle_runtime_files(workdir)
+            for attempt in (1, 2):
+                result = subprocess.run(
+                    [sys.executable, "pg_graph.py", "--pgenv", str(self.pgenv), "init"],
+                    cwd=workdir / "corpus_lib", capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0,
+                                 f"bundled `pg_graph.py init` run {attempt}: {result.stderr}")
 
 
 if __name__ == "__main__":
