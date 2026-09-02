@@ -17,6 +17,7 @@ import pg_graph_candidates as pgcand
 import pg_graph_cocitation as pgcoci
 import pg_graph_common
 import pg_graph_cypher as pgc
+import pg_search
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
@@ -209,12 +210,15 @@ class LiveConsumersTests(unittest.TestCase):
         self.assertNotIn(f"{self.PREFIX}c", by_key, "--min-links не отфильтровал узел без связей")
 
         rows = pgc.hybrid(self.env, "тестовый вопрос", top=400)
-        if rows:  # ollama may be unavailable; hybrid() then returns []
-            self.assertTrue(all(r["neighbor_key"] for r in rows))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        if not rows and pg_search.embed_query("тестовый вопрос", self.env) is None:
+            # Skipped, not silently passed: `if rows:` around the assertion
+            # made the whole check vacuous on any machine without ollama,
+            # and a green suite that asserted nothing is worse than a
+            # reported gap. The decoding these rows go through is covered
+            # offline in test_pg_graph_consumers.py.
+            self.skipTest("эмбеддинги недоступны: hybrid() нечем ранжировать")
+        self.assertTrue(rows, "hybrid() не нашёл ни одного соседа по фикстуре")
+        self.assertTrue(all(r["neighbor_key"] for r in rows))
 
 
 if __name__ == "__main__":
