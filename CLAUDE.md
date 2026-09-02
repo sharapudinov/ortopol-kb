@@ -173,7 +173,7 @@ SNOWBALL_FRONTIER [2026-09-02, измерено run 89/93]: обход расш�
 Любая правка закрывается этим (из корня репозитория):
 
 ```bash
-python3 -m unittest discover -s tests -t tests            # 1039 тестов, exit 0
+python3 -m unittest discover -s tests -t tests            # 1067 тестов, exit 0
 set -a; . ../corpus/.pgenv; set +a
 python3 corpus_completeness.py                            # exit 0
 ```
