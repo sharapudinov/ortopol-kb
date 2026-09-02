@@ -27,6 +27,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from .http_cache import cache_for
+
 BASE = "https://www.mathnet.ru/rus/"
 USER_AGENT = "Mozilla/5.0 (ortopol-kb-citations; mailto:tooba.mexico@gmail.com)"
 QUOTED = re.compile("“(.*?)”", re.S)
@@ -71,21 +73,20 @@ class MathnetClient:
     """
 
     def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
-                 pause=0.6, cache_dir: Path | None = None):
+                 pause=0.6, cache_dir: Path | None = None,
+                 read_only_cache: bool = False):
         self._opener = opener
         self._sleep = sleep
         self.pause = pause
-        self._cache_dir = Path(cache_dir) if cache_dir else None
-        if self._cache_dir:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache = cache_for(cache_dir, read_only=read_only_cache)
         self.n_requests = 0
         self.n_cache_hits = 0
         self.failures: list[str] = []
 
     def _cached(self, identifier: str) -> Path | None:
-        if not self._cache_dir:
+        if self._cache is None:
             return None
-        return self._cache_dir / f"{identifier}.html"
+        return self._cache.path(f"{identifier}.html")
 
     def titles(self, identifier: str) -> tuple[list[str], list[int]]:
         """([titles], [years]); ([], []) with the id recorded in .failures."""
@@ -109,5 +110,5 @@ class MathnetClient:
             self.failures.append(f"{identifier}: страница без цитат в <title>")
             return [], []
         if path is not None:
-            path.write_text(raw, encoding="utf-8")
+            self._cache.write(path, raw)
         return titles, years

@@ -25,6 +25,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from .http_cache import cache_for
+
 API = "https://api.zbmath.org/v1/document"
 USER_AGENT = "ortopol-kb-citations/1.0 (mailto:tooba.mexico@gmail.com)"
 PAUSE = 0.35
@@ -64,13 +66,12 @@ class ZbmathClient:
     """
 
     def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
-                 pause=PAUSE, cache_dir: Path | None = None):
+                 pause=PAUSE, cache_dir: Path | None = None,
+                 read_only_cache: bool = False):
         self._opener = opener
         self._sleep = sleep
         self.pause = pause
-        self._cache_dir = Path(cache_dir) if cache_dir else None
-        if self._cache_dir:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache = cache_for(cache_dir, read_only=read_only_cache)
         self.n_requests = 0
         self.n_cache_hits = 0
         # Mirrors MathnetClient.failures in the same call chain: counted and
@@ -78,11 +79,11 @@ class ZbmathClient:
         self.failures: list[str] = []
 
     def _cached(self, zbmath_id: str) -> Path | None:
-        if not self._cache_dir:
+        if self._cache is None:
             return None
         # The id is a zbMATH document number ('1234.56789'), not a path: the
         # separator would otherwise make a directory out of it.
-        return self._cache_dir / (zbmath_id.replace("/", "_") + ".json")
+        return self._cache.path(zbmath_id.replace("/", "_") + ".json")
 
     def _failed(self, zbmath_id: str, what: str) -> ZbmathUnavailable:
         self.failures.append(f"{zbmath_id}: {what}")
@@ -103,7 +104,7 @@ class ZbmathClient:
             return json.loads(path.read_text(encoding="utf-8"))
         record = self._fetch(zbmath_id)
         if path is not None:
-            path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            self._cache.write(path, json.dumps(record, ensure_ascii=False))
         return record
 
     def _fetch(self, zbmath_id: str) -> dict | None:

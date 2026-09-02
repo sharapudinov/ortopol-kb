@@ -167,6 +167,32 @@ class OpenAlexSidecarTests(unittest.TestCase):
                                 "oql": "works where it cites (W1 or W2)",
                                 "count": 18904})
 
+    def test_a_read_only_cache_writes_neither_page_nor_sidecar(self):
+        """--dry-run's third channel: the response cache is in the data
+        tree, so a dry run must leave it exactly as it found it -- the
+        sidecar included, since it is written beside every cached page.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "openalex"
+            client = OpenAlexClient(opener=_Sequence([_Response(self.BODY)]),
+                                    sleep=lambda _s: None, pause=0.0,
+                                    cache_dir=cache, read_only_cache=True)
+            client.get_json("https://api.openalex.org/works?filter=cites:W1|W2")
+            self.assertFalse(cache.exists(), "--dry-run создал каталог кэша")
+
+    def test_a_read_only_cache_still_serves_a_hit(self):
+        """Read-only, not off: a dry run must cost no more quota than a
+        real one, which is the whole reason the cache is kept in the tree.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            self._cached(cache)
+            client = OpenAlexClient(opener=_Sequence([]), sleep=lambda _s: None,
+                                    pause=0.0, cache_dir=cache, read_only_cache=True)
+            body = client.get_json("https://api.openalex.org/works?filter=cites:W1|W2")
+        self.assertEqual(body["meta"]["count"], 18904)
+        self.assertEqual(client.n_cache_hits, 1)
+
     def test_the_batch_is_named_by_its_filter_not_by_the_cursor(self):
         """Two pages of one batch differ only in the cursor; keyed on the
         url they counted as two batches -- 3 392 521 instead of 51 652.
@@ -187,8 +213,10 @@ class MathnetClientTests(unittest.TestCase):
     weakens the twin index invisibly (it did, for 2019_rm9846).
     """
 
-    def _client(self, opener, cache: Path | None = None) -> MathnetClient:
-        return MathnetClient(opener=opener, sleep=lambda _s: None, cache_dir=cache)
+    def _client(self, opener, cache: Path | None = None,
+                read_only: bool = False) -> MathnetClient:
+        return MathnetClient(opener=opener, sleep=lambda _s: None, cache_dir=cache,
+                             read_only_cache=read_only)
 
     def test_the_page_gives_both_titles_and_both_years(self):
         titles, years = parse_titles(PAGE)
@@ -231,6 +259,20 @@ class MathnetClientTests(unittest.TestCase):
             titles, _years = client.titles("mzm8442")
         self.assertEqual(opener.calls, 2)
         self.assertEqual(titles, ["Русское название", "English title"])
+
+    def test_a_read_only_cache_serves_hits_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "mathnet"
+            opener = _Sequence([_Response(PAGE.encode("windows-1251")),
+                                _Response(PAGE.encode("windows-1251"))])
+            client = self._client(opener, cache, read_only=True)
+            client.titles("mzm8442")
+            self.assertFalse(cache.exists(), "--dry-run создал каталог кэша")
+            cache.mkdir()
+            (cache / "mzm8442.html").write_text(PAGE, encoding="utf-8")
+            titles, _years = client.titles("mzm8442")
+        self.assertEqual(titles, ["Русское название", "English title"])
+        self.assertEqual(opener.calls, 1)
 
 
 class EmbedTextsTests(unittest.TestCase):

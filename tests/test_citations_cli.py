@@ -11,6 +11,7 @@ non-zero exit, and the crawl refuses to start without a measured tau.
 """
 from __future__ import annotations
 
+import pathlib
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -21,7 +22,7 @@ import _pathfix  # noqa: F401
 
 import pg_graph_common
 import pg_load_citations
-from citations import hub_report, spike_runs, threshold_store
+from citations import hub_report, seed_metadata, spike_runs, threshold_store
 from citations.openalex_client import QuotaExhausted
 from citations.store import DryRunWriter, PostgresWriter
 from paths import default_corpus_dir
@@ -258,6 +259,58 @@ class HubReportWriteOrderTests(unittest.TestCase):
              mock.patch.object(hub_report, "worst_nodes", return_value=[]):
             spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
         self.assertIn("cites 384 узлов", seen["verify_query"])
+
+
+class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
+    """The third channel DRY_RUN_WRITES_NOTHING names: the HTTP caches.
+
+    All three clients sit on the startup path of a non-offline run, all
+    three cache into the data tree, and none of them had a seam -- the
+    writers made the promise structural for citation.* and measurements.*
+    while the crawl quietly mkdir'd three directories inside it.
+    """
+
+    def _crawl(self, stack, tree: pathlib.Path, *flags: str) -> int:
+        """A crawl with no seeds: enough to CONSTRUCT all three clients,
+        which is where the directories appear.
+        """
+        _harness = _MainHarness(stack)
+        cache = tree / "cache"
+        for module, name, value in (
+            (pg_load_citations, "resolve_model", ("bge-m3", 1024)),
+            (pg_load_citations, "corpus_document_ids", []),
+            (pg_load_citations, "seed_matches", {}),
+            (pg_load_citations, "project", (0, 0)),
+            (pg_load_citations, "graph_check", 0),
+            (seed_metadata, "seed_matches", {}),
+            (seed_metadata, "stored_zbmath_abstracts", {}),
+            (seed_metadata, "corpus_seed_documents", []),
+            (seed_metadata, "default_zbmath_cache_dir", cache / "zbmath"),
+            (seed_metadata, "default_mathnet_cache_dir", cache / "mathnet"),
+        ):
+            stack.enter_context(mock.patch.object(module, name, return_value=value))
+        stack.enter_context(mock.patch.object(
+            pg_load_citations, "Snowball",
+            return_value=mock.Mock(seed_keys=[], run=mock.Mock(return_value={}))))
+        return pg_load_citations.main(
+            ["--tau", "0.5", *flags, "--cache-dir", str(cache / "openalex")])
+
+    def _run(self, *flags: str) -> tuple[int, list[str]]:
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+            tree = pathlib.Path(tmp)
+            code = self._crawl(stack, tree, *flags)
+            return code, sorted(str(p.relative_to(tree)) for p in tree.rglob("*"))
+
+    def test_dry_run_creates_no_path_under_the_data_tree(self):
+        code, leftovers = self._run("--dry-run")
+        self.assertEqual(code, 0)
+        self.assertEqual(leftovers, [], "--dry-run наследил в дереве данных")
+
+    def test_a_real_run_does_create_the_three_caches(self):
+        """The complement, so the guard cannot pass by never caching."""
+        _code, made = self._run()
+        for directory in ("cache/openalex", "cache/mathnet", "cache/zbmath"):
+            self.assertIn(directory, made)
 
 
 class HubReportRefusesAnEmptyMeasurementTests(unittest.TestCase):

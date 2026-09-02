@@ -73,6 +73,10 @@ DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py
   (citations/store.py для графа, citations/spike_runs.py для measurements и
   отчётов); запись мимо шва запрещена, потому что печатаемое обещание держится
   конструкцией, а не аккуратностью — уже однажды разошлось с делом.
+  Третий канал — HTTP-кэши в дереве данных: клиент получает объект кэша
+  (citations/http_cache.cache_for), и под --dry-run это ReadOnlyCache —
+  попадания отдаёт, промахи не пишет, каталог не создаёт. Новый клиент с
+  кэшем берёт кэш ОТТУДА, а не mkdir'ит каталог сам.
 JOURNAL_FACTS_ARE_COLUMNS [HARD, 2026-09-02]: то, что читает КОД, живёт в
   колонке citation.crawl_step (node_key, score, tau рядом с frontier_key /
   candidate_key / n_found / n_kept), а reason — только проза для человека.

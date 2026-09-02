@@ -37,6 +37,8 @@ import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
+from .http_cache import cache_for
+
 API = "https://api.openalex.org"
 MAILTO = "tooba.mexico@gmail.com"
 USER_AGENT = f"ortopol-kb-citations/1.0 (mailto:{MAILTO})"
@@ -142,6 +144,7 @@ class OpenAlexClient:
         opener=urllib.request.urlopen,
         sleep=time.sleep,
         cache_dir: Path | None = None,
+        read_only_cache: bool = False,
         quota_floor: int = QUOTA_FLOOR,
         max_quota_wait: float = MAX_QUOTA_WAIT,
         pause: float = PAUSE,
@@ -149,9 +152,7 @@ class OpenAlexClient:
     ):
         self._opener = opener
         self._sleep = sleep
-        self._cache_dir = Path(cache_dir) if cache_dir else None
-        if self._cache_dir:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache = cache_for(cache_dir, read_only=read_only_cache)
         self.quota_floor = quota_floor
         self.max_quota_wait = max_quota_wait
         self.pause = pause
@@ -166,9 +167,9 @@ class OpenAlexClient:
         return f"{API}/{path}?" + urllib.parse.urlencode(params, safe="|:.,-")
 
     def _cache_path(self, url: str) -> Path | None:
-        if not self._cache_dir:
+        if self._cache is None:
             return None
-        return self._cache_dir / (hashlib.sha1(url.encode()).hexdigest() + ".json")
+        return self._cache.path(hashlib.sha1(url.encode()).hexdigest() + ".json")
 
     def _honour_quota(self) -> None:
         """Called after every response; the budget is read, never guessed."""
@@ -227,13 +228,12 @@ class OpenAlexClient:
             except json.JSONDecodeError as err:
                 raise OpenAlexError(f"не JSON от {url}: {err}") from err
             if cached is not None:
-                cached.write_text(raw, encoding="utf-8")
+                self._cache.write(cached, raw)
                 self._write_sidecar(cached, body)
             return body
         raise OpenAlexError(f"исчерпаны {self.tries} попытки: {url}")
 
-    @staticmethod
-    def _write_sidecar(cached: Path, body: dict) -> None:
+    def _write_sidecar(self, cached: Path, body: dict) -> None:
         """The page's own index, written the moment the page is cached.
 
         A reader that needs only what batch a page belongs to and how many
@@ -245,8 +245,8 @@ class OpenAlexClient:
         request's.
         """
         try:
-            sidecar_path(cached).write_text(
-                json.dumps(page_index(body), ensure_ascii=False), encoding="utf-8")
+            self._cache.write(sidecar_path(cached),
+                              json.dumps(page_index(body), ensure_ascii=False))
         except OSError:
             pass
 

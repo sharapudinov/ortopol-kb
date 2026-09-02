@@ -28,7 +28,7 @@ from .zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 
 
 def zbmath_abstracts(env, documents, matches, writer=None, crawl_id=None,
-                     log=print) -> dict[str, tuple[str, str]]:
+                     log=print, read_only_cache=False) -> dict[str, tuple[str, str]]:
     """document_id -> (abstract, zbmath id) for seeds OpenAlex left blank.
 
     Called for every seed matched in zbMATH; the crawl decides per node
@@ -44,10 +44,15 @@ def zbmath_abstracts(env, documents, matches, writer=None, crawl_id=None,
     stored on the seed's own citation.work row (with zbMATH recorded as its
     provenance) is used as it stands, and everything else goes through the
     client's disk cache. What is left is genuinely new.
+
+    read_only_cache is the caller's mode, not a preference: the cache is in
+    the data tree, and --dry-run writes nothing there (citations/
+    http_cache.py). Hits are still served either way.
     """
     zb_matches = seed_matches(env, COVERAGE_RUN, "zbmath")
     stored = stored_zbmath_abstracts(env)
-    client = ZbmathClient(cache_dir=default_zbmath_cache_dir())
+    client = ZbmathClient(cache_dir=default_zbmath_cache_dir(),
+                          read_only_cache=read_only_cache)
     out, errors = {}, []
     for document in documents:
         if document not in matches or document not in zb_matches:
@@ -73,7 +78,8 @@ def zbmath_abstracts(env, documents, matches, writer=None, crawl_id=None,
     return out
 
 
-def mathnet_names(env, log=print) -> dict[str, tuple[list[str], list[int]]]:
+def mathnet_names(env, log=print,
+                  read_only_cache=False) -> dict[str, tuple[list[str], list[int]]]:
     """document_id -> (titles, years) off Math-Net, both languages at once.
 
     The identity anchor run 85 measured as worth 13 extra matches out of 69,
@@ -87,7 +93,8 @@ def mathnet_names(env, log=print) -> dict[str, tuple[list[str], list[int]]]:
     anchor, silently producing seeds with no title anchor -- which is exactly
     what the twin rule depends on.
     """
-    client = MathnetClient(cache_dir=default_mathnet_cache_dir())
+    client = MathnetClient(cache_dir=default_mathnet_cache_dir(),
+                           read_only_cache=read_only_cache)
     names = {}
     for document_id, url in corpus_seed_documents(env):
         identifier = mathnet_id(url)

@@ -3,6 +3,9 @@
 Split by responsibility rather than by line count:
 
 - openalex_client -- HTTP, quota, pagination, batching, abstract recovery;
+- http_cache      -- the disk cache all three clients hold, as an object the
+                     mode picks: read-write for a real run, read-only under
+                     --dry-run, which writes nothing into the data tree;
 - zbmath_client   -- the one thing zbMATH is the source of here: abstracts
                      for seeds OpenAlex has no abstract_inverted_index for
                      (survey.md verdict: 48/50 vs 30/56, and no cited-by at
