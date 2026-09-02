@@ -304,9 +304,19 @@ class HybridSqlTests(unittest.TestCase):
         self.assertIn("(E'k1', 0.742::double precision)", self.SQL)
 
     def test_the_one_vector_scan_uses_the_question_embedding(self):
-        self.assertIn("ORDER BY embedding <=> :'vec'::vector", pgc._NEAREST_SEEDS_SQL)
-        self.assertIn("citation.cypher_literal(key)", pgc._NEAREST_SEEDS_SQL)
+        self.assertIn("ORDER BY w.embedding <=> q.v", pgc._NEAREST_SEEDS_SQL)
+        self.assertIn("citation.cypher_literal(w.key)", pgc._NEAREST_SEEDS_SQL)
         self.assertIn("LIMIT :top", pgc._NEAREST_SEEDS_SQL)
+
+    def test_the_question_vector_is_written_into_the_statement_once(self):
+        """psql expands a script variable textually, so a second :'vec'
+        puts the 1024 floats into the script again and casts them again.
+        The sibling nearest-neighbour query took the target out of both the
+        score and the ORDER BY for exactly that reason; this one shares the
+        shape rather than keeping its own.
+        """
+        self.assertEqual(pgc._NEAREST_SEEDS_SQL.count(":'vec'"), 1)
+        self.assertIn("WITH q AS MATERIALIZED", pgc._NEAREST_SEEDS_SQL)
 
     def test_the_match_is_restricted_to_the_seed_keys(self):
         self.assertIn("a.key IN ['k1', 'k2']", self.SQL)

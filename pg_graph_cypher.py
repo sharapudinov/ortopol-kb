@@ -172,13 +172,34 @@ ORDER BY 4 DESC, 1, 5;
 # the score the statement above reports -- carried across rather than
 # recomputed, so both halves of the answer describe the same `top` rows by
 # construction and not by two searches agreeing.
+#
+# The question vector is spliced ONCE, into a MATERIALIZED CTE the scan
+# reads through a LATERAL -- the shape the sibling nearest-neighbour query
+# (pg_graph_queries._CANDIDATES_SQL) already uses, and for the reason given
+# there: psql expands a script variable textually, so `:'vec'` in both the
+# score and the ORDER BY wrote the 1024 floats into the statement twice and
+# cast them twice. AS MATERIALIZED because a single-reference CTE is
+# inlined by default since PostgreSQL 12, which would put both copies back.
+# LATERAL rather than a plain cross join so the ordering belongs to the
+# scan: that is what keeps `Order By: embedding <=> q.v`, i.e. the form
+# work_embedding_hnsw can serve, available as the graph grows.
 _NEAREST_SEEDS_SQL = """
-SELECT key, citation.cypher_literal(key),
-       (1 - (embedding <=> :'vec'::vector))::text
-FROM citation.work
-WHERE embedding IS NOT NULL
-ORDER BY embedding <=> :'vec'::vector
-LIMIT :top;
+WITH q AS MATERIALIZED (
+    SELECT :'vec'::vector AS v
+),
+nearest AS (
+    SELECT n.*
+    FROM q
+    CROSS JOIN LATERAL (
+        SELECT w.key, citation.cypher_literal(w.key) AS cypher_key,
+               1 - (w.embedding <=> q.v) AS score
+        FROM citation.work w
+        WHERE w.embedding IS NOT NULL
+        ORDER BY w.embedding <=> q.v
+        LIMIT :top
+    ) n
+)
+SELECT key, cypher_key, score::text FROM nearest ORDER BY score DESC;
 """
 
 
