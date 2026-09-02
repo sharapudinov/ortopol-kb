@@ -26,12 +26,14 @@ import sys
 import time
 from pathlib import Path
 
-from citations import frontier, twin_pass
+from citations import calibration, frontier, hub_report, twin_pass
 from citations.crawl import HUB_CAP, Snowball
+from citations.http_cache import cache_for
 from citations.openalex_client import OpenAlexClient, QuotaExhausted
 from citations.spike_runs import (
     DryRunMeasurementsWriter,
     MeasurementsWriter,
+    NothingToMeasure,
     record_calibration,
     record_hub_report,
 )
@@ -85,6 +87,62 @@ def do_merge_twins(env, args) -> int:
         vertices, edges = project(env)
         print(f"проекция графа: V={vertices} E={edges}")
         return graph_check(env)
+    return 0
+
+
+def do_hub_report(env, args, data_root: Path, writer) -> int:
+    """Замер цены расширения вверх: что записано и что об этом сказано.
+
+    Каталог кэша проверяется ЗДЕСЬ и до того, как объект кэша построен:
+    рабочий кэш создаёт свой каталог при создании, и после этого «кэша
+    ответов нет» сказать было бы уже нечему — режим померил бы пустоту в
+    только что созданном пустом каталоге. Само чтение идёт через объект
+    (citations/http_cache.py), поэтому под --dry-run проход не дописывает
+    к страницам ни одного сайдкара.
+    """
+    cache_path = Path(args.cache_dir)
+    if not cache_path.is_dir():
+        print(f"кэша ответов нет: {cache_path} — замер читает батчи cites: из него, "
+              "и пустой каталог это не «ноль батчей», а «нечего мерить»; укажите "
+              "--cache-dir того прогона, цену которого меряем", file=sys.stderr)
+        return 1
+    cache = cache_for(cache_path, read_only=args.dry_run)
+    try:
+        record = record_hub_report(env, cache, data_root, writer, args.hub_cap)
+    except NothingToMeasure as exc:
+        print(f"{exc} (кэш {cache_path})", file=sys.stderr)
+        return 1
+    if writer.dry:
+        print("--dry-run: ничего не записано. meta.count батчей cites: "
+              + ", ".join(str(c) for c in record.counts)
+              + f" (сумма {sum(record.counts)}). Таблица узлов не заполнялась, "
+              "поэтому ни её статистик, ни отчёта в этом режиме нет: они "
+              "читаются из записанного.")
+        return 0
+    total = sum(int(row[1]) for row in record.rows)
+    print(f"run {record.run_id} ({hub_report.SPIKE}); узлов depth-1: {total}; "
+          f"отчёт: {record.report}")
+    for row in record.rows:
+        print("  " + " | ".join(row))
+    return 0
+
+
+def do_calibrate(snowball: Snowball, client, data_root: Path, writer) -> int:
+    """Калибровка порога: тот же порядок — записать, потом рассказать."""
+    try:
+        record = record_calibration(snowball, data_root, writer)
+    except NothingToMeasure as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"запросов OpenAlex: {client.n_requests} (из кэша: {client.n_cache_hits})")
+    print(calibration.boundary_line(record.tau_hint))
+    if writer.dry:
+        print(f"--dry-run: ни строки прогона, ни строк порога "
+              f"({record.written} записалось бы), ни отчёта {record.report} — "
+              "ничего не записано")
+    else:
+        print(f"run {record.run_id} ({calibration.SPIKE}); строк порога: "
+              f"{record.written}; отчёт: {record.report}")
     return 0
 
 
@@ -170,8 +228,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Оба режима ниже считают по уже записанному и кэшу: ни семян, ни сети.
     if args.hub_report:
-        return record_hub_report(env, args.cache_dir, corpus_dir.parent,
-                                 measurements, args.hub_cap)
+        return do_hub_report(env, args, corpus_dir.parent, measurements)
     if args.merge_twins:
         return do_merge_twins(env, args)
 
@@ -206,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"семян: {len(snowball.seed_keys)}; "
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:
-            return record_calibration(snowball, client, corpus_dir.parent, measurements)
+            return do_calibrate(snowball, client, corpus_dir.parent, measurements)
         return do_crawl(env, snowball, client, args)
     except QuotaExhausted as exc:
         writer.journal([{"crawl_id": crawl_id, "depth": args.depth, "action": "error",

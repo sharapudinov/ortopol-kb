@@ -1,20 +1,20 @@
-"""pg_load_citations.py's main() and the two spike modes' write seam.
+"""pg_load_citations.py's main(): what the CLI PROMISES and what it says.
 
-No network. No database except the live class at the bottom, which keys
-everything under a `test:` spike and deletes what it wrote -- the one
-property no stub carries is what DELETE ... CASCADE does to a run row's
-data rows, which is the whole reason update_run_fields() exists.
-
-What is asserted here is what the CLI PROMISES: --dry-run touches nothing
-(the schema DDL included), an exhausted quota is journalled before the
-non-zero exit, and the crawl refuses to start without a measured tau.
+No network, no database. The write ORDER of the two spike modes is
+test_spike_runs.py's -- here the modes are only driven, and what is asserted
+is the loader's own half: --dry-run touches nothing (the schema DDL
+included), a refusal names the entry point that fixes it, an exhausted quota
+is journalled before the non-zero exit, and the crawl refuses to start
+without a measured tau.
 """
 from __future__ import annotations
 
+import io
+import json
 import pathlib
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -25,8 +25,6 @@ import pg_load_citations
 from citations import hub_cache, hub_report, seed_metadata, spike_runs, threshold_store
 from citations.openalex_client import QuotaExhausted
 from citations.store import DryRunWriter, PostgresWriter
-from paths import default_corpus_dir
-from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql, scalar
 
 ENV = {"PGHOST": "test"}
 
@@ -80,23 +78,24 @@ class DryRunTouchesNothingTests(unittest.TestCase):
         harness.run_sql_file.assert_not_called()
         harness.upsert_run.assert_not_called()
 
-    def test_a_real_hub_report_does_apply_the_schema(self):
-        """The complement, so the guard cannot pass by never applying it."""
-        with tempfile.TemporaryDirectory() as cache, \
-             mock.patch.object(pg_load_citations, "record_hub_report", return_value=0):
-            code, harness = self._run(["--hub-report", "--cache-dir", cache])
-        self.assertEqual(code, 0)
-        harness.init_schema.assert_called_once()
-
     def test_dry_run_without_the_schema_refuses_and_names_the_entry_point(self):
+        """Every mode that runs under --dry-run, not just the one that found
+        it: the guard sits above the dispatch, and a test for one branch of
+        it says nothing about the other two -- applying the schema IS a
+        write, so the refusal is the promise itself for all of them.
+        """
         with tempfile.TemporaryDirectory() as cache:
-            with mock.patch("sys.stderr") as stderr:
-                code, harness = self._run(
-                    ["--hub-report", "--dry-run", "--cache-dir", cache], schema_exists=False)
-        self.assertEqual(code, 1)
-        harness.init_schema.assert_not_called()
-        said = "".join(str(call.args[0]) for call in stderr.write.call_args_list)
-        self.assertIn("pg_graph.py init", said)
+            for argv in (["--hub-report", "--dry-run", "--cache-dir", cache],
+                         ["--merge-twins", "--dry-run"],
+                         ["--tau", "0.5", "--dry-run", "--cache-dir", cache]):
+                with self.subTest(argv=argv), mock.patch("sys.stderr") as stderr:
+                    code, harness = self._run(argv, schema_exists=False)
+                    self.assertEqual(code, 1)
+                    harness.init_schema.assert_not_called()
+                    harness.run_sql_file.assert_not_called()
+                    said = "".join(str(call.args[0])
+                                   for call in stderr.write.call_args_list)
+                    self.assertIn("pg_graph.py init", said)
 
     def test_dry_run_merge_twins_builds_the_writer_that_cannot_write(self):
         """The fourth mode used to take a dry_run flag and guard two raw
@@ -212,53 +211,127 @@ class MainFailurePathTests(unittest.TestCase):
         self.assertIn("83942", steps[0]["reason"])
 
 
-class HubReportWriteOrderTests(unittest.TestCase):
-    """The aggregation pass is a full scan of the largest table in the
-    schema, twice expanding evidence->'records'. It ran twice because the
-    second upsert_run() -- there only to stamp verify_query with numbers the
-    first pass produced -- deleted the run row and cascaded away its data.
+class HubReportCliTests(unittest.TestCase):
+    """The mode's reporting half, which is the loader's: which refusals the
+    process makes, with what exit code, and what a dry run leaves behind.
+
+    The write order the mode follows once it gets that far is
+    test_spike_runs.py's; nothing here reaches a writer that writes.
     """
 
-    class _Writer(spike_runs.DryRunMeasurementsWriter):
-        dry = False  # exercise the writing branch without a database
+    def _page(self, directory: pathlib.Path, name: str, count: int) -> None:
+        body = {"meta": {"count": count, "x_query": {
+            "oql": "works where it cites (W1)",
+            "url": "/works?filter=referenced_works:W1"}}}
+        (directory / name).write_text(json.dumps(body), encoding="utf-8")
 
-        def upsert_run(self, spike, fields):
-            super().upsert_run(spike, fields)
-            return 7
+    def _main(self, argv: list[str]) -> tuple[int, str, _MainHarness]:
+        out = io.StringIO()
+        with ExitStack() as stack:
+            harness = _MainHarness(stack)
+            stack.enter_context(mock.patch("sys.stderr", out))
+            stack.enter_context(redirect_stdout(out))
+            code = pg_load_citations.main(argv)
+        return code, out.getvalue(), harness
 
-    def _run(self):
-        writer = self._Writer()
-        rows = [["cites", "384", "9000", "1200", "3", "15000"]]
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]), \
-             mock.patch.object(hub_report, "stats", return_value=rows), \
-             mock.patch.object(hub_report, "worst_nodes", return_value=[]):
-            code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
-        return code, writer
+    def test_a_missing_cache_directory_is_refused_and_never_created(self):
+        """A working cache creates its own directory, so the check has to
+        happen before the object does -- otherwise the mode measures the
+        empty directory it just made.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            absent = pathlib.Path(tmp) / "never-written"
+            code, said, harness = self._main(
+                ["--hub-report", "--cache-dir", str(absent)])
+            self.assertEqual(code, 1)
+            self.assertFalse(absent.exists())
+        self.assertIn("кэша ответов нет", said)
+        harness.upsert_run.assert_not_called()
 
-    def test_the_aggregation_pass_runs_once(self):
-        code, writer = self._run()
+    def test_a_cache_with_no_cites_batches_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as cache:
+            code, said, harness = self._main(["--hub-report", "--cache-dir", cache])
+        self.assertEqual(code, 1)
+        self.assertIn("ни одного батча cites", said)
+        self.assertIn(cache, said)
+        harness.upsert_run.assert_not_called()
+
+    def test_a_dry_run_over_a_real_cache_adds_no_sidecar(self):
+        """The whole point of handing the mode a cache OBJECT: the reading
+        pass writes a sidecar per page it had to parse, and under --dry-run
+        that write must not happen -- the data tree is exactly as found.
+        """
+        with tempfile.TemporaryDirectory() as cache:
+            directory = pathlib.Path(cache)
+            self._page(directory, "a.json", 18904)
+            code, said, harness = self._main(
+                ["--hub-report", "--dry-run", "--cache-dir", cache])
+            self.assertEqual(sorted(p.name for p in directory.iterdir()), ["a.json"])
         self.assertEqual(code, 0)
-        self.assertEqual([name for name, _payload in writer.calls].count("populate"), 1)
-        self.assertEqual([name for name, _payload in writer.calls].count("upsert_run"), 1)
+        self.assertIn("18904", said)
+        harness.upsert_run.assert_not_called()
 
-    def test_verify_query_is_stamped_by_an_in_place_update(self):
-        _code, writer = self._run()
-        order = [name for name, _payload in writer.calls]
-        self.assertEqual(order.index("update_run_fields") > order.index("populate"), True)
-        self.assertIn("update_run_fields", order)
+    def test_a_real_run_prints_the_run_it_wrote(self):
+        """Also the complement to the dry-run guard above: a run that is not
+        dry DOES apply the schema, so the guard cannot pass by never
+        applying it at all.
+        """
+        record = spike_runs.HubRecord(
+            [18904], 7, [["cites", "384", "9000", "1200", "3", "15000"]],
+            pathlib.Path("research/citation-hub/report.md"))
+        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
+            harness = _MainHarness(stack)
+            stack.enter_context(mock.patch.object(
+                pg_load_citations, "record_hub_report", return_value=record))
+            out = io.StringIO()
+            stack.enter_context(redirect_stdout(out))
+            code = pg_load_citations.main(["--hub-report", "--cache-dir", cache])
+        self.assertEqual(code, 0)
+        harness.init_schema.assert_called_once()
+        self.assertIn("run 7", out.getvalue())
+        self.assertIn("узлов depth-1: 384", out.getvalue())
 
-    def test_the_stamped_verify_query_names_the_measured_numbers(self):
-        seen = {}
-        writer = self._Writer()
-        writer.update_run_fields = lambda spike, fields: seen.update(fields)
-        rows = [["cites", "384", "9000", "1200", "3", "15000"]]
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]), \
-             mock.patch.object(hub_report, "stats", return_value=rows), \
-             mock.patch.object(hub_report, "worst_nodes", return_value=[]):
-            spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
-        self.assertIn("cites 384 узлов", seen["verify_query"])
+
+class CalibrateCliTests(unittest.TestCase):
+    """The same division for the other spike mode: the refusal is the
+    writer seam's to raise and the loader's to report.
+    """
+
+    def _drive(self, record_side_effect):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
+            _harness = _MainHarness(stack)
+            for name, value in (("resolve_model", ("bge-m3", 1024)),
+                                ("corpus_document_ids", ["doc_a"]),
+                                ("seed_matches", {"doc_a": "W1"}),
+                                ("zbmath_abstracts", {}),
+                                ("mathnet_names", {})):
+                stack.enter_context(mock.patch.object(pg_load_citations, name,
+                                                      return_value=value))
+            stack.enter_context(mock.patch.object(
+                pg_load_citations, "Snowball",
+                return_value=mock.Mock(seed_keys=[])))
+            stack.enter_context(mock.patch.object(
+                pg_load_citations, "record_calibration", **record_side_effect))
+            stack.enter_context(mock.patch("sys.stderr", out))
+            stack.enter_context(redirect_stdout(out))
+            code = pg_load_citations.main(
+                ["--calibrate", "--dry-run", "--cache-dir", cache])
+        return code, out.getvalue()
+
+    def test_nothing_to_calibrate_is_a_message_and_exit_one(self):
+        code, said = self._drive(
+            {"side_effect": spike_runs.NothingToMeasure("кандидатов depth-1 нет")})
+        self.assertEqual(code, 1)
+        self.assertIn("кандидатов depth-1 нет", said)
+
+    def test_a_dry_calibration_says_what_it_would_have_written(self):
+        record = spike_runs.CalibrationRecord(0, 0.52, 390,
+                                              pathlib.Path("research/threshold.md"))
+        code, said = self._drive({"return_value": record})
+        self.assertEqual(code, 0)
+        self.assertIn("390 записалось бы", said)
+        self.assertIn("research/threshold.md", said)
 
 
 class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
@@ -311,120 +384,6 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
         _code, made = self._run()
         for directory in ("cache/openalex", "cache/mathnet", "cache/zbmath"):
             self.assertIn(directory, made)
-
-
-class HubReportRefusesAnEmptyMeasurementTests(unittest.TestCase):
-    """batch_counts() answers [] for a missing, empty or foreign cache
-    directory instead of raising, and the two modes read DIFFERENT caches in
-    practice, so "the cache the crawl never wrote" is a reachable input. Its
-    sibling record_calibration refuses an empty input; so does this one now.
-    """
-
-    def _writer(self):
-        writer = spike_runs.DryRunMeasurementsWriter()
-        writer.dry = False  # the writing branch, without a database
-        return writer
-
-    def test_a_missing_cache_directory_is_refused_and_writes_nothing(self):
-        writer = self._writer()
-        with tempfile.TemporaryDirectory() as tmp, mock.patch("sys.stderr"):
-            code = spike_runs.record_hub_report(
-                ENV, str(Path(tmp) / "never-written"), Path(tmp), writer, 1000)
-        self.assertEqual(code, 1)
-        self.assertEqual(writer.calls, [])
-
-    def test_a_cache_with_no_cites_batches_is_refused_and_writes_nothing(self):
-        writer = self._writer()
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_cache, "batch_counts", return_value=[]), \
-             mock.patch("sys.stderr"):
-            code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
-        self.assertEqual(code, 1)
-        self.assertEqual(writer.calls, [])
-
-    def test_the_dry_run_branch_is_refused_too(self):
-        """--dry-run prints what it WOULD write; there is nothing to print
-        about a measurement of nothing either.
-        """
-        writer = spike_runs.DryRunMeasurementsWriter()
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_cache, "batch_counts", return_value=[]), \
-             mock.patch("sys.stderr"):
-            code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
-        self.assertEqual(code, 1)
-        self.assertEqual(writer.calls, [])
-
-
-class RunRowUpdateLiveTests(unittest.TestCase):
-    """UPDATE in place against the real cascade: the data rows have to
-    survive the stamping that a second upsert_run() would destroy.
-    """
-
-    SPIKE = "test:citations-cli:update-run-fields"
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            env = load_pgenv(default_corpus_dir() / ".pgenv")
-        except (PostgresUnavailable, RuntimeError) as exc:
-            raise unittest.SkipTest(f"Postgres not configured: {exc}")
-        if not check_postgres_available(env):
-            raise unittest.SkipTest("Postgres not reachable")
-        cls.env = env
-
-    # Deleting the fixture rows is not enough to leave the base as found:
-    # the BIGSERIAL keeps every id this class consumed, and the versioned
-    # dump of measurements (lib/tools/measurements) carries the sequence's
-    # setval -- so a test run would show up as drift in a repository it
-    # never touched. Rewound to the largest surviving id, which is what the
-    # sequence said before the fixture.
-    _REWIND = ("SELECT setval(pg_get_serial_sequence('measurements.run', 'id'), "
-               "coalesce((SELECT max(id) FROM measurements.run), 1), "
-               "(SELECT max(id) FROM measurements.run) IS NOT NULL);")
-
-    def setUp(self):
-        self.addCleanup(run_sql, self.env, self._REWIND)
-        self.addCleanup(run_sql, self.env,
-                        "DELETE FROM measurements.run WHERE spike = :'spike';",
-                        {"spike": self.SPIKE})
-        run_sql(self.env, hub_report.DDL)
-        self.run_id = threshold_store.upsert_run(
-            self.env, self.SPIKE,
-            {"question": "test fixture", "arbiter": "test fixture",
-             "reproduce": "python3 -m unittest test_citations_cli",
-             "family": ["all-families"]})
-        run_sql(
-            self.env,
-            "INSERT INTO measurements.citation_hub_expansion "
-            "(run_id, work_key, relation, cited_by_count, n_references) "
-            "VALUES (:run, 'test:citations-cli:W1', 'cites', 12, 34);",
-            variables={"run": str(self.run_id)},
-        )
-
-    def _rows(self) -> int:
-        return int(scalar(
-            self.env,
-            "SELECT count(*) FROM measurements.citation_hub_expansion WHERE run_id = :run;",
-            variables={"run": str(self.run_id)}))
-
-    def test_stamping_a_field_keeps_the_id_and_the_data_rows(self):
-        threshold_store.update_run_fields(self.env, self.SPIKE,
-                                          {"verify_query": "SELECT 1; -- ждать: 1 узел"})
-        same_id = int(scalar(self.env, "SELECT id FROM measurements.run WHERE spike = :'spike';",
-                             variables={"spike": self.SPIKE}))
-        self.assertEqual(same_id, self.run_id)
-        self.assertEqual(self._rows(), 1, "строки данных ушли каскадом при простановке поля")
-        stamped = scalar(self.env, "SELECT verify_query FROM measurements.run WHERE spike = :'spike';",
-                         variables={"spike": self.SPIKE})
-        self.assertIn("ждать: 1 узел", stamped)
-
-    def test_a_second_upsert_would_have_taken_them(self):
-        """Why the update exists at all -- the behaviour it replaces."""
-        threshold_store.upsert_run(
-            self.env, self.SPIKE,
-            {"question": "test fixture", "arbiter": "test fixture",
-             "reproduce": "python3 -m unittest test_citations_cli"})
-        self.assertEqual(self._rows(), 0)
 
 
 if __name__ == "__main__":

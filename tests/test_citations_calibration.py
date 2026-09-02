@@ -197,27 +197,25 @@ class RecordCalibrationTests(unittest.TestCase):
         writer = writer or self._Writer()
         snowball = mock.Mock(calibrate=mock.Mock(return_value=rows_of(scores)),
                              candidate_refs={})
-        client = mock.Mock(n_requests=3, n_cache_hits=1)
         with tempfile.TemporaryDirectory() as tmp:
-            code = spike_runs.record_calibration(snowball, client, Path(tmp), writer)
-        return code, writer
+            record = spike_runs.record_calibration(snowball, Path(tmp), writer)
+        return record, writer
 
     def test_no_candidates_is_a_refusal_not_an_empty_report(self):
         writer = self._Writer()
-        with mock.patch("sys.stderr"):
-            code, writer = self._run([], writer)
-        self.assertEqual(code, 1)
+        with self.assertRaises(spike_runs.NothingToMeasure):
+            self._run([], writer)
         self.assertEqual(writer.calls, [])
 
     def test_the_run_row_precedes_its_data_rows_and_the_report(self):
-        code, writer = self._run([0.30, 0.32, 0.60, 0.62, 0.64])
-        self.assertEqual(code, 0)
+        record, writer = self._run([0.30, 0.32, 0.60, 0.62, 0.64])
+        self.assertEqual((record.run_id, record.written), (7, 5))
         order = [name for name, _payload in writer.calls]
         self.assertEqual(order, ["ddl", "upsert_run", "threshold_rows", "report"])
         self.assertEqual(dict(zip(order, [p for _n, p in writer.calls]))["threshold_rows"], 5)
 
     def test_the_report_goes_to_the_spike_path_in_the_data_tree(self):
-        _code, writer = self._run([0.30, 0.32, 0.60, 0.62])
+        _record, writer = self._run([0.30, 0.32, 0.60, 0.62])
         path, text = writer.reports[0]
         self.assertTrue(str(path).endswith(calibration.REPORT_PATH), path)
         self.assertIn("Кандидатов depth-1: 4", text)
@@ -227,10 +225,9 @@ class RecordCalibrationTests(unittest.TestCase):
         snowball = mock.Mock(calibrate=mock.Mock(return_value=rows_of([0.3, 0.6])),
                              candidate_refs={})
         with tempfile.TemporaryDirectory() as tmp:
-            code = spike_runs.record_calibration(
-                snowball, mock.Mock(n_requests=0, n_cache_hits=0), Path(tmp), writer)
+            record = spike_runs.record_calibration(snowball, Path(tmp), writer)
             self.assertEqual(list(Path(tmp).rglob("*.md")), [])
-        self.assertEqual(code, 0)
+        self.assertEqual(record.run_id, 0, "под --dry-run номера прогона нет")
         self.assertEqual(writer.upsert_run("x", {}), 0, "под --dry-run номера прогона нет")
 
 

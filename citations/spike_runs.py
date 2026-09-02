@@ -15,12 +15,15 @@ Store пишет долговременный граф (upsert, сохранён
 данных.
 
 Формулировки замеров и рендер отчётов — в calibration.py и hub_report.py;
-здесь только порядок записи.
+здесь только порядок записи. Ни печати, ни кодов возврата: режим возвращает
+ЗАПИСАННОЕ (CalibrationRecord / HubRecord) либо поднимает NothingToMeasure,
+а что из этого сказать человеку и с каким кодом выйти — дело CLI
+(pg_load_citations.py), у которого и живут тела остальных двух режимов.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from pg_common import run_sql
 
@@ -90,12 +93,44 @@ class DryRunMeasurementsWriter:
         self.calls.append(("report", str(path)))
 
 
-def record_calibration(snowball, client, data_root: Path, writer) -> int:
+class NothingToMeasure(RuntimeError):
+    """The input a mode measures is empty, so there is no measurement.
+
+    A domain error, not an exit code: "мерить нечего" is a fact about the
+    input, and whether that fact ends the process (and on which stream it is
+    said) is the CLI's decision, the same division store.py keeps between a
+    writer and the loader that drives it. Refusing rather than recording is
+    the point -- an empty input once put a run row into measurements whose
+    verify_query "confirmed" numbers nobody had observed.
+    """
+
+
+class CalibrationRecord(NamedTuple):
+    """What the calibration wrote, for whoever has to report it."""
+
+    run_id: int
+    tau_hint: float | None
+    written: int
+    report: Path
+
+
+class HubRecord(NamedTuple):
+    """What the hub measurement wrote. Under a dry-run writer only `counts`
+    is a measurement: nothing was populated, so there are no statistics to
+    read back and no report to name.
+    """
+
+    counts: list[int]
+    run_id: int
+    rows: list
+    report: Path | None
+
+
+def record_calibration(snowball, data_root: Path, writer) -> CalibrationRecord:
     """Распределение score всех кандидатов depth-1 -> measurements + отчёт."""
     rows = snowball.calibrate()
     if not rows:
-        print("кандидатов depth-1 нет — калибровать нечего", file=sys.stderr)
-        return 1
+        raise NothingToMeasure("кандидатов depth-1 нет — калибровать нечего")
     tau_hint = calibration.suggest_tau(rows)
     writer.ddl(threshold_store.THRESHOLD_DDL)
     run_id = writer.upsert_run(calibration.SPIKE, calibration.run_fields(rows))
@@ -103,45 +138,29 @@ def record_calibration(snowball, client, data_root: Path, writer) -> int:
     report = data_root / calibration.REPORT_PATH
     writer.report(report, calibration.carry_over_sections(
         calibration.calibration_report(rows, tau_hint, snowball.candidate_refs), report))
-    print(f"запросов OpenAlex: {client.n_requests} (из кэша: {client.n_cache_hits})")
-    print(calibration.boundary_line(tau_hint))
-    if writer.dry:
-        print(f"--dry-run: ни строки прогона, ни строк порога ({written} записалось бы), "
-              f"ни отчёта {report} — ничего не записано")
-    else:
-        print(f"run {run_id} ({calibration.SPIKE}); строк порога: {written}; отчёт: {report}")
-    return 0
+    return CalibrationRecord(run_id, tau_hint, written, report)
 
 
-def record_hub_report(env, cache_dir, data_root: Path, writer, hub_cap: int) -> int:
+def record_hub_report(env, cache, data_root: Path, writer, hub_cap: int) -> HubRecord:
     """Отрицательный результат про цену расширения вверх. Сети не требует.
 
     Отказ вместо записи, как в record_calibration: пустой вход — это не
-    «замерили ноль», а «мерить было нечего». batch_counts() глобит *.json и
-    на отсутствующем, пустом или чужом каталоге возвращает [] без ошибки, а
-    режим ходит в кэш по умолчанию (paths.default_cache_dir()) — так что
-    прогон, писавший страницы в scratch, легко читается отсюда пустым. Без
-    этой проверки в measurements ложилась строка прогона с verify_query,
-    «подтверждающим» числа, которых никто не наблюдал.
+    «замерили ноль», а «мерить было нечего». batch_counts() отдаёт пустой
+    список на пустом или чужом кэше, а режим ходит в кэш по умолчанию
+    (paths.default_cache_dir()) — так что прогон, писавший страницы в
+    scratch, легко читается отсюда пустым.
+
+    Кэш приходит объектом (citations/http_cache.py), а не путём: сайдкары,
+    которые проход дописывает к страницам, — записи в дерево данных, и под
+    --dry-run их не делает ReadOnlyCache, а не аккуратность этого модуля.
     """
-    cache_path = Path(cache_dir)
-    if not cache_path.is_dir():
-        print(f"кэша ответов нет: {cache_path} — замер читает батчи cites: из него, "
-              "и пустой каталог это не «ноль батчей», а «нечего мерить»; укажите "
-              "--cache-dir того прогона, цену которого меряем", file=sys.stderr)
-        return 1
-    counts = hub_cache.batch_counts(cache_path)
+    counts = hub_cache.batch_counts(cache)
     if not counts:
-        print(f"в кэше {cache_path} нет ни одного батча cites: — мерить нечего; "
-              "это кэш другого прогона либо страницы направления «вниз»",
-              file=sys.stderr)
-        return 1
+        raise NothingToMeasure(
+            "в кэше нет ни одного батча cites: — мерить нечего; это кэш "
+            "другого прогона либо страницы направления «вниз»")
     if writer.dry:
-        print("--dry-run: ничего не записано. meta.count батчей cites: "
-              + ", ".join(str(c) for c in counts) + f" (сумма {sum(counts)}). "
-              "Таблица узлов не заполнялась, поэтому ни её статистик, ни отчёта "
-              "в этом режиме нет: они читаются из записанного.")
-        return 0
+        return HubRecord(counts, 0, [], None)
     writer.ddl(hub_report.DDL)
     run_id = writer.upsert_run(hub_report.SPIKE, hub_report.run_fields(counts, []))
     writer.populate(hub_report.POPULATE, run_id)
@@ -156,8 +175,4 @@ def record_hub_report(env, cache_dir, data_root: Path, writer, hub_cap: int) -> 
     report = data_root / hub_report.REPORT_PATH
     writer.report(report, hub_report.report(counts, rows, hub_report.worst_nodes(env, run_id),
                                             run_id, hub_cap))
-    total = sum(int(r[1]) for r in rows)
-    print(f"run {run_id} ({hub_report.SPIKE}); узлов depth-1: {total}; отчёт: {report}")
-    for row in rows:
-        print("  " + " | ".join(row))
-    return 0
+    return HubRecord(counts, run_id, rows, report)

@@ -2,9 +2,16 @@
 """Что кэш ответов OpenAlex помнит о батчах «вверх».
 
 Отделено от hub_report.py по ответственности (и по kb/CLAUDE.md FILE_SIZE):
-тот модуль считает из БАЗЫ и пишет отчёт, этот читает КАТАЛОГ КЭША в дереве
+тот модуль считает из БАЗЫ и пишет отчёт, этот читает КЭШ ОТВЕТОВ в дереве
 данных. Общего у них ничего, кроме потребителя: замеру нужны оба счёта, и
 именно их независимость делает вывод вердикта возможным.
+
+Кэш приходит объектом (citations/http_cache.py), а не путём: проход
+дописывает к страницам сайдкары, то есть ПИШЕТ в дерево данных, и под
+--dry-run эту запись снимает ReadOnlyCache — тем же способом, что
+DryRunWriter снимает запись в citation.*. Сайдкар у страницы один и тот же
+(openalex_client.sidecar_name), поэтому и писатель у него один: клиент и
+этот проход зовут cache.write(), а не write_text() мимо шва.
 
 Сети не требует: батчи уже скачаны, и повторный проход по кэшу
 воспроизводит числа при исчерпанной квоте.
@@ -12,7 +19,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from . import openalex_client
 
@@ -27,7 +33,7 @@ CITES_MARKER = "works where it cites"
 HEAD_BYTES = 65536
 
 
-def batch_note(path: Path) -> dict | None:
+def batch_note(cache, name: str) -> dict | None:
     """{filter, oql, count} страницы кэша: из сайдкара, иначе разбором.
 
     Сайдкар пишет сам клиент рядом со страницей
@@ -37,31 +43,36 @@ def batch_note(path: Path) -> dict | None:
     мегабайт, и разбирать её ради двух полей нечего), затем разбор и запись
     сайдкара, чтобы следующий прогон читал килобайты.
     """
-    sidecar = path.with_name(openalex_client.sidecar_name(path.name))
-    try:
-        if sidecar.is_file():
-            return json.loads(sidecar.read_text(encoding="utf-8"))
-        with path.open(encoding="utf-8") as handle:
-            head = handle.read(HEAD_BYTES)
-        if CITES_MARKER not in head and '"x_query"' in head:
+    sidecar = openalex_client.sidecar_name(name)
+    stored = cache.read(sidecar)
+    if stored is not None:
+        try:
+            return json.loads(stored)
+        except ValueError:
             return None
-        note = openalex_client.page_index(json.loads(path.read_text(encoding="utf-8")))
-    except (ValueError, OSError):
+    head = cache.read(name, limit=HEAD_BYTES)
+    if head is None:
+        return None
+    if CITES_MARKER not in head and '"x_query"' in head:
+        return None
+    body = cache.read(name)
+    if body is None:
         return None
     try:
-        sidecar.write_text(json.dumps(note, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        pass
+        note = openalex_client.page_index(json.loads(body))
+    except ValueError:
+        return None
+    cache.write(sidecar, json.dumps(note, ensure_ascii=False))
     return note
 
 
-def batch_counts(cache_dir: Path) -> list[int]:
+def batch_counts(cache) -> list[int]:
     """meta.count каждого батча `cites:` из кэша — по одному числу на батч."""
     seen: dict[str, int] = {}
-    for path in sorted(Path(cache_dir).glob("*.json")):
-        if path.name.endswith(openalex_client.SIDECAR_SUFFIX):
+    for name in sorted(cache.names()):
+        if not name.endswith(".json") or name.endswith(openalex_client.SIDECAR_SUFFIX):
             continue
-        note = batch_note(path)
+        note = batch_note(cache, name)
         if note is None:
             continue
         oql = note.get("oql") or ""
