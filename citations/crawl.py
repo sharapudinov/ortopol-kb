@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from . import edges as edges_mod
 from . import journal, seeding
-from .frontier import candidate_text, centroid, cosine
+from .frontier import EMBED_BATCH, candidate_text, cosine
 from .openalex_client import short_id
 from .registry import Node, WorkRegistry
 
@@ -157,8 +157,30 @@ class Snowball:
                                wanted.get(short_id(record.get("id")), "")))
         return candidates, found, [(n.key, n.cited_by_count) for n in hubs]
 
+    def scores_of(self, holders) -> dict[str, tuple[float, list[float] | None]]:
+        """{key: (score, vector)} for `holders`, embedded a batch at a time,
+        and the vector of anything below tau dropped as soon as its score is
+        known.
+
+        Batched because the vector is the expensive thing here: 1024 floats
+        per candidate, and a depth-2 level is thousands of candidates
+        (~4262 distinct references measured at tau=0.50) of which the filter
+        keeps a fraction. Holding every level's vectors until expand()
+        finished made peak memory a function of the CANDIDATE set; dropping
+        below-tau vectors on the spot makes it a function of the KEPT set.
+        Same batch size the embedder itself uses, so this adds no request.
+        """
+        scored: dict[str, tuple[float, list[float] | None]] = {}
+        for start in range(0, len(holders), EMBED_BATCH):
+            chunk = holders[start:start + EMBED_BATCH]
+            vectors = self.embed([candidate_text(h.title, h.abstract) for h in chunk])
+            for holder, vector in zip(chunk, vectors):
+                score = cosine(vector, self.centroid)
+                scored[holder.key] = (score, vector if score >= self.tau else None)
+        return scored
+
     def score(self, candidates) -> list[dict]:
-        """Cosine to the seed centroid for every NEW candidate, in one pass.
+        """Cosine to the seed centroid for every NEW candidate.
 
         A candidate with no title carries no semantic content (the predicate
         pg_embed.py applies to a page) and is scored -1.0 rather than
@@ -178,9 +200,7 @@ class Snowball:
             holder.absorb(record)
             if holder.title:
                 holders.append(holder)
-        vectors = self.embed([candidate_text(h.title, h.abstract) for h in holders]) \
-            if holders else []
-        scored = {h.key: (cosine(v, self.centroid), v) for h, v in zip(holders, vectors)}
+        scored = self.scores_of(holders)
 
         out = []
         for record, relation, source_key in fresh:

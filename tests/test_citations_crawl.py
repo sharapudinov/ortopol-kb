@@ -15,6 +15,7 @@ import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
 from citations import journal, seeding, store
 from citations.crawl import Snowball
+from citations.frontier import EMBED_BATCH
 from citations.registry import Node, WorkRegistry
 from citations.store import DryRunWriter, PostgresWriter, Writer
 from paths import default_corpus_dir
@@ -173,6 +174,75 @@ class CrawlTests(unittest.TestCase):
         drops = [s for s in writer.steps_seen if s["action"] == "drop"]
         self.assertEqual([s["candidate_key"] for s in drops], ["W_BLANK"])
         self.assertIn("score=-1.0000 tau=0.0000", drops[0]["reason"])
+
+
+class ScoringMemoryTests(unittest.TestCase):
+    """The vector, not the record, is what a level's memory is made of:
+    1024 floats per candidate, thousands of candidates at depth 2, and only
+    those above tau are ever written. Below-tau vectors are released as soon
+    as the score is known, so peak memory follows the KEPT set.
+    """
+
+    class BatchRecordingEmbedder:
+        """Vectors by title marker, remembering the size of every call.
+
+        The seed shares the kept candidates' axis, so the centroid is that
+        axis and the cosine is exactly 1.0 or 0.0.
+        """
+
+        NEAR = ("Seed", "Near")
+
+        def __init__(self):
+            self.batches: list[int] = []
+
+        def __call__(self, texts):
+            self.batches.append(len(texts))
+            return [unit(0) if any(m in text for m in self.NEAR) else unit(500)
+                    for text in texts]
+
+    def _scored(self, n_keep: int, n_drop: int):
+        writer = DryRunWriter()
+        seed = work("W_SEED", title="Seed Chebyshev")
+        citers = [work(f"W_KEEP{i}", title="Near Chebyshev", refs=["W_SEED"])
+                  for i in range(n_keep)]
+        citers += [work(f"W_DROP{i}", title="Far unrelated", refs=["W_SEED"])
+                   for i in range(n_drop)]
+        client = FakeClient([seed] + citers, citers={"W_SEED": citers})
+        embedder = self.BatchRecordingEmbedder()
+        snowball = Snowball(client, embedder, writer, tau=0.5, crawl_id="c",
+                            log=lambda *_: None)
+        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
+        embedder.batches.clear()  # the seed pass is not the level being measured
+        candidates, _found, _hubs = snowball.gather(["W_SEED"])
+        return snowball.score(candidates), embedder
+
+    def test_only_the_kept_candidates_still_hold_a_vector(self):
+        scored, _embedder = self._scored(n_keep=10, n_drop=90)
+        self.assertEqual(len(scored), 100)
+        with_vector = [item for item in scored if item["vector"] is not None]
+        self.assertEqual(len(with_vector), 10,
+                         "вектор отброшенного кандидата остался в памяти")
+        self.assertTrue(all(item["score"] >= 0.5 for item in with_vector))
+        self.assertTrue(all(item["candidate_key"].startswith("W_KEEP")
+                            for item in with_vector))
+
+    def test_the_level_is_embedded_in_batches_not_in_one_call(self):
+        _scored, embedder = self._scored(n_keep=10, n_drop=90)
+        self.assertEqual(sum(embedder.batches), 100)
+        self.assertTrue(all(size <= EMBED_BATCH for size in embedder.batches),
+                        embedder.batches)
+        self.assertEqual(len(embedder.batches), 7)  # ceil(100 / 16)
+
+    def test_a_kept_candidate_still_reaches_its_node_with_its_vector(self):
+        writer = DryRunWriter()
+        seed = work("W_SEED", title="Seed Chebyshev")
+        near = work("W_NEAR", title="Near Chebyshev", refs=["W_SEED"])
+        client = FakeClient([seed, near], citers={"W_SEED": [near]})
+        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0), "Near": unit(0)}),
+                            writer, tau=0.5, crawl_id="c", log=lambda *_: None)
+        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
+        snowball.expand(["W_SEED"], 1)
+        self.assertEqual(snowball.registry.nodes["W_NEAR"].embedding, unit(0))
 
 
 class SeedingWithoutSnowballTests(unittest.TestCase):
