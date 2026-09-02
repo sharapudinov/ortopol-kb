@@ -44,11 +44,14 @@ class ArtifactUnavailable(RuntimeError):
 # profile a single word. Matched rather than globbed, and anchored at both
 # ends, because everything a glob would let through here is a real name a
 # build can produce. `kb-{profile}-*` matched kb-public-override-<date>,
-# which build_package.py names deliberately so it cannot pass for a
-# classified build -- and then sorted it AFTER the genuine same-date
-# artifact ('o' > '2'), so "the newest public artifact" resolved to the
-# override every time. The profile group cannot contain a hyphen, so no
-# suffixed tag can ever answer to a profile's name again.
+# the name override builds used to carry -- and then sorted it AFTER the
+# genuine same-date artifact ('o' > '2'), so "the newest public artifact"
+# resolved to the override every time. build_package.py now names such a
+# build kb-override-<profile>-<date>, outside the profile's namespace
+# altogether; this pattern is the second line rather than the only one, and
+# it still holds for the names already lying in a deploy directory: the
+# profile group cannot contain a hyphen, so no tag glued to a profile can
+# ever answer to that profile's name.
 _ARTIFACT_NAME = re.compile(r"\Akb-(?P<profile>[a-z]+)-[0-9]{8}\.tar\.zst\Z")
 
 

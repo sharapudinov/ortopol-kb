@@ -288,9 +288,20 @@ class CitationPolicyOverrideTests(unittest.TestCase):
         self.assertEqual(seen["dump_mode"], "topology-only")
         written = seen["written"]
         self.assertEqual(len(written), 1)
-        self.assertTrue(written[0].startswith("kb-public-override-"), written)
-        # Never named as if it were an ordinary (owner-classified) build.
-        self.assertFalse(written[0].startswith("kb-public-2"), written)
+        self.assertTrue(written[0].startswith("kb-override-public-"), written)
+
+    def test_the_override_name_is_outside_every_profile_namespace(self):
+        """Not merely distinguishable from a classified build -- unreachable
+        by any selection made on the profile's name. `kb-public-*` is how a
+        publish step, a release script or a human picks "the public
+        artifact", and a tag suffixed INSIDE that namespace answered to all
+        three; the one anchored regex in smoke_stack.py was the only
+        consumer that knew better (tests/test_smoke_stack.py pins that side).
+        """
+        _exit_code, seen = self._override_build()
+        name = seen["written"][0]
+        for profile in ("public", "full"):
+            self.assertFalse(name.startswith(f"kb-{profile}-"), name)
 
     def _override_build(self):
         with tempfile.TemporaryDirectory() as tmp:

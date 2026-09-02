@@ -66,30 +66,36 @@ class LatestArtifactTests(unittest.TestCase):
             picked = smoke_stack.latest_artifact(corpus_dir)
             self.assertEqual(picked.name, "kb-full-20270101.tar.zst")
 
+    # What build_package.py names an override build today, and the name
+    # such builds carried before it moved out of the profile's namespace:
+    # a deploy directory keeps both, and neither may answer to a profile.
+    OVERRIDE_NAMES = ("kb-override-public-20260902.tar.zst",
+                      "kb-public-override-20260902.tar.zst")
+
     def test_an_override_build_never_answers_to_the_public_profile(self):
         """The lexical trap this pattern exists for: 'o' (0x6f) > '2'
-        (0x32), so for the SAME date kb-public-override-<date> sorted AFTER
-        the owner-classified kb-public-<date> and a `kb-public-*` glob
-        handed the override build to anything asking for "the newest public
-        artifact" -- the very substitution the profile filter was added to
-        prevent.
+        (0x32), so for the SAME date an override name sorting after the
+        owner-classified kb-public-<date> was handed to anything asking for
+        "the newest public artifact" -- the very substitution the profile
+        filter was added to prevent.
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            corpus_dir = self._deploy(tmp, ["kb-public-20260902.tar.zst",
-                                            "kb-public-override-20260902.tar.zst"])
-            picked = smoke_stack.latest_artifact(corpus_dir, "public")
-            self.assertEqual(picked.name, "kb-public-20260902.tar.zst")
+        for override in self.OVERRIDE_NAMES:
+            with self.subTest(override=override), tempfile.TemporaryDirectory() as tmp:
+                corpus_dir = self._deploy(tmp, ["kb-public-20260902.tar.zst", override])
+                picked = smoke_stack.latest_artifact(corpus_dir, "public")
+                self.assertEqual(picked.name, "kb-public-20260902.tar.zst")
 
     def test_an_override_build_is_no_artifact_at_all_to_auto_discovery(self):
         """Not merely outranked -- unreachable. With no classified build
-        beside it there is nothing to discover, rather than the override.
+        beside it there is nothing to discover, rather than the override,
+        and that holds for the full profile as much as for the public one.
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            corpus_dir = self._deploy(tmp, ["kb-public-override-20260902.tar.zst"])
-            with self.assertRaises(smoke_stack.ArtifactUnavailable):
-                smoke_stack.latest_artifact(corpus_dir, "public")
-            with self.assertRaises(smoke_stack.ArtifactUnavailable):
-                smoke_stack.latest_artifact(corpus_dir)
+        for override in self.OVERRIDE_NAMES:
+            with self.subTest(override=override), tempfile.TemporaryDirectory() as tmp:
+                corpus_dir = self._deploy(tmp, [override])
+                for profile in ("public", "full", None):
+                    with self.assertRaises(smoke_stack.ArtifactUnavailable):
+                        smoke_stack.latest_artifact(corpus_dir, profile)
 
     def test_a_name_that_is_not_an_artifact_name_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -64,7 +64,12 @@ CITATION_POLICY_IS_DATA [HARD, 2026-09-02]: режим схемы citation в п
   строка citation.public_policy (full-skeleton | topology-only | none), пишет
   владелец; без строки public-сборка отказывается (тот же принцип, что
   UNCLASSIFIED_FAILS_BUILD). Флаг --policy-override существует только для
-  проверок и никогда не даёт артефакт с именем kb-public-*.
+  проверок и никогда не даёт артефакт с именем kb-public-*: такая сборка
+  называется kb-override-<профиль>-<дата>, ВНЕ пространства имён профиля,
+  чтобы её не достал ни один отбор по имени (glob kb-public-*, скрипт
+  публикации, человек в листинге). Суффикс ВНУТРИ пространства
+  (kb-public-override-...) доставался всеми тремя и сортировался ПОЗЖЕ
+  настоящего артефакта той же даты.
 DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py
   означает НИ ОДНОЙ записи — ни в citation.*, ни в measurements.*, ни в дерево
   данных, ни DDL. Схему в этом режиме не применяют (это ALTER/CREATE на живой

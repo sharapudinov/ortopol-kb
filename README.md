@@ -85,7 +85,9 @@ python3 deploy/build_package.py --profile public
 манифест говорит не только КАКОЙ он, но и ЧЕЙ: `citation.policy_source` = `owner`
 (прочитано из базы) либо `override` (задано флагом `--policy-override`, только для
 прогона конвейера). На `override` `profile_checks.py` отказывает: такой артефакт
-не публикуется, как бы он ни назывался.
+не публикуется, как бы он ни назывался. Имя у него тоже своё —
+`kb-override-<профиль>-<дата>.tar.zst`, вне пространства `kb-public-*`, так что
+отбор по имени профиля до него не дотягивается.
 
 Проверка состава по байтам артефакта:
 `python3 deploy/profile_checks.py --artifact-dir <распакованный>` → exit 0.

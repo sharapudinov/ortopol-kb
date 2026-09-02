@@ -121,8 +121,8 @@ def main(argv: list[str] | None = None) -> int:
              "exists so the packaging/smoke pipeline can be exercised before that decision "
              "is made. Valid only with --profile public. The build records "
              "citation.policy_source='override' IN THE MANIFEST, which profile_checks.py "
-             "fails on, and names the file kb-public-override-<date> so it also does not "
-             "look like one the owner classified.",
+             "fails on, and names the file kb-override-<profile>-<date> -- OUTSIDE the "
+             "kb-public-* namespace, so no name a consumer globs for can reach it.",
     )
     args = parser.parse_args(argv)
 
@@ -141,18 +141,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Postgres unavailable: {exc}", file=sys.stderr)
         return 1
 
-    # The filename says an override build is one, but a name is not part of
-    # the artifact: it survives neither a copy under another name nor a
-    # recipient who only ever reads manifest.json. What travels INSIDE the
-    # package is manifest.citation.policy_source, and profile_checks.py
-    # fails on PolicySource.OVERRIDE, so such a build cannot be certified as
-    # publishable by any consumer, however it arrived.
-    profile_tag = args.profile
+    # An override build is named OUTSIDE the profile's namespace --
+    # kb-override-<profile>-<date>, not kb-<profile>-override-<date> -- so
+    # that no `kb-public-*` selection (a glob, a publish script, a human
+    # reading a directory listing) can reach it at all. A suffix inside the
+    # namespace was reachable by every one of them, and sorted AFTER the
+    # genuine same-date artifact ('o' > '2'), so "the newest public
+    # artifact" resolved to the override build every time.
+    #
+    # The name is still only the outer line: it survives neither a copy
+    # under another name nor a recipient who only ever reads manifest.json.
+    # What travels INSIDE the package is manifest.citation.policy_source,
+    # and profile_checks.py fails on PolicySource.OVERRIDE, so such a build
+    # cannot be certified as publishable by any consumer, however it arrived.
+    name_tag = args.profile
     if args.policy_override:
-        profile_tag = f"{args.profile}-override"
+        name_tag = f"override-{args.profile}"
         print(
             f"ВНИМАНИЕ: --policy-override={args.policy_override} -- НЕ решение владельца. "
-            f"Артефакт назван kb-{profile_tag}-..., несёт в манифесте "
+            f"Артефакт назван kb-{name_tag}-..., несёт в манифесте "
             f"citation.policy_source='{PolicySource.OVERRIDE}' и НЕ ПРОЙДЁТ "
             f"deploy/profile_checks.py: публиковать его нельзя, он существует только "
             f"чтобы прогнать конвейер до решения владельца.",
@@ -194,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     date_tag = datetime.now(timezone.utc).strftime("%Y%m%d")
-    out_path = out_dir / f"kb-{profile_tag}-{date_tag}.tar.zst"
+    out_path = out_dir / f"kb-{name_tag}-{date_tag}.tar.zst"
 
     with tempfile.TemporaryDirectory(prefix="kb-build-") as workdir_str:
         workdir = Path(workdir_str)
