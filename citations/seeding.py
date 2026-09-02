@@ -9,7 +9,7 @@ OpenAlex record, zbMATH for the abstract OpenAlex lacks, Math-Net for the
 names in both languages.
 
 A document the source does not have gets a journal row and NO work row.
-"Absent from OpenAlex" is a recorded decision that 038.7's completeness
+"Absent from OpenAlex" is a recorded decision that the completeness
 predicate reads; a missing row would be indistinguishable from a bug.
 """
 from __future__ import annotations

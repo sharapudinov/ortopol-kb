@@ -1,4 +1,4 @@
--- Citation-graph schema (plan 038).
+-- Citation-graph schema.
 --
 -- The relational tables are the durable truth; the AGE graph is a derived
 -- projection of them, never the other way round (project_graph() below is
@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS citation.cites (
 
 CREATE INDEX IF NOT EXISTS cites_cited_idx ON citation.cites (cited);
 
--- crawl_step: the crawl's own journal (BFS snowball, task 038.5), one row
+-- crawl_step: the crawl's own journal (BFS snowball), one row
 -- per decision it made -- seed accepted, candidate fetched, kept or
 -- dropped by the filter, or errored. Without this, "why is X in the graph"
 -- or "why isn't Y" is unanswerable after the fact; run 53 / the

@@ -18,7 +18,7 @@ services:
   kb-pg:
     # Built from the bundled pg/Dockerfile (Postgres 17 + pgvector + Apache
     # AGE), not pulled: no registry publishes this pairing, and the citation
-    # graph (schema citation, task 038) needs AGE present before the dump is
+    # graph (schema citation) needs AGE present before the dump is
     # restored. `up` builds it once (~1 min: apt-installs pgvector on top of
     # apache/age); the tag is the one pg/README.md names.
     build: ./pg

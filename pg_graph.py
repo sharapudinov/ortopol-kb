@@ -41,7 +41,7 @@ def graph_sql(env: dict[str, str], sql: str, **kwargs):
     """Runs `sql` with AGE activated for this one psql invocation.
 
     Every graph-touching query goes through this, not just the ones in this
-    module: 038.6's read-only consumers import it rather than repeat the
+    module: the read-only consumers in pg_graph_queries import it rather than repeat the
     two activation statements themselves.
     """
     return run_sql(env, _AGE_PREAMBLE + sql, **kwargs)

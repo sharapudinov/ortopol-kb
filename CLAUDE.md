@@ -54,7 +54,7 @@ EXTERNAL_NEVER_SHIPS [HARD]: всё под theory/external/ — чужие ав�
 Любая правка закрывается этим (из корня репозитория):
 
 ```bash
-python3 -m unittest discover -s tests -t tests            # 322 теста, exit 0
+python3 -m unittest discover -s tests -t tests            # 504 теста, exit 0
 set -a; . ../corpus/.pgenv; set +a
 python3 corpus_completeness.py                            # exit 0
 ```

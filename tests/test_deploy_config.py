@@ -38,7 +38,7 @@ class EmbedModelParameterizedTests(unittest.TestCase):
 
 
 class PgImageWithAgeAndPgvectorTests(unittest.TestCase):
-    """ortopol-pg:17-age1.7-pgvector (task 038.039.1) must carry both
+    """ortopol-pg:17-age1.7-pgvector must carry both
     extensions the kb schema needs (age for the citation graph, vector
     already in production use) and the Dockerfile/README that build it must
     agree on the image tag, and docker-compose.yml must build that very

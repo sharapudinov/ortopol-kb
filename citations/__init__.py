@@ -1,4 +1,4 @@
-"""Snowball crawl of the citation graph (plan 038, task 005).
+"""Snowball crawl of the citation graph.
 
 Split by responsibility rather than by line count:
 
