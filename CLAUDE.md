@@ -47,6 +47,24 @@ EXTERNAL_NEVER_SHIPS [HARD]: всё под theory/external/ — чужие ав�
   загрузчик, а не строка реестра, и corpus_completeness.py это проверяет
   (external_checks.py). Реестр EXTERNAL_INDEX.md решает, ОТКУДА взято и ЗАЧЕМ,
   но не «уезжает ли» — уезжать нечему.
+GRAPH_IS_PROJECTION [HARD, 2026-09-02]: истина графа цитирований — реляционные
+  citation.work / citation.cites / citation.crawl_step; AGE-граф citation_graph —
+  идемпотентная проекция (citation.project_graph(), `pg_graph.py project`).
+  Причина: apache/age #2503 — после pg_dump/restore Cypher ломается (graphid хранит
+  oid исходной базы). Следствия: оба дампа исключают ag_catalog и citation_graph,
+  артефакт пересоздаёт проекцию init-скриптом 02_project_graph.sql; писать в граф
+  мимо таблиц запрещено — `pg_graph.py project --check` и corpus_completeness
+  (citation_checks.py) ловят расхождение как PROJECTION STALE.
+CITATION_POLICY_IS_DATA [HARD, 2026-09-02]: режим схемы citation в профиле public —
+  строка citation.public_policy (full-skeleton | topology-only | none), пишет
+  владелец; без строки public-сборка отказывается (тот же принцип, что
+  UNCLASSIFIED_FAILS_BUILD). Флаг --policy-override существует только для
+  проверок и никогда не даёт артефакт с именем kb-public-*.
+SNOWBALL_FRONTIER [2026-09-02, измерено run 89/93]: обход расширяет на depth ≥ 2
+  только узлы с relation='cites'; узлы, пришедшие по references, — листья; хабы
+  (cited_by_count > --hub-cap) вверх не спрашиваются. Порог релевантности τ — не
+  константа в коде, а результат калибровки (run 89: τ=0.50, пустая корзина
+  0.484–0.504); менять — новым run, не правкой числа.
 ```
 
 ## Предикат готовности
