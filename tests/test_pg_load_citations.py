@@ -316,7 +316,7 @@ class EvidenceWeightTests(unittest.TestCase):
         record = work("W1", refs=["W2"])
         registry.Node(key="W1", kind="external-skeleton", depth=1).absorb(record)
         self.assertIn("referenced_works", record,
-                      "edges.among_known reads referenced_works off the record")
+                      "gathering.gather() reads the list off the record it was given")
 
 
 class CsvEncodingTests(unittest.TestCase):

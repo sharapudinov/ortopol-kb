@@ -33,7 +33,7 @@ calibration never saw is a query, not a re-crawl:
 from __future__ import annotations
 
 from . import edges as edges_mod
-from . import journal, seeding
+from . import gathering, journal, seeding
 from .frontier import EMBED_BATCH, candidate_text, cosine
 from .openalex_client import short_id
 from .registry import Node, WorkRegistry
@@ -114,46 +114,14 @@ class Snowball:
             return list(keys)
         return [k for k in keys if self.registry.nodes[k].relation == "cites"]
 
-    def gather(self, frontier_keys: list[str]) -> tuple[list, dict, list]:
-        """(candidates, per-frontier-node found counts, hub skips) for a level.
+    def gather(self, frontier_keys: list[str]):
+        """One level's candidates, delegated to gathering.py.
 
-        A candidate is (record, relation, discovered_from) with relation in
-        {'cites', 'referenced'}. Records already known to the registry are
-        returned too -- their edges still count -- and the caller recognises
-        them as not-new rather than re-scoring them.
-
-        A node past the hub cap is not asked upward: its citer set is huge
-        and, being huge, is about the field rather than about this work. It
-        still expands DOWNWARD, because its references came free with the
-        record and cost no request.
+        Kept as a method so the crawl reads as one object, implemented there
+        so this file stays about traversal -- the same division seed() makes
+        with seeding.py.
         """
-        frontier = [self.registry.nodes[k] for k in frontier_keys]
-        hubs = [n for n in frontier if n.cited_by_count > self.hub_cap]
-        hub_keys = {n.key for n in hubs}
-        owner = {i: node.key for node in frontier if node.key not in hub_keys
-                 for i in node.openalex_ids()}
-        candidates: list[tuple[dict, str, str]] = []
-        found: dict[str, int] = {key: 0 for key in frontier_keys}
-
-        for record in self.client.citers_of(sorted(owner)):
-            hit = sorted({owner[short_id(r)] for r in (record.get("referenced_works") or [])
-                          if short_id(r) in owner})
-            if not hit:
-                continue
-            for key in hit:
-                found[key] += 1
-            candidates.append((record, "cites", hit[0]))
-
-        wanted: dict[str, str] = {}
-        for node in frontier:
-            for reference in sorted(node.referenced_works):
-                found[node.key] += 1
-                if self.registry.resolve_openalex(reference) is None:
-                    wanted.setdefault(reference, node.key)
-        for record in self.client.works_by_ids(sorted(wanted)):
-            candidates.append((record, "referenced",
-                               wanted.get(short_id(record.get("id")), "")))
-        return candidates, found, [(n.key, n.cited_by_count) for n in hubs]
+        return gathering.gather(self.client, self.registry, frontier_keys, self.hub_cap)
 
     def scores_of(self, holders) -> dict[str, tuple[float, list[float] | None]]:
         """{key: (score, vector)} for `holders`, embedded a batch at a time,
@@ -214,7 +182,7 @@ class Snowball:
 
     def expand(self, frontier_keys: list[str], depth: int) -> list[str]:
         """One level, written. Returns the keys kept at this level."""
-        candidates, found, hubs = self.gather(frontier_keys)
+        candidates, found, hubs, references = self.gather(frontier_keys)
         scored = self.score(candidates)
         steps, kept_keys = [], []
         for key, cited_by in hubs:
@@ -237,6 +205,10 @@ class Snowball:
             # "ON CONFLICT DO UPDATE command cannot affect row a second time")
             # while both candidates keep their own journal row -- the merge is
             # a decision the journal should show, not hide.
+            # The reference list the record no longer carries: a node that
+            # stays needs it, both to expand downward at the next level and
+            # to own the edges derived from it.
+            node.referenced_works |= set(references.get(item["candidate_key"], ()))
             if is_new:
                 node.score, node.embedding = item["score"], item["vector"]
                 kept_keys.append(node.key)
@@ -250,8 +222,14 @@ class Snowball:
             steps.append(journal.fetch(self.crawl_id, depth, key,
                                        found.get(key, 0), kept_per_frontier.get(key, 0)))
 
+        # Everything the filter dropped is now journalled and can go: only a
+        # candidate that became -- or already was -- a node can be an edge
+        # endpoint, so the rest of the level's reference lists are freed here
+        # rather than held to the end of the level.
+        references = {key: refs for key, refs in references.items()
+                      if self.registry.resolve_openalex(key) is not None}
         self.writer.works([self.registry.nodes[k] for k in kept_keys])
-        edges = edges_mod.among_known(self.registry, frontier_keys, candidates)
+        edges = edges_mod.among_known(self.registry, frontier_keys, candidates, references)
         self.writer.edges(edges)
         self.writer.journal(steps)
         kept_rows = sum(1 for s in steps if s["action"] == "keep")
@@ -283,15 +261,11 @@ class Snowball:
         that badly (measured: 15177 references against 4262 distinct works --
         neighbours cite the same things), so the cost table needs the sets.
         """
-        candidates, _found, _hubs = self.gather(self.seed_keys)
-        self.candidate_refs = {
-            short_id(record.get("id")):
-                {short_id(r) for r in (record.get("referenced_works") or [])}
-            for record, _relation, _source in candidates
-        }
+        candidates, _found, _hubs, references = self.gather(self.seed_keys)
+        self.candidate_refs = {key: set(refs) for key, refs in references.items()}
         return [{"candidate_key": item["candidate_key"], "depth": 1,
                  "relation": item["relation"], "score": item["score"],
                  "title": item["title"], "year": item["year"],
                  "has_abstract": bool(item["record"].get("abstract_inverted_index")),
-                 "n_references": len(item["record"].get("referenced_works") or [])}
+                 "n_references": len(references.get(item["candidate_key"], ()))}
                 for item in self.score(candidates)]

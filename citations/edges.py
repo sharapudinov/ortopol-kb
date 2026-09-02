@@ -12,9 +12,19 @@ the reference would not yet resolve to a node.
 """
 from __future__ import annotations
 
+from .openalex_client import short_id
 
-def among_known(registry, frontier_keys, candidates) -> list[tuple[str, str, str, str]]:
-    """[(citing key, cited key, relation, discovered_from)], deduplicated."""
+
+def among_known(registry, frontier_keys, candidates,
+                references) -> list[tuple[str, str, str, str]]:
+    """[(citing key, cited key, relation, discovered_from)], deduplicated.
+
+    `references` is {OpenAlex id: reference ids} for the candidates of this
+    level -- the lists their records no longer carry (citations/gathering.py)
+    and which the caller has already pruned to the ones that became nodes.
+    A candidate absent from it points at nothing we know, which is the same
+    answer an empty list gives.
+    """
     edges: set[tuple[str, str, str, str]] = set()
 
     def emit(citing_key: str, references, relation: str, source_key: str) -> None:
@@ -28,5 +38,5 @@ def among_known(registry, frontier_keys, candidates) -> list[tuple[str, str, str
     for record, relation, source_key in candidates:
         key = registry.find(record)
         if key is not None:
-            emit(key, record.get("referenced_works"), relation, source_key)
+            emit(key, references.get(short_id(record.get("id"))), relation, source_key)
     return sorted(edges)

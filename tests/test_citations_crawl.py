@@ -213,7 +213,7 @@ class ScoringMemoryTests(unittest.TestCase):
                             log=lambda *_: None)
         snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
         embedder.batches.clear()  # the seed pass is not the level being measured
-        candidates, _found, _hubs = snowball.gather(["W_SEED"])
+        candidates, _found, _hubs, _refs = snowball.gather(["W_SEED"])
         return snowball.score(candidates), embedder
 
     def test_only_the_kept_candidates_still_hold_a_vector(self):
@@ -232,6 +232,39 @@ class ScoringMemoryTests(unittest.TestCase):
         self.assertTrue(all(size <= EMBED_BATCH for size in embedder.batches),
                         embedder.batches)
         self.assertEqual(len(embedder.batches), 7)  # ceil(100 / 16)
+
+    def test_no_candidate_carries_a_reference_list(self):
+        """The vector is not the only bulky thing a level holds: a citer's
+        referenced_works is most of its bytes, and >51000 citers were
+        measured at one depth-2 level. The list travels beside the
+        candidates and is freed for everything the filter drops.
+        """
+        writer = DryRunWriter()
+        seed = work("W_SEED", title="Seed Chebyshev")
+        near = work("W_NEAR", title="Near Chebyshev", refs=["W_SEED", "W_OTHER"])
+        far = work("W_FAR", title="Far unrelated", refs=["W_SEED"])
+        client = FakeClient([seed, near, far], citers={"W_SEED": [near, far]})
+        embedder = PlannedEmbedder({"Seed": unit(0), "Near": unit(0), "Far": unit(500)})
+        snowball = Snowball(client, embedder, writer, tau=0.5, crawl_id="c",
+                            log=lambda *_: None)
+        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
+        candidates, _found, _hubs, references = snowball.gather(["W_SEED"])
+        self.assertTrue(all("referenced_works" not in record
+                            for record, _relation, _source in candidates), candidates)
+        self.assertEqual(references["W_NEAR"], ("W_SEED", "W_OTHER"))
+
+    def test_the_edges_of_a_level_are_still_derived_from_those_lists(self):
+        writer = DryRunWriter()
+        seed = work("W_SEED", title="Seed Chebyshev")
+        near = work("W_NEAR", title="Near Chebyshev", refs=["W_SEED"])
+        client = FakeClient([seed, near], citers={"W_SEED": [near]})
+        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0), "Near": unit(0)}),
+                            writer, tau=0.5, crawl_id="c", log=lambda *_: None)
+        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
+        snowball.expand(["W_SEED"], 1)
+        self.assertIn(("W_NEAR", "W_SEED", "cites", "W_SEED"), writer.edges_seen)
+        self.assertEqual(snowball.registry.nodes["W_NEAR"].referenced_works, {"W_SEED"},
+                         "оставленный узел потерял свои ссылки — depth+1 их не увидит")
 
     def test_a_kept_candidate_still_reaches_its_node_with_its_vector(self):
         writer = DryRunWriter()
