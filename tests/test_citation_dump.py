@@ -146,6 +146,7 @@ class DumpCitationTests(unittest.TestCase):
         "cites": ["citing", "cited", "source", "evidence"],
         "crawl_step": ["id", "crawl_id"],
         "public_policy": ["id", "mode", "note"],
+        "schema_backfill": ["name", "applied_at"],
     }
 
     def _fake_stream(self, argv, env, dst):

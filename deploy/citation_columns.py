@@ -38,8 +38,9 @@ The classification itself, and the reasoning behind each group:
   everything else       bibliography and provenance: key, doi, title, year,
       authors, external_ids, source, kind, document_id, exclusion_reason,
       fetched_at on a work; the endpoints and source of an edge; the whole
-      of crawl_step and public_policy otherwise, which are OUR journal and
-      OUR decision record and name no third party's content. A citation IS
+      of crawl_step, public_policy and schema_backfill otherwise, which
+      are OUR journal, OUR decision record and OUR migration bookkeeping,
+      and name no third party's content. A citation IS
       the bibliography -- a skeleton with the titles cut out is not a
       lighter artifact, it is an empty one.
 """
@@ -70,6 +71,7 @@ CITATION_COLUMN_CLASS: dict[str, dict[str, str]] = {
     "public_policy": {
         "id": TOPOLOGY, "mode": TOPOLOGY, "note": TOPOLOGY, "decided_at": TOPOLOGY,
     },
+    "schema_backfill": {"name": TOPOLOGY, "applied_at": TOPOLOGY},
 }
 
 # The SQL type a blanked column's NULL is cast to. Separate from the

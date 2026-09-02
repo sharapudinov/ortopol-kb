@@ -38,12 +38,13 @@ from manifest_contract import CitationMode
 from pg_common import run_sql
 from pg_stream import stream_stdout
 
-CITATION_TABLES = ("work", "cites", "crawl_step", "public_policy")
+CITATION_TABLES = ("work", "cites", "crawl_step", "public_policy", "schema_backfill")
 
 # One alias per dumped table (the same discipline public_dump.TABLE_ALIASES
 # follows): an unlisted table raises KeyError instead of quietly producing
 # SQL with the wrong alias.
-TABLE_ALIASES = {"work": "w", "cites": "c", "crawl_step": "s", "public_policy": "p"}
+TABLE_ALIASES = {"work": "w", "cites": "c", "crawl_step": "s", "public_policy": "p",
+                 "schema_backfill": "b"}
 
 # Every row that names a document is cut by that document's own legal class
 # as well as by the schema-wide mode -- citation_profile.py's predicates say
@@ -60,6 +61,11 @@ _SOURCE = {
     # Our own decision record about the crawl as a whole, naming no document
     # and no third party: it ships whole under any shipping mode.
     "public_policy": "FROM citation.public_policy p ORDER BY p.id",
+    # Which one-time parses this schema has already run. Ships for the same
+    # reason it exists: a restored database that does not carry the record
+    # would re-scan the whole journal the first time the schema is applied
+    # to it, looking for prose the parse can no longer find.
+    "schema_backfill": "FROM citation.schema_backfill b ORDER BY b.name",
 }
 
 # Tables carrying a BIGSERIAL id whose sequence must be advanced past every

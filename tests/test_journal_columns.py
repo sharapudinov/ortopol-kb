@@ -159,6 +159,89 @@ class JournalBackfillTests(unittest.TestCase):
         self.assertEqual(left, "0")
 
 
+class BackfillRegistryTests(unittest.TestCase):
+    """The parse runs once per database, and citation.schema_backfill is how
+    the schema knows it already did.
+
+    Value-idempotence was never the gap: each UPDATE fills only a NULL. The
+    gap was that the WHERE clauses are regex predicates no index can serve,
+    so every apply -- every `pg_graph.py init` and every non-dry-run crawl
+    -- re-scanned the whole journal to discover there was nothing to fill.
+    Everything below runs inside a rolled-back transaction; the live
+    registry row and the live journal survive untouched.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+        cls.schema = pg_graph_common.SCHEMA_PATHS[2].read_text(encoding="utf-8")
+
+    BACKFILL_NAME = "crawl_step_reason_parse"
+    # One row the parse WOULD fill: prose carrying score/tau/relation/node
+    # with every column still NULL.
+    FIXTURE = """
+    INSERT INTO citation.crawl_step (crawl_id, depth, frontier_key, candidate_key,
+                                     action, reason)
+    VALUES ('test:backfill-registry', 1, 'W_F', 'W_C', 'keep',
+            'kept; score=0.6123 tau=0.5000 relation=cites node=W_NODE');
+    """
+    PROBE = (
+        "SELECT coalesce(node_key, '-'), coalesce(score::text, '-'), "
+        "coalesce(relation, '-') FROM citation.crawl_step "
+        "WHERE crawl_id = 'test:backfill-registry';"
+    )
+    FORGET = f"DELETE FROM citation.schema_backfill WHERE name = '{BACKFILL_NAME}';"
+
+    def _probe(self, script: str) -> list[str]:
+        out = run_sql(self.env, "BEGIN;\n" + script + "\nROLLBACK;\n",
+                      extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
+        return [line for line in out.splitlines() if line.strip()]
+
+    def test_an_unrecorded_backfill_runs_and_records_itself(self):
+        rows = self._probe(
+            self.FORGET + self.FIXTURE + self.schema
+            + f"SELECT name FROM citation.schema_backfill WHERE name = '{self.BACKFILL_NAME}';"
+            + self.PROBE
+        )
+        self.assertEqual(rows[0], self.BACKFILL_NAME)
+        self.assertEqual(rows[1], FIELD_SEP.join(["W_NODE", "0.6123", "cites"]))
+
+    def test_a_recorded_backfill_does_no_work_at_all(self):
+        """A row the parse WOULD fill, inserted after the registry entry
+        exists, comes out untouched -- which is only possible if the UPDATEs
+        never ran.
+        """
+        rows = self._probe(
+            self.FORGET + self.schema      # first apply: records the parse
+            + self.FIXTURE + self.schema   # second apply: must skip it
+            + self.PROBE
+        )
+        self.assertEqual(rows, [FIELD_SEP.join(["-", "-", "-"])])
+
+    def test_the_registry_row_is_not_rewritten_by_a_repeat_apply(self):
+        rows = self._probe(
+            self.FORGET + self.schema
+            + f"SELECT xmin::text FROM citation.schema_backfill "
+              f"WHERE name = '{self.BACKFILL_NAME}';"
+            + self.schema
+            + f"SELECT xmin::text FROM citation.schema_backfill "
+              f"WHERE name = '{self.BACKFILL_NAME}';"
+        )
+        self.assertEqual(rows[0], rows[1])
+
+    def test_the_live_database_carries_the_record(self):
+        """Not a property of the file but of THIS instance: the migration
+        has to have been applied here, or the guard is untested in practice.
+        """
+        out = run_sql(
+            self.env,
+            "SELECT count(*) FROM citation.schema_backfill "
+            f"WHERE name = '{self.BACKFILL_NAME}';",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        self.assertEqual(out, "1")
+
+
 class StepColumnsTests(unittest.TestCase):
     """The write seam between journal.py and the table, pinned at both ends.
 
