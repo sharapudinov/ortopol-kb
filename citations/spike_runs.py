@@ -114,8 +114,28 @@ def record_calibration(snowball, client, data_root: Path, writer) -> int:
 
 
 def record_hub_report(env, cache_dir, data_root: Path, writer, hub_cap: int) -> int:
-    """Отрицательный результат про цену расширения вверх. Сети не требует."""
-    counts = hub_report.batch_counts(Path(cache_dir))
+    """Отрицательный результат про цену расширения вверх. Сети не требует.
+
+    Отказ вместо записи, как в record_calibration: пустой вход — это не
+    «замерили ноль», а «мерить было нечего». batch_counts() глобит *.json и
+    на отсутствующем, пустом или чужом каталоге возвращает [] без ошибки, а
+    режим ходит в кэш по умолчанию (paths.default_cache_dir()) — так что
+    прогон, писавший страницы в scratch, легко читается отсюда пустым. Без
+    этой проверки в measurements ложилась строка прогона с verify_query,
+    «подтверждающим» числа, которых никто не наблюдал.
+    """
+    cache_path = Path(cache_dir)
+    if not cache_path.is_dir():
+        print(f"кэша ответов нет: {cache_path} — замер читает батчи cites: из него, "
+              "и пустой каталог это не «ноль батчей», а «нечего мерить»; укажите "
+              "--cache-dir того прогона, цену которого меряем", file=sys.stderr)
+        return 1
+    counts = hub_report.batch_counts(cache_path)
+    if not counts:
+        print(f"в кэше {cache_path} нет ни одного батча cites: — мерить нечего; "
+              "это кэш другого прогона либо страницы направления «вниз»",
+              file=sys.stderr)
+        return 1
     if writer.dry:
         print("--dry-run: ничего не записано. meta.count батчей cites: "
               + ", ".join(str(c) for c in counts) + f" (сумма {sum(counts)}). "

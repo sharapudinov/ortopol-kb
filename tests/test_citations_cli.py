@@ -68,7 +68,11 @@ class DryRunTouchesNothingTests(unittest.TestCase):
         return code, harness
 
     def test_dry_run_hub_report_applies_no_schema_and_writes_no_run(self):
-        with tempfile.TemporaryDirectory() as cache:
+        # A cache with real batches in it: an empty one is refused before
+        # the mode does anything at all, which would let this pass for the
+        # wrong reason (see HubReportRefusesAnEmptyMeasurementTests).
+        with tempfile.TemporaryDirectory() as cache, \
+             mock.patch.object(hub_report, "batch_counts", return_value=[51652]):
             code, harness = self._run(["--hub-report", "--dry-run", "--cache-dir", cache])
         self.assertEqual(code, 0)
         harness.init_schema.assert_not_called()
@@ -254,6 +258,48 @@ class HubReportWriteOrderTests(unittest.TestCase):
              mock.patch.object(hub_report, "worst_nodes", return_value=[]):
             spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
         self.assertIn("cites 384 узлов", seen["verify_query"])
+
+
+class HubReportRefusesAnEmptyMeasurementTests(unittest.TestCase):
+    """batch_counts() answers [] for a missing, empty or foreign cache
+    directory instead of raising, and the two modes read DIFFERENT caches in
+    practice, so "the cache the crawl never wrote" is a reachable input. Its
+    sibling record_calibration refuses an empty input; so does this one now.
+    """
+
+    def _writer(self):
+        writer = spike_runs.DryRunMeasurementsWriter()
+        writer.dry = False  # the writing branch, without a database
+        return writer
+
+    def test_a_missing_cache_directory_is_refused_and_writes_nothing(self):
+        writer = self._writer()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("sys.stderr"):
+            code = spike_runs.record_hub_report(
+                ENV, str(Path(tmp) / "never-written"), Path(tmp), writer, 1000)
+        self.assertEqual(code, 1)
+        self.assertEqual(writer.calls, [])
+
+    def test_a_cache_with_no_cites_batches_is_refused_and_writes_nothing(self):
+        writer = self._writer()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(hub_report, "batch_counts", return_value=[]), \
+             mock.patch("sys.stderr"):
+            code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
+        self.assertEqual(code, 1)
+        self.assertEqual(writer.calls, [])
+
+    def test_the_dry_run_branch_is_refused_too(self):
+        """--dry-run prints what it WOULD write; there is nothing to print
+        about a measurement of nothing either.
+        """
+        writer = spike_runs.DryRunMeasurementsWriter()
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(hub_report, "batch_counts", return_value=[]), \
+             mock.patch("sys.stderr"):
+            code = spike_runs.record_hub_report(ENV, tmp, Path(tmp), writer, 1000)
+        self.assertEqual(code, 1)
+        self.assertEqual(writer.calls, [])
 
 
 class RunRowUpdateLiveTests(unittest.TestCase):
