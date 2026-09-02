@@ -19,13 +19,13 @@ from pathlib import Path
 
 import _pathfix  # noqa: F401
 
-from citations import frontier
+from citations import frontier, http_cache
 from citations.mathnet import MathnetClient, parse_titles
 from citations.openalex_client import (
     OpenAlexClient,
     OpenAlexError,
     page_index,
-    sidecar_path,
+    sidecar_name,
 )
 
 PAGE = ('<html><head><title>И. И. Шарапудинов, “Русское название”, Матем. сб., '
@@ -162,7 +162,8 @@ class OpenAlexSidecarTests(unittest.TestCase):
     def test_the_page_is_cached_with_its_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             page = self._cached(Path(tmp))
-            note = json.loads(sidecar_path(page).read_text(encoding="utf-8"))
+            sidecar = page.with_name(sidecar_name(page.name))
+            note = json.loads(sidecar.read_text(encoding="utf-8"))
         self.assertEqual(note, {"filter": "referenced_works:W1|W2",
                                 "oql": "works where it cites (W1 or W2)",
                                 "count": 18904})
@@ -204,6 +205,62 @@ class OpenAlexSidecarTests(unittest.TestCase):
     def test_a_page_with_no_filter_still_gets_an_index(self):
         note = page_index({"meta": {"count": 3, "x_query": {"oql": "works", "url": "/works"}}})
         self.assertEqual(note, {"filter": "works", "oql": "works", "count": 3})
+
+
+class CacheSeamTests(unittest.TestCase):
+    """DRY_RUN_WRITES_NOTHING holds for the response cache BY CONSTRUCTION,
+    like store.Writer does for the graph -- which means no client may hold
+    a path into the cache directory.
+
+    The write half was already the object's; the read half was three
+    independent is_file/read_text/count-the-hit sequences, so nothing but
+    habit stopped a fourth client (or an edit to one of the three) from
+    writing through the path it was handed, straight past ReadOnlyCache.
+    """
+
+    CLIENTS = ("openalex_client.py", "zbmath_client.py", "mathnet.py")
+
+    def _source(self, name: str) -> str:
+        return (Path(http_cache.__file__).resolve().parent / name).read_text(
+            encoding="utf-8")
+
+    def test_no_client_reads_the_cache_directory_itself(self):
+        for name in self.CLIENTS:
+            source = self._source(name)
+            for spelling in (".is_file()", ".read_text(", ".write_text(",
+                             ".stat()", "mkdir("):
+                self.assertNotIn(
+                    spelling, source,
+                    f"{name}: {spelling} -- чтение/запись кэша принадлежат "
+                    "http_cache, иначе --dry-run держится аккуратностью")
+
+    def test_the_hit_counter_belongs_to_the_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = http_cache.cache_for(Path(tmp))
+            cache.write("a.json", '{"x": 1}')
+            self.assertEqual(cache.read("a.json"), '{"x": 1}')
+            self.assertIsNone(cache.read("missing.json"))
+            self.assertEqual(cache.hits, 1)
+
+    def test_a_body_at_or_below_the_floor_is_not_a_hit(self):
+        """Math-Net's rule, enforced by the cache: a truncated page must not
+        stand in for the page.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = http_cache.cache_for(Path(tmp))
+            cache.write("page.html", "x" * 100)
+            self.assertIsNone(cache.read("page.html", floor=100))
+            self.assertEqual(cache.read("page.html", floor=99), "x" * 100)
+            self.assertEqual(cache.hits, 1)
+
+    def test_a_read_only_cache_reads_and_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            http_cache.cache_for(Path(tmp)).write("a.json", "kept")
+            read_only = http_cache.cache_for(Path(tmp), read_only=True)
+            read_only.write("b.json", "dropped")
+            self.assertEqual(read_only.read("a.json"), "kept")
+            self.assertIsNone(read_only.read("b.json"))
+            self.assertEqual(read_only.hits, 1)
 
 
 class MathnetClientTests(unittest.TestCase):

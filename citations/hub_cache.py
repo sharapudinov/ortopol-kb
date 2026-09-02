@@ -37,7 +37,7 @@ def batch_note(path: Path) -> dict | None:
     мегабайт, и разбирать её ради двух полей нечего), затем разбор и запись
     сайдкара, чтобы следующий прогон читал килобайты.
     """
-    sidecar = openalex_client.sidecar_path(path)
+    sidecar = path.with_name(openalex_client.sidecar_name(path.name))
     try:
         if sidecar.is_file():
             return json.loads(sidecar.read_text(encoding="utf-8"))

@@ -80,15 +80,20 @@ class MathnetClient:
         self.pause = pause
         self._cache = cache_for(cache_dir, read_only=read_only_cache)
         self.n_requests = 0
-        self.n_cache_hits = 0
         self.failures: list[str] = []
 
-    def _cached(self, identifier: str) -> Path | None:
-        if self._cache is None:
-            return None
-        return self._cache.path(f"{identifier}.html")
+    @property
+    def n_cache_hits(self) -> int:
+        return self._cache.hits if self._cache is not None else 0
 
-    def _no_citation_line(self, identifier: str) -> Path | None:
+    # A body shorter than this is a truncated page, not the page: it must
+    # not stand in for one, and the cache enforces the floor on the read.
+    PAGE_FLOOR = 2000
+
+    def _cached(self, identifier: str) -> str:
+        return f"{identifier}.html"
+
+    def _no_citation_line(self, identifier: str) -> str:
         """Where "the site answered, and its <title> carries no citation" is
         recorded -- the archive-redirect page the module docstring describes.
 
@@ -100,21 +105,19 @@ class MathnetClient:
         ZbmathClient states: cache what the source ANSWERED, never cache a
         failure -- a transport error still bypasses this entirely.
         """
-        if self._cache is None:
-            return None
-        return self._cache.path(f"{identifier}.no-citation.json")
+        return f"{identifier}.no-citation.json"
 
     def titles(self, identifier: str) -> tuple[list[str], list[int]]:
         """([titles], [years]); ([], []) with the id recorded in .failures."""
-        path = self._cached(identifier)
-        if path is not None and path.is_file() and path.stat().st_size > 2000:
-            self.n_cache_hits += 1
-            return parse_titles(path.read_text(encoding="utf-8"))
+        page = self._cached(identifier)
         negative = self._no_citation_line(identifier)
-        if negative is not None and negative.is_file():
-            self.n_cache_hits += 1
-            self.failures.append(f"{identifier}: страница без цитат в <title>")
-            return [], []
+        if self._cache is not None:
+            hit = self._cache.read(page, floor=self.PAGE_FLOOR)
+            if hit is not None:
+                return parse_titles(hit)
+            if self._cache.read(negative) is not None:
+                self.failures.append(f"{identifier}: страница без цитат в <title>")
+                return [], []
         request = urllib.request.Request(BASE + identifier,
                                          headers={"User-Agent": USER_AGENT})
         try:
@@ -127,10 +130,10 @@ class MathnetClient:
         self.n_requests += 1
         self._sleep(self.pause)
         titles, years = parse_titles(raw)
-        if path is not None:
-            self._cache.write(path, raw)
+        if self._cache is not None:
+            self._cache.write(page, raw)
         if not titles:
-            if negative is not None:
+            if self._cache is not None:
                 self._cache.write(negative, '{"titles": []}')
             self.failures.append(f"{identifier}: страница без цитат в <title>")
             return [], []

@@ -22,8 +22,17 @@ Two implementations, chosen by one flag the caller already has:
                  a cache that does not exist must leave the tree exactly as
                  it found it, not leave an empty directory behind.
 
+BOTH halves are the object's, and no client is handed a path. A seam that
+answered "where would this live" and left the reading to the caller
+encapsulated nothing that mattered: three clients each re-spelled the
+is_file/read_text/count-the-hit sequence, and the next one could just as
+easily write through the path it was given, past ReadOnlyCache. read() and
+write() take a NAME (a url hash, a zbMATH id, a Math-Net id -- what is
+cached is the client's business); the hit counter is the cache's, and each
+client reports it as its own n_cache_hits.
+
 cache_for(None) is None, which every client already understands as "no
-cache": the read-through variant is the only new behaviour here.
+cache".
 """
 from __future__ import annotations
 
@@ -37,17 +46,29 @@ class DiskCache:
 
     def __init__(self, directory: Path):
         self.directory = Path(directory)
+        self.hits = 0
         self.directory.mkdir(parents=True, exist_ok=True)
 
-    def path(self, name: str) -> Path:
-        """Where `name` lives. Each client spells its own name (a url hash,
-        a zbMATH id, a Math-Net id): what is cached is the client's
-        business, that it is written at all is this object's.
-        """
-        return self.directory / name
+    def read(self, name: str, *, floor: int = 0) -> str | None:
+        """The cached body for `name`, or None -- and a hit is counted here.
 
-    def write(self, path: Path, text: str) -> None:
-        path.write_text(text, encoding="utf-8")
+        `floor` is the Math-Net rule generalised: a body of `floor` bytes or
+        fewer is not a hit. A truncated page must not stand in for the page,
+        and at the default an empty file is a miss rather than something no
+        client could parse anyway.
+        """
+        path = self.directory / name
+        try:
+            if not path.is_file() or path.stat().st_size <= floor:
+                return None
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        self.hits += 1
+        return text
+
+    def write(self, name: str, text: str) -> None:
+        (self.directory / name).write_text(text, encoding="utf-8")
 
 
 class ReadOnlyCache(DiskCache):
@@ -57,8 +78,9 @@ class ReadOnlyCache(DiskCache):
 
     def __init__(self, directory: Path):
         self.directory = Path(directory)
+        self.hits = 0
 
-    def write(self, path: Path, text: str) -> None:
+    def write(self, name: str, text: str) -> None:
         return None
 
 

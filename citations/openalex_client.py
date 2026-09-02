@@ -105,10 +105,9 @@ def batched(items, size: int = ID_BATCH):
 SIDECAR_SUFFIX = ".meta.json"
 
 
-def sidecar_path(page: Path) -> Path:
-    """Where the index of one cached page lives, beside the page itself."""
-    name = page.name[: -len(".json")] if page.name.endswith(".json") else page.name
-    return page.with_name(name + SIDECAR_SUFFIX)
+def sidecar_name(page: str) -> str:
+    """The name of one cached page's index, beside the page itself."""
+    return (page[: -len(".json")] if page.endswith(".json") else page) + SIDECAR_SUFFIX
 
 
 def page_index(body: dict) -> dict:
@@ -158,18 +157,21 @@ class OpenAlexClient:
         self.pause = pause
         self.tries = tries
         self.n_requests = 0
-        self.n_cache_hits = 0
         self.last_rate: dict[str, str] = {}
+
+    @property
+    def n_cache_hits(self) -> int:
+        return self._cache.hits if self._cache is not None else 0
 
     # -- HTTP ------------------------------------------------------------
     def url(self, path: str, **params) -> str:
         params["mailto"] = MAILTO
         return f"{API}/{path}?" + urllib.parse.urlencode(params, safe="|:.,-")
 
-    def _cache_path(self, url: str) -> Path | None:
+    def _cache_name(self, url: str) -> str | None:
         if self._cache is None:
             return None
-        return self._cache.path(hashlib.sha1(url.encode()).hexdigest() + ".json")
+        return hashlib.sha1(url.encode()).hexdigest() + ".json"
 
     def _honour_quota(self) -> None:
         """Called after every response; the budget is read, never guessed."""
@@ -189,10 +191,10 @@ class OpenAlexClient:
         self._sleep(wait)
 
     def get_json(self, url: str) -> dict:
-        cached = self._cache_path(url)
-        if cached is not None and cached.is_file():
-            self.n_cache_hits += 1
-            return json.loads(cached.read_text(encoding="utf-8"))
+        cached = self._cache_name(url)
+        hit = self._cache.read(cached) if cached is not None else None
+        if hit is not None:
+            return json.loads(hit)
 
         delay = 2.0
         for attempt in range(1, self.tries + 1):
@@ -233,19 +235,18 @@ class OpenAlexClient:
             return body
         raise OpenAlexError(f"исчерпаны {self.tries} попытки: {url}")
 
-    def _write_sidecar(self, cached: Path, body: dict) -> None:
+    def _write_sidecar(self, cached: str, body: dict) -> None:
         """The page's own index, written the moment the page is cached.
 
         A reader that needs only what batch a page belongs to and how many
-        works the batch promised (citations/hub_report.py's negative result)
-        would otherwise json.loads() the whole cache to find two numbers:
-        253 pages, 217 MiB, every one of them a full object graph. Best
-        effort -- the cache is disposable scratch, and a cache directory
-        that cannot be written is the caller's problem, not a failed
-        request's.
+        works the batch promised (citations/hub_cache.py) would otherwise
+        json.loads() the whole cache to find two numbers: 253 pages, 217
+        MiB, every one a full object graph. Best effort -- the cache is
+        disposable scratch, and a directory that cannot be written is the
+        caller's problem, not a failed request's.
         """
         try:
-            self._cache.write(sidecar_path(cached),
+            self._cache.write(sidecar_name(cached),
                               json.dumps(page_index(body), ensure_ascii=False))
         except OSError:
             pass

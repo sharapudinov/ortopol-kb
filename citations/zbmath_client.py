@@ -73,17 +73,18 @@ class ZbmathClient:
         self.pause = pause
         self._cache = cache_for(cache_dir, read_only=read_only_cache)
         self.n_requests = 0
-        self.n_cache_hits = 0
         # Mirrors MathnetClient.failures in the same call chain: counted and
         # named, never swallowed.
         self.failures: list[str] = []
 
-    def _cached(self, zbmath_id: str) -> Path | None:
-        if self._cache is None:
-            return None
+    @property
+    def n_cache_hits(self) -> int:
+        return self._cache.hits if self._cache is not None else 0
+
+    def _cached(self, zbmath_id: str) -> str:
         # The id is a zbMATH document number ('1234.56789'), not a path: the
         # separator would otherwise make a directory out of it.
-        return self._cache.path(zbmath_id.replace("/", "_") + ".json")
+        return zbmath_id.replace("/", "_") + ".json"
 
     def _failed(self, zbmath_id: str, what: str) -> ZbmathUnavailable:
         self.failures.append(f"{zbmath_id}: {what}")
@@ -98,13 +99,14 @@ class ZbmathClient:
         anything about this work, and saying "no abstract" would be a claim
         the request never supported.
         """
-        path = self._cached(zbmath_id)
-        if path is not None and path.is_file():
-            self.n_cache_hits += 1
-            return json.loads(path.read_text(encoding="utf-8"))
+        if self._cache is None:
+            return self._fetch(zbmath_id)
+        name = self._cached(zbmath_id)
+        hit = self._cache.read(name)
+        if hit is not None:
+            return json.loads(hit)
         record = self._fetch(zbmath_id)
-        if path is not None:
-            self._cache.write(path, json.dumps(record, ensure_ascii=False))
+        self._cache.write(name, json.dumps(record, ensure_ascii=False))
         return record
 
     def _fetch(self, zbmath_id: str) -> dict | None:
