@@ -15,7 +15,7 @@
 """
 from __future__ import annotations
 
-from . import frontier as frontier_math
+from . import scoring
 
 SPIKE = "research/citation-frontier-threshold"
 REPORT_PATH = "research/citation-frontier/threshold.md"
@@ -112,11 +112,11 @@ def calibration_report(rows, tau_hint: float | None, refs=None) -> str:
         "| квантиль | score |",
         "|---|---|",
     ]
-    for point, value in sorted(frontier_math.quantiles(scores).items()):
+    for point, value in sorted(scoring.quantiles(scores).items()):
         lines.append(f"| {point:.2f} | {value:.4f} |")
     lines += ["", f"min {min(scores):.4f}, max {max(scores):.4f}, "
                   f"среднее {sum(scores) / len(scores):.4f}", "", "## Гистограмма", "", "```"]
-    for low, high, count in frontier_math.histogram(scores, bins=20):
+    for low, high, count in scoring.histogram(scores, bins=20):
         lines.append(f"{low:6.3f}..{high:6.3f} {'#' * min(count, 60):<60} {count}")
     lines += ["```", "", "## Реферат сдвигает score", ""]
     if with_abstract and without:

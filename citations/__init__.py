@@ -13,8 +13,12 @@ Split by responsibility rather than by line count:
 - registry        -- node identity: a work is the union of the OpenAlex
                      records that share any id, not one record (survey.md
                      §7: before the union, Jaccard was understated threefold);
-- frontier        -- the relevance filter: embeddings, seed centroid, cosine,
-                     and the distribution helpers the tau calibration reports;
+- scoring         -- the filter's arithmetic and nothing else: seed centroid,
+                     cosine, the split at tau, quantiles and histogram (no
+                     dependency beyond `math`);
+- frontier        -- the seam that feeds it: the embedder bound to the
+                     corpus model, and the stored vectors read a chunk at a
+                     time;
 - inputs          -- the reads that establish a run: the seed document set,
                      the run-85 matches, the vectors and abstracts already
                      stored; store -- Postgres: every write this crawl makes;

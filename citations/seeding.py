@@ -26,7 +26,7 @@ centroid, raises, and must still leave behind the rows explaining why.
 from __future__ import annotations
 
 from . import journal
-from .frontier import centroid, cosine_unit
+from .scoring import centroid, cosine_unit
 from .openalex_client import short_id
 
 

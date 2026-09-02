@@ -22,7 +22,7 @@ from _citation_fixtures import (
     unit,
     work,
 )
-from citations import frontier, inputs, registry
+from citations import frontier, inputs, registry, scoring
 from citations.openalex_client import (
     OpenAlexClient,
     QuotaExhausted,
@@ -203,13 +203,13 @@ class FreshKeysTests(unittest.TestCase):
 
 class FrontierMathTests(unittest.TestCase):
     def test_centroid_of_one_seed_is_that_seed(self):
-        self.assertAlmostEqual(frontier.cosine(frontier.centroid([unit(0)]), unit(0)), 1.0)
+        self.assertAlmostEqual(scoring.cosine(scoring.centroid([unit(0)]), unit(0)), 1.0)
 
     def test_centroid_normalizes_before_averaging(self):
         # A long vector must not outvote a short one: both are directions.
-        centre = frontier.centroid([unit(0, 100.0), unit(1, 0.01)])
-        self.assertAlmostEqual(frontier.cosine(centre, unit(0)),
-                               frontier.cosine(centre, unit(1)), places=9)
+        centre = scoring.centroid([unit(0, 100.0), unit(1, 0.01)])
+        self.assertAlmostEqual(scoring.cosine(centre, unit(0)),
+                               scoring.cosine(centre, unit(1)), places=9)
 
     def test_cosine_unit_answers_what_cosine_answers(self):
         """Same number, one normalisation instead of two -- asserted on
@@ -220,30 +220,30 @@ class FrontierMathTests(unittest.TestCase):
         for _ in range(20):
             a = [rng.uniform(-1.0, 1.0) for _ in range(64)]
             b = [rng.uniform(-1.0, 1.0) for _ in range(64)]
-            self.assertAlmostEqual(frontier.cosine_unit(a, frontier.l2_normalize(b)),
-                                   frontier.cosine(a, b), places=12)
+            self.assertAlmostEqual(scoring.cosine_unit(a, scoring.l2_normalize(b)),
+                                   scoring.cosine(a, b), places=12)
 
     def test_cosine_unit_treats_a_zero_vector_as_cosine_does(self):
-        self.assertEqual(frontier.cosine_unit([0.0] * 4, frontier.l2_normalize([1.0] * 4)),
-                         frontier.cosine([0.0] * 4, [1.0] * 4))
+        self.assertEqual(scoring.cosine_unit([0.0] * 4, scoring.l2_normalize([1.0] * 4)),
+                         scoring.cosine([0.0] * 4, [1.0] * 4))
 
     def test_cosine_unit_refuses_a_mismatched_width(self):
         with self.assertRaises(ValueError):
-            frontier.cosine_unit([1.0, 0.0], [1.0, 0.0, 0.0])
+            scoring.cosine_unit([1.0, 0.0], [1.0, 0.0, 0.0])
 
     def test_split_by_threshold_keeps_the_boundary(self):
-        kept, dropped = frontier.split_by_threshold({"a": 0.7, "b": 0.5, "c": 0.5001}, 0.5001)
+        kept, dropped = scoring.split_by_threshold({"a": 0.7, "b": 0.5, "c": 0.5001}, 0.5001)
         self.assertEqual(kept, ["a", "c"])
         self.assertEqual(dropped, ["b"])
 
     def test_quantiles_are_observed_values(self):
         values = [0.1, 0.2, 0.3, 0.4, 0.5]
-        for value in frontier.quantiles(values).values():
+        for value in scoring.quantiles(values).values():
             self.assertIn(value, values)
 
     def test_histogram_counts_every_value_once(self):
         values = [0.1 * i for i in range(37)]
-        self.assertEqual(sum(c for _l, _h, c in frontier.histogram(values, bins=7)), 37)
+        self.assertEqual(sum(c for _l, _h, c in scoring.histogram(values, bins=7)), 37)
 
     def test_candidate_text_survives_a_missing_abstract(self):
         self.assertEqual(frontier.candidate_text("T", None), "T")

@@ -109,7 +109,12 @@ class SingleContractTests(unittest.TestCase):
 
         self.assertEqual(frontier.candidate_text("A\nB", " C "),
                          works_text("A\nB", " C "))
-        self.assertIs(frontier.MAX_CHARS, pg_embedding_text.MAX_CHARS)
+        # Including the cut: a candidate long enough to be truncated is
+        # truncated by the shared rule, not by a length this module keeps.
+        long_title = "ч" * (MAX_CHARS + 100)
+        cut = frontier.candidate_text(long_title, "abstract")
+        self.assertEqual(cut, works_text(long_title, "abstract"))
+        self.assertEqual(len(cut), pg_embedding_text.MAX_CHARS)
 
     def test_pg_embed_asks_ollama_through_the_shared_seam(self):
         """One column, two writers, one request. The local implementation

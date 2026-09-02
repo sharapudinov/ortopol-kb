@@ -137,6 +137,28 @@ class RowProtocolTests(unittest.TestCase):
                     f"{path.name}: extra_args must be pg_graph_common.ROW_ARGS")
 
 
+class ScoringIsDependencyFreeTests(unittest.TestCase):
+    """citations/scoring.py is arithmetic, and the split is only worth
+    anything while it stays that: the moment a store read or an HTTP call
+    appears in it, the module the calibration imports for its numbers is
+    back to carrying a seam, which is the state it was split out of.
+    """
+
+    ALLOWED = {"math", "__future__", "typing"}
+
+    def test_scoring_imports_nothing_but_the_standard_arithmetic(self):
+        tree = ast.parse((CITATIONS_DIR / "scoring.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertIn(alias.name.split(".")[0], self.ALLOWED)
+            elif isinstance(node, ast.ImportFrom):
+                self.assertIsNotNone(node.module, "относительный импорт в чистой математике")
+                self.assertIn(node.module.split(".")[0], self.ALLOWED,
+                              f"scoring.py: {node.module} — это уже не арифметика")
+                self.assertEqual(node.level, 0, "относительный импорт в чистой математике")
+
+
 class LoaderIsADispatcherTests(unittest.TestCase):
     """pg_load_citations.py parses flags, constructs and dispatches. The
     run-establishing pipeline (a SQL read, a client, journal writes and the

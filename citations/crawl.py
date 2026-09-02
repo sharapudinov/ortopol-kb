@@ -34,8 +34,8 @@ from __future__ import annotations
 
 from . import edges as edges_mod
 from . import gathering, journal, seeding
-from .frontier import cosine_unit
 from .frontier import vectors_for as frontier_vectors
+from .scoring import cosine_unit
 from .openalex_client import short_id
 from .registry import WorkRegistry, scoring_fields
 
