@@ -23,6 +23,8 @@ import urllib.request
 from pg_embedding_text import MAX_CHARS, works_text
 from pg_search import EMBED_BATCH, OLLAMA_URL, embed_batch
 
+from .inputs import KEY_BATCH
+
 
 def candidate_text(title: str | None, abstract: str | None) -> str:
     """What a node means, for the filter: its title and what it is about.
@@ -72,27 +74,38 @@ def vectors_for(embed, known_vectors, holders):
     thousands of bge-m3 inferences and hundreds of round trips paid for
     vectors already in Postgres.
 
-    A GENERATOR, and chunked end to end -- the store read included. A
-    vector is 1024 floats (~32 KB as a Python list), so the returned list
-    alone was ~130 MB at that level, plus as much again in the dict the
-    whole-set read built: peak memory was a function of the CANDIDATE set
-    however promptly the consumer dropped what it did not want. Yielding
-    per chunk is what lets scores_of() make it a function of the KEPT set,
-    which is what its own docstring always claimed. Nothing survives a
-    chunk but what the consumer chose to keep, which is why `fresh` is
-    cleared before the next chunk's embed call rather than after it.
+    TWO batch sizes, because the two seams are charged differently. The
+    store read is a psql round trip -- a temp script, a fork, a fresh
+    connection -- so it takes KEY_BATCH keys at once, the same IN-list size
+    the read batches by (citations/inputs.py); at the measured level that
+    is ~22 round trips instead of ~267. The embedder is charged per text
+    and answers one request per call, so the misses INSIDE a read block go
+    to ollama in EMBED_BATCH sub-batches.
+
+    A GENERATOR, and chunked end to end. A vector is 1024 floats (~32 KB as
+    a Python list), so the returned list alone was ~130 MB at that level,
+    plus as much again in the dict the whole-set read built: peak memory was
+    a function of the CANDIDATE set however promptly the consumer dropped
+    what it did not want. Yielding per sub-batch is what lets scores_of()
+    have a peak that follows the KEPT set, which is what its own docstring
+    always claimed. What survives a sub-batch is one read block's stored
+    vectors (KEY_BATCH of them at most) plus what the consumer chose to
+    keep, which is why `fresh` is rebound per sub-batch rather than filled
+    once per block.
     """
-    for start in range(0, len(holders), EMBED_BATCH):
-        chunk = holders[start:start + EMBED_BATCH]
-        fresh: dict[str, list[float]] = {}
-        known = known_vectors([h.key for h in chunk])
-        missing = [h for h in chunk if h.key not in known]
-        if missing:
-            vectors = embed([candidate_text(h.title, h.abstract) for h in missing])
-            fresh = {h.key: vector for h, vector in zip(missing, vectors)}
-        for holder in chunk:
-            yield holder, (known[holder.key] if holder.key in known
-                           else fresh[holder.key])
+    for start in range(0, len(holders), KEY_BATCH):
+        block = holders[start:start + KEY_BATCH]
+        known = known_vectors([h.key for h in block])
+        for offset in range(0, len(block), EMBED_BATCH):
+            chunk = block[offset:offset + EMBED_BATCH]
+            fresh: dict[str, list[float]] = {}
+            missing = [h for h in chunk if h.key not in known]
+            if missing:
+                vectors = embed([candidate_text(h.title, h.abstract) for h in missing])
+                fresh = {h.key: vector for h, vector in zip(missing, vectors)}
+            for holder in chunk:
+                yield holder, (known[holder.key] if holder.key in known
+                               else fresh[holder.key])
 
 
 def l2_normalize(vector: list[float]) -> list[float]:

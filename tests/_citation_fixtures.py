@@ -12,6 +12,7 @@ assertion about the filter, not about floating point.
 from __future__ import annotations
 
 import _pathfix  # noqa: F401
+from citations.crawl import Snowball
 from citations.openalex_client import batched, short_id
 
 DIMS = 1024
@@ -104,3 +105,10 @@ class PlannedEmbedder:
         return out
 
 
+def build_snowball(writer, *, tau, embedder=None, records=None, citers=None, seeds=None):
+    seeds = seeds or {"doc_a": "W_SEED_A"}
+    records = records or [work("W_SEED_A", title="Seed Chebyshev")]
+    client = FakeClient(records, citers)
+    embedder = embedder or PlannedEmbedder({"Seed": unit(0)})
+    return client, Snowball(client, embedder, writer, tau=tau, crawl_id="test-crawl",
+                            log=lambda *_: None), seeds

@@ -19,7 +19,7 @@ import weakref
 import _pathfix  # noqa: F401
 from citations import frontier
 from citations.crawl import Snowball
-from citations.frontier import EMBED_BATCH
+from citations.frontier import EMBED_BATCH, KEY_BATCH
 from citations.registry import scoring_fields
 from citations.store import DryRunWriter
 
@@ -106,20 +106,43 @@ class PeakIsTheKeptSetTests(unittest.TestCase):
         """The guard is only worth anything if the old shape failed it."""
         self.assertGreater(self.N_KEEP + self.N_DROP, EMBED_BATCH + self.N_KEEP)
 
-    def test_the_store_read_is_chunked_with_the_embedding(self):
-        holders = [scoring_fields({"id": f"W{i}", "title": "Far unrelated"})
-                   for i in range(100)]
-        asked = []
-        embedder = _CountingEmbedder("Near")
+    def test_the_stored_vectors_alive_are_one_read_block_plus_the_kept_set(self):
+        """The other half of the peak, on the read side.
+
+        The store is read KEY_BATCH keys at a time -- the psql round trip is
+        what that size is for -- so a block's stored vectors are alive while
+        the block is scored and released when the next block is read. What
+        crosses a block boundary is only what the consumer kept.
+        """
+        n_keep = 5
+        holders = [scoring_fields({"id": f"W_KEEP{i}", "title": "Near Chebyshev"})
+                   for i in range(n_keep)]
+        holders += [scoring_fields({"id": f"W{i}", "title": "Far unrelated"})
+                    for i in range(KEY_BATCH * 2)]
+        issued: list[weakref.ref] = []
 
         def known(keys):
-            asked.append(list(keys))
-            return {}
+            out = {}
+            for key in keys:
+                vector = _Vector([0.0] * 1024)
+                issued.append(weakref.ref(vector))
+                out[key] = vector
+            return out
 
-        for _pair in frontier.vectors_for(embedder, known, holders):
-            pass
-        self.assertTrue(all(len(chunk) <= EMBED_BATCH for chunk in asked), asked)
-        self.assertEqual(sum(len(chunk) for chunk in asked), len(holders))
+        kept, alive_seen = [], []
+        for index, (holder, vector) in enumerate(
+                frontier.vectors_for(_CountingEmbedder("Near"), known, holders)):
+            if holder.key.startswith("W_KEEP"):
+                kept.append(vector)
+            if index % 25 == 0:
+                gc.collect()
+                alive_seen.append(sum(1 for ref in issued if ref() is not None))
+        ceiling = KEY_BATCH + len(kept)
+        self.assertEqual(len(kept), n_keep)
+        self.assertLessEqual(max(alive_seen), ceiling,
+                             f"живых хранимых векторов {alive_seen}, потолок {ceiling}")
+        self.assertGreater(len(holders), ceiling,
+                           "потолок не ниже уровня — проверка ничего не держит")
 
 
 if __name__ == "__main__":
