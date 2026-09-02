@@ -10,6 +10,7 @@ test_citations_crawl.py.
 """
 from __future__ import annotations
 
+import random
 import unittest
 import urllib.error
 from unittest import mock
@@ -146,6 +147,26 @@ class FrontierMathTests(unittest.TestCase):
         centre = frontier.centroid([unit(0, 100.0), unit(1, 0.01)])
         self.assertAlmostEqual(frontier.cosine(centre, unit(0)),
                                frontier.cosine(centre, unit(1)), places=9)
+
+    def test_cosine_unit_answers_what_cosine_answers(self):
+        """Same number, one normalisation instead of two -- asserted on
+        random vectors rather than on the axis-aligned fixtures, which would
+        agree even if the arithmetic were wrong.
+        """
+        rng = random.Random(20260902)
+        for _ in range(20):
+            a = [rng.uniform(-1.0, 1.0) for _ in range(64)]
+            b = [rng.uniform(-1.0, 1.0) for _ in range(64)]
+            self.assertAlmostEqual(frontier.cosine_unit(a, frontier.l2_normalize(b)),
+                                   frontier.cosine(a, b), places=12)
+
+    def test_cosine_unit_treats_a_zero_vector_as_cosine_does(self):
+        self.assertEqual(frontier.cosine_unit([0.0] * 4, frontier.l2_normalize([1.0] * 4)),
+                         frontier.cosine([0.0] * 4, [1.0] * 4))
+
+    def test_cosine_unit_refuses_a_mismatched_width(self):
+        with self.assertRaises(ValueError):
+            frontier.cosine_unit([1.0, 0.0], [1.0, 0.0, 0.0])
 
     def test_split_by_threshold_keeps_the_boundary(self):
         kept, dropped = frontier.split_by_threshold({"a": 0.7, "b": 0.5, "c": 0.5001}, 0.5001)

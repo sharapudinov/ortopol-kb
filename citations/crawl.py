@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from . import edges as edges_mod
 from . import gathering, journal, seeding
-from .frontier import EMBED_BATCH, candidate_text, cosine
+from .frontier import EMBED_BATCH, candidate_text, cosine_unit
 from .openalex_client import short_id
 from .registry import Node, WorkRegistry
 
@@ -141,7 +141,7 @@ class Snowball:
             chunk = holders[start:start + EMBED_BATCH]
             vectors = self.embed([candidate_text(h.title, h.abstract) for h in chunk])
             for holder, vector in zip(chunk, vectors):
-                score = cosine(vector, self.centroid)
+                score = cosine_unit(vector, self.centroid)
                 scored[holder.key] = (score, vector if score >= self.tau else None)
         return scored
 

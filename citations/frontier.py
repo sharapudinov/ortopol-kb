@@ -89,10 +89,27 @@ def centroid(vectors: list[list[float]]) -> list[float]:
 
 
 def cosine(a: list[float], b: list[float]) -> float:
+    """Косинус между двумя произвольными векторами: нормируются оба."""
     if len(a) != len(b):
         raise ValueError(f"разная размерность: {len(a)} и {len(b)}")
     na, nb = l2_normalize(a), l2_normalize(b)
     return sum(x * y for x, y in zip(na, nb))
+
+
+def cosine_unit(a: list[float], unit_b: list[float]) -> float:
+    """То же число, когда вторая сторона УЖЕ единичная.
+
+    Ровно случай фильтра: центроид возвращается из centroid() нормированным
+    и не меняется весь обход, а cosine() нормировал бы его заново на каждого
+    кандидата — проход по 1024 числам за суммой квадратов, второй за
+    делением и свежий список на выброс, тысячи раз за уровень.
+    """
+    if len(a) != len(unit_b):
+        raise ValueError(f"разная размерность: {len(a)} и {len(unit_b)}")
+    norm = math.sqrt(sum(v * v for v in a))
+    if norm == 0.0:
+        return 0.0
+    return sum(x * y for x, y in zip(a, unit_b)) / norm
 
 
 def split_by_threshold(scored: dict[str, float], tau: float) -> tuple[list[str], list[str]]:

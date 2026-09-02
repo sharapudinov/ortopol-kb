@@ -26,7 +26,7 @@ centroid, raises, and must still leave behind the rows explaining why.
 from __future__ import annotations
 
 from . import journal
-from .frontier import centroid, cosine
+from .frontier import centroid, cosine_unit
 from .openalex_client import short_id
 
 
@@ -100,6 +100,6 @@ def rank_seeds(registry, embed_nodes, n_documents: int,
     seeds = [registry.nodes[key] for key in seed_keys]
     centre = centroid(embed_nodes(seeds))
     for node in seeds:
-        node.score = cosine(node.embedding, centre)
+        node.score = cosine_unit(node.embedding, centre)
     return seed_keys, centre, {"seeds": len(seed_keys),
                                "seed_missing": n_documents - n_matched}
