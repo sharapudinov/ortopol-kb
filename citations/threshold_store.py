@@ -125,7 +125,15 @@ def update_run_fields(env, spike: str, fields: dict) -> None:
 
 
 def insert_threshold_rows(env, run_id: int, rows) -> int:
-    run_sql(env, THRESHOLD_DDL)
+    """Строки замера в measurements.citation_frontier_threshold.
+
+    Схему НЕ применяет: её применяет тот же писатель и в том же порядке,
+    непосредственно перед вызовом (spike_runs.record_calibration ->
+    writer.ddl(THRESHOLD_DDL)), а второе применение того же трёхоператорного
+    скрипта — ещё один процесс psql, временный скрипт и соединение за
+    результат, который уже достигнут. Заодно DDL мимо шва писателя: под
+    --dry-run у писателя ddl() ничего не делает, а этот вызов сделал бы.
+    """
     if not rows:
         return 0
     return copy_csv_rows(

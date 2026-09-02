@@ -16,7 +16,7 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 
-from citations import calibration, spike_runs
+from citations import calibration, spike_runs, threshold_store
 
 
 def rows_of(scores, **overrides) -> list[dict]:
@@ -213,6 +213,33 @@ class RecordCalibrationTests(unittest.TestCase):
         order = [name for name, _payload in writer.calls]
         self.assertEqual(order, ["ddl", "upsert_run", "threshold_rows", "report"])
         self.assertEqual(dict(zip(order, [p for _n, p in writer.calls]))["threshold_rows"], 5)
+
+    def test_the_schema_is_applied_once_per_calibration(self):
+        """One writer, one application.
+
+        record_calibration() applies THRESHOLD_DDL through the writer seam
+        and insert_threshold_rows() applied the same three-statement script
+        again: a second psql process, temp script and connection for a
+        result already reached -- and a DDL going past the seam that a
+        dry-run writer exists to hold shut.
+        """
+        applied = []
+
+        def note(env, sql, **kwargs):
+            applied.append(sql)
+            return mock.Mock(stdout="", returncode=0)
+
+        snowball = mock.Mock(calibrate=mock.Mock(return_value=rows_of([0.3, 0.6])),
+                             candidate_refs={})
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(spike_runs, "run_sql", side_effect=note), \
+             mock.patch.object(threshold_store, "run_sql", side_effect=note), \
+             mock.patch.object(threshold_store, "scalar", return_value="7"), \
+             mock.patch.object(threshold_store, "copy_csv_rows",
+                                return_value=mock.Mock(rows=2)):
+            spike_runs.record_calibration(
+                snowball, Path(tmp), spike_runs.MeasurementsWriter({}))
+        self.assertEqual(applied.count(threshold_store.THRESHOLD_DDL), 1, applied)
 
     def test_the_report_goes_to_the_spike_path_in_the_data_tree(self):
         _record, writer = self._run([0.30, 0.32, 0.60, 0.62])
