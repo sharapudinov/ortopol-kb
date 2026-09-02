@@ -62,3 +62,25 @@ def content_expectation(manifest: dict) -> tuple[set[str], set[str]]:
         return present, set()
     full_ids = ids(by_distribution, full_content) & present
     return full_ids, present - full_ids
+
+
+def check_profile_is_known(manifest: dict) -> tuple[bool, str]:
+    """The declared profile is a value this reader knows.
+
+    Both readings above, and check_policy_is_the_owners() next door, select
+    what to demand with `!= Profile.PUBLIC`: a profile field that is
+    missing, misspelt, corrupted or hand-edited therefore takes the lenient
+    branch of every one of them at once, and the certification prints a
+    column of passes about a package nothing was actually verified against.
+    manifest.json is not signed, and profile_checks.py travels in the
+    artifact precisely so a recipient who did not build it can certify it,
+    so this closes before anything branches -- the same polarity the
+    version gate already has, and the same one a build applies through
+    manifest_contract.schemas_for().
+    """
+    declared = manifest.get(Key.PROFILE)
+    ok = declared in Profile.ALL
+    return ok, (f"manifest {Key.PROFILE}={declared!r}, этот проверяльщик знает "
+                f"{Profile.ALL}"
+                + ("" if ok else " — профиль вне словаря, остальные проверки "
+                                 "не запускались"))

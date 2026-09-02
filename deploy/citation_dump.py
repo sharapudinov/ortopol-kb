@@ -179,11 +179,18 @@ def dump_ddl(env: dict, dst: IO[bytes]) -> None:
 
 def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
     """Writes the citation schema's DDL + every table's COPY block for
-    `mode`, or writes nothing at all under CitationMode.NONE -- the caller
-    (public_dump.dump_public) decides whether to call this at all; this
-    function only ever ships something when called with a shipping mode.
+    `mode`, or writes nothing at all under a mode that does not ship it.
+
+    The allowlist is the same one manifest_contract.schemas_for() reads to
+    decide whether manifest.json declares the schema -- one predicate, so
+    the bytes and their description cannot disagree. Keyed on `== NONE` it
+    was a denylist beside an allowlist: CitationMode.ALL grows with the
+    database's own vocabulary (it is inherited, deliberately), SHIPPED is
+    hand-written, and a fourth mode would have been omitted from the
+    manifest and written into the dump anyway -- third-party titles in a
+    package whose manifest denies carrying them.
     """
-    if mode == CitationMode.NONE:
+    if mode not in CitationMode.SHIPPED:
         return
     dump_ddl(env, dst)
     dst.write(b"\n")

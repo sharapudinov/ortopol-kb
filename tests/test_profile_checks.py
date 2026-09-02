@@ -21,8 +21,11 @@ from pathlib import Path
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import citation_policy_check
 import dump_scan
 import profile_checks
+from manifest_classes import check_profile_is_known
+from manifest_contract import CitationMode, Key, PolicySource, Profile
 from _artifact_fixtures import (
     ArtifactBuilder,
     DOCUMENT_COLUMNS,
@@ -213,6 +216,52 @@ class PublicProfileChecksTests(unittest.TestCase):
         ok, detail = results["правовая классификация полна"]
         self.assertFalse(ok)
         self.assertIn("shipped_distributions", detail)
+
+
+class ProfileVocabularyGateTests(unittest.TestCase):
+    """The profile string is the switch every strictness in the pass reads.
+
+    `!= Profile.PUBLIC` is how expected_ids(), content_expectation() and
+    the citation policy check each pick what to demand, so one unvalidated
+    field turned the whole certification lenient at once: a manifest whose
+    profile is missing, misspelt or hand-edited printed a column of passes
+    about a package nothing had been verified against.
+    """
+
+    def _results_with_profile(self, profile):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.profile = profile
+            return _results(builder)
+
+    def test_an_unknown_profile_stops_the_pass_instead_of_relaxing_it(self):
+        for profile in ("staging", "Public", "", None):
+            with self.subTest(profile=profile):
+                results = self._results_with_profile(profile)
+                ok, detail = results["манифест называет известный профиль"]
+                self.assertFalse(ok)
+                self.assertIn(repr(profile), detail)
+                # Nothing below the gate ran: a pass printed under it reads
+                # as a verified package.
+                self.assertEqual(len(results), 2)
+
+    def test_the_policy_check_refuses_an_unknown_profile_on_its_own(self):
+        """It is called from run_checks() above the gate today; the refusal
+        belongs to the check as well, because it is the one that chooses
+        between demanding the owner's row and excusing the profile.
+        """
+        manifest = {Key.PROFILE: "staging",
+                    Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE,
+                                   Key.CITATION_POLICY_SOURCE: PolicySource.NOT_APPLICABLE}}
+        ok, detail = citation_policy_check.check_policy_is_the_owners(manifest)
+        self.assertFalse(ok, detail)
+        self.assertIn("staging", detail)
+
+    def test_a_declared_profile_still_passes_the_gate(self):
+        for profile in Profile.ALL:
+            with self.subTest(profile=profile):
+                ok, _detail = check_profile_is_known({Key.PROFILE: profile})
+                self.assertTrue(ok)
 
 
 class CitationContentChecksIntegrationTests(unittest.TestCase):

@@ -92,12 +92,36 @@ PUBLIC_SCHEMAS = tuple(schemas_for(Profile.PUBLIC, CitationMode.NONE))
 # setval() to emit and keep in sync.
 PAGES_EXCLUDED = ("id",)
 
-# One alias per dumped table, so _select_expression() never has to guess,
-# and the classification the table list is held to: a table nobody listed
-# here is a table nobody said how to ship.
+# One alias per dumped table, so _select_expression() never has to guess.
 TABLE_ALIASES = {"documents": "d", "pages": "p", "embedding_model": "m"}
 
-_UNCLASSIFIED_HINT = ("дополните TABLE_ALIASES и _copy_select "
+# Which rows each table contributes, keyed exactly as citation_dump._SOURCE
+# is and for the same reason: there is no else branch to fall into. A table
+# reached through an `else` shipped `FROM corpus.<table> ORDER BY id` -- every
+# row, no legal predicate, no join to corpus.documents -- so the next corpus
+# table carrying per-document rows was made to build by one line in
+# TABLE_ALIASES and then shipped rows belonging to excluded documents. The
+# refusal is the only answer a packager may give to a table nobody classified.
+_SOURCE = {
+    "documents": f"FROM corpus.documents d WHERE {SHIPPED_SQL} ORDER BY d.id",
+    # The join supplies public_distribution twice over: for the body CASE in
+    # _select_expression() and for the WHERE here. The class lives on the
+    # document, both the cut and the omission apply to its pages -- a page of
+    # an excluded document is dropped with it, so the artifact cannot carry
+    # an orphan vector for text it does not ship.
+    "pages": ("FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id "
+              f"WHERE {SHIPPED_SQL} "
+              "ORDER BY p.document_id, p.page_number"),
+    # Which model every vector above was computed with: one row, naming no
+    # document and carrying no third-party text.
+    "embedding_model": "FROM corpus.embedding_model m ORDER BY m.id",
+}
+
+# A table is classified only if BOTH maps know it: which alias its projection
+# uses and which rows it contributes. Either one missing is the same silence.
+CLASSIFIED = set(TABLE_ALIASES) & set(_SOURCE)
+
+_UNCLASSIFIED_HINT = ("дополните TABLE_ALIASES и _SOURCE "
                       "(deploy/public_dump.py)")
 
 # Columns the dump leaves to the restore side, per table.
@@ -110,7 +134,7 @@ def corpus_tables(env: dict) -> list[str]:
     corpus.documents, and pg_constraint is where that is written down).
     """
     present = schema_catalog.classified_tables(
-        schema_catalog.present_tables(env, SCHEMA), TABLE_ALIASES,
+        schema_catalog.present_tables(env, SCHEMA), CLASSIFIED,
         SCHEMA, _UNCLASSIFIED_HINT)
     return schema_catalog.restore_order(
         present, schema_catalog.foreign_key_edges(env, SCHEMA), SCHEMA)
@@ -130,23 +154,7 @@ def _select_expression(table: str, column: str) -> str:
 
 def _copy_select(table: str, columns: list[str]) -> str:
     projection = ",\n       ".join(_select_expression(table, c) for c in columns)
-    if table == "documents":
-        source = f"FROM corpus.documents d WHERE {SHIPPED_SQL} ORDER BY d.id"
-    elif table == "pages":
-        # The join supplies public_distribution twice over: for the body
-        # CASE above and for the WHERE here. The class lives on the
-        # document, both the cut and the omission apply to its pages -- a
-        # page of an excluded document is dropped with it, so the artifact
-        # cannot carry an orphan vector for text it does not ship.
-        source = (
-            "FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id "
-            f"WHERE {SHIPPED_SQL} "
-            "ORDER BY p.document_id, p.page_number"
-        )
-    else:
-        alias = TABLE_ALIASES[table]
-        source = f"FROM corpus.{table} {alias} ORDER BY {alias}.id"
-    return f"COPY (SELECT {projection}\n{source}) TO STDOUT"
+    return f"COPY (SELECT {projection}\n{_SOURCE[table]}) TO STDOUT"
 
 
 def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str]) -> None:

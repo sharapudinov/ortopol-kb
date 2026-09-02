@@ -20,7 +20,7 @@ import citation_columns
 import citation_dump
 import citation_profile
 from legal_profile import SHIPPED_SQL
-from manifest_contract import CitationMode
+from manifest_contract import CitationMode, Profile, schemas_for
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
@@ -172,6 +172,41 @@ class DumpCitationTests(unittest.TestCase):
         buffer = io.BytesIO()
         with mock.patch.object(citation_dump, "stream_stdout") as stream_mock:
             citation_dump.dump_citation({}, buffer, CitationMode.NONE)
+        stream_mock.assert_not_called()
+        self.assertEqual(buffer.getvalue(), b"")
+
+    def test_the_dump_and_the_manifest_agree_on_every_mode(self):
+        """One predicate on both sides of "does this schema travel".
+
+        The dump used to refuse by denylist (`== NONE`) while the manifest
+        declared by allowlist (`in SHIPPED`): a mode added to the inherited
+        vocabulary and not to SHIPPED would have been written into the
+        artifact and left out of manifest.json. Every declared mode is
+        walked here, so the two spellings cannot drift apart silently.
+        """
+        for mode in CitationMode.ALL:
+            with self.subTest(mode=mode):
+                declared = "citation" in schemas_for(Profile.PUBLIC, mode)
+                buffer = io.BytesIO()
+                with mock.patch.object(citation_dump, "citation_tables",
+                                        return_value=list(DUMPED_TABLES)), \
+                     mock.patch.object(citation_dump, "schema_columns",
+                                        return_value=dict(self.COLUMNS)), \
+                     mock.patch.object(citation_dump, "schema_serial_columns",
+                                        return_value={}), \
+                     mock.patch.object(citation_dump, "stream_stdout",
+                                        side_effect=self._fake_stream):
+                    citation_dump.dump_citation({}, buffer, mode)
+                self.assertEqual(bool(buffer.getvalue()), declared,
+                                 f"режим {mode!r}: дамп и манифест разошлись")
+
+    def test_a_mode_outside_the_shipping_list_writes_nothing(self):
+        """The control for the walk above: an unheard-of mode is not NONE,
+        and must still ship no byte.
+        """
+        buffer = io.BytesIO()
+        with mock.patch.object(citation_dump, "stream_stdout") as stream_mock:
+            citation_dump.dump_citation({}, buffer, "graph-only")
         stream_mock.assert_not_called()
         self.assertEqual(buffer.getvalue(), b"")
 

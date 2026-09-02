@@ -205,7 +205,12 @@ class CitationMode(PublicPolicyMode):
     dump, citation_content_checks.py verifies it against the dump's bytes.
     """
 
-    # Modes whose dump carries the citation schema at all.
+    # Modes whose dump carries the citation schema at all -- read by
+    # schemas_for() below (does the manifest declare it) and by
+    # citation_dump.dump_citation() (does the dump write it), which is the
+    # whole of the question in both places. Hand-written on purpose: a mode
+    # added to the DB vocabulary and not to this tuple ships NOTHING and
+    # declares nothing, which is the safe half of being unheard-of.
     SHIPPED = (PublicPolicyMode.FULL_SKELETON, PublicPolicyMode.TOPOLOGY_ONLY)
     # Modes whose citation.work/cites rows carry abstract/evidence. The
     # dump and the artifact-side hunt both read it through strips_content()

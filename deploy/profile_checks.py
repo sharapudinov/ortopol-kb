@@ -35,6 +35,8 @@ Checks:
                                reader knows; anything else stops the pass
                                instead of reading missing fields as
                                satisfied checks
+  profile is in the vocabulary every check below picks its strictness off
+                               it, so an unknown one stops the pass
   citation policy is owner's   manifest.citation.policy_source == "owner":
                                an artifact whose citation mode was forced
                                with --policy-override fails here rather
@@ -69,7 +71,12 @@ from pathlib import Path
 import citation_content_checks
 import citation_policy_check
 import dump_scan
-from manifest_classes import classes, content_expectation, expected_ids
+from manifest_classes import (
+    check_profile_is_known,
+    classes,
+    content_expectation,
+    expected_ids,
+)
 from manifest_contract import MANIFEST_SCHEMA_VERSION, Key
 
 # Column names the checks reason about, from corpus.documents/corpus.pages.
@@ -238,11 +245,19 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         # read, and a list of passes underneath a failed gate reads as a
         # certification. The gate is the whole answer.
         return [version]
+    known = ("манифест называет известный профиль", *check_profile_is_known(manifest))
+    if not known[1]:
+        # Every check below picks its strictness off this string; read as
+        # anything but a declared profile they all take the lenient branch
+        # at once, and a column of passes underneath is a certification of
+        # nothing.
+        return [version, known]
     dump_path = artifact_dir / manifest[Key.DUMP][Key.FILE]
     scans, facts = _visit(dump_path, manifest)
     profile = manifest.get(Key.PROFILE)
     return [
         version,
+        known,
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(dump_path, manifest)),
         ("правовая классификация полна", *check_classification_complete(manifest, scans)),
         ("excluded: ни строки документа, ни страниц", *check_excluded_absent(manifest, facts)),

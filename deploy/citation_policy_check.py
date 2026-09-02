@@ -43,6 +43,11 @@ def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:
     records (CITATION_POLICY_IS_DATA), and an artifact asserting it must
     name who made it.
 
+    The PROFILE is validated before it is branched on, for the reason the
+    mode is: `!= Profile.PUBLIC` reads a missing, misspelt or hand-edited
+    field as "the profile applies no policy, there was nothing to decide"
+    -- the lenient answer, handed out by a field nobody checked.
+
     WHICH source is required depends on the profile, because only the
     public one applies a policy: public must name the owner, and anything
     else must say "not-applicable" -- a full artifact claiming an owner
@@ -70,12 +75,19 @@ def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:
             f"публиковать нельзя (mode={mode!r} задан командной строкой, а не "
             "citation.public_policy)"
         )
-    wanted = (PolicySource.OWNER if manifest.get(Key.PROFILE) == Profile.PUBLIC
+    profile = manifest.get(Key.PROFILE)
+    if profile not in Profile.ALL:
+        return False, (
+            f"profile={profile!r} — не из словаря {Profile.ALL}; какую "
+            "провенанс-строку требовать, из такого манифеста не следует, а "
+            "мягкая ветка сертифицировала бы пакет ни о чём"
+        )
+    wanted = (PolicySource.OWNER if profile == Profile.PUBLIC
               else PolicySource.NOT_APPLICABLE)
     if source != wanted:
         return False, (
             f"citation.policy_source={source!r} при профиле "
-            f"{manifest.get(Key.PROFILE)!r} — ожидалось {wanted!r} "
+            f"{profile!r} — ожидалось {wanted!r} "
             f"(значения: {PolicySource.ALL}); пересоберите артефакт "
             "текущим сборщиком"
         )

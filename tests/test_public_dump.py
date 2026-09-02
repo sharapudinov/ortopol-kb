@@ -67,6 +67,44 @@ class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
                 public_dump.corpus_tables({})
         self.assertIn("corpus.annotations", str(caught.exception))
 
+    def test_a_table_with_an_alias_but_no_row_source_is_unclassified(self):
+        """Half a classification is none: an alias says how to spell the
+        table's columns, not which of its rows may leave. The build used to
+        hold the list to TABLE_ALIASES alone and hand anything else an
+        unfiltered `FROM corpus.<table> ORDER BY id`.
+        """
+        aliased = dict(public_dump.TABLE_ALIASES, annotations="a")
+        classified = set(aliased) & set(public_dump._SOURCE)
+        with mock.patch.object(public_dump, "CLASSIFIED", classified), \
+             mock.patch.object(public_dump.schema_catalog, "present_tables",
+                                return_value=["documents", "pages", "embedding_model",
+                                              "annotations"]), \
+             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+                                return_value=[]):
+            with self.assertRaises(public_dump.schema_catalog.TableUnclassified) as caught:
+                public_dump.corpus_tables({})
+        self.assertIn("corpus.annotations", str(caught.exception))
+        self.assertIn("_SOURCE", str(caught.exception))
+
+    def test_both_maps_answer_for_the_same_tables(self):
+        self.assertEqual(set(public_dump.TABLE_ALIASES), set(public_dump._SOURCE))
+        self.assertEqual(public_dump.CLASSIFIED, set(public_dump._SOURCE))
+
+    def test_the_dump_writes_no_byte_when_a_table_is_unclassified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gz_path = Path(tmp) / "01_dump.sql.gz"
+            with mock.patch.object(public_dump, "require_classified"), \
+                 mock.patch.object(public_dump.schema_catalog, "present_tables",
+                                    return_value=["documents", "pages",
+                                                  "embedding_model", "annotations"]), \
+                 mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+                                    return_value=[]), \
+                 mock.patch.object(public_dump, "stream_stdout") as stream_mock:
+                with self.assertRaises(public_dump.schema_catalog.TableUnclassified):
+                    public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
+            self.assertFalse(gz_path.exists())
+            stream_mock.assert_not_called()
+
     def test_the_column_read_excludes_generated_columns(self):
         # tsv and source_path are GENERATED: including them would make the
         # dump either unrestorable or (worse) carry text that no longer
@@ -128,6 +166,14 @@ class CopySelectTests(unittest.TestCase):
     def test_unknown_table_raises_instead_of_guessing_an_alias(self):
         with self.assertRaises(KeyError):
             public_dump._copy_select("findings", ["id"])
+
+    def test_a_table_with_an_alias_and_no_source_still_has_no_select(self):
+        """The projection can be spelled for it, the rows cannot: an alias
+        alone must not produce a statement.
+        """
+        with mock.patch.dict(public_dump.TABLE_ALIASES, {"findings": "f"}):
+            with self.assertRaises(KeyError):
+                public_dump._copy_select("findings", ["id"])
 
 
 class WriteCopyBlockTests(unittest.TestCase):
