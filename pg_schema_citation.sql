@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS citation.work (
 CREATE INDEX IF NOT EXISTS work_document_id_idx ON citation.work (document_id);
 CREATE INDEX IF NOT EXISTS work_embedding_hnsw ON citation.work
     USING hnsw (embedding vector_cosine_ops);
+-- The добор pg_embed.py works does: rows the crawl left without a vector
+-- (a title edited by hand, a node written before the embedder was reachable).
+-- Its loop re-asks "the next 16 rows where embedding IS NULL" until none are
+-- left, and the crawl writes the vector inline, so almost every row is a
+-- non-NULL row to walk past. Partial and on id alone: the index holds only
+-- the pending rows, so it is empty in the normal case and costs the crawl's
+-- own writes nothing. Verified on this instance (438 works + one NULL row,
+-- inside a rolled-back transaction): Seq Scan + Sort becomes Index Scan
+-- using work_pending_embedding_idx, without ANALYZE and without the
+-- planner needing a bigger table to prefer it.
+CREATE INDEX IF NOT EXISTS work_pending_embedding_idx ON citation.work (id)
+    WHERE embedding IS NULL;
 -- external_ids carries per-source keys (openalex, s2, zbmath, doi, ...) for
 -- an item first seen through one source and later matched from another;
 -- GIN makes "does any source already know this id" a lookup, not a scan.

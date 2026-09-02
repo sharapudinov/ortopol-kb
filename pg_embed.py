@@ -16,10 +16,12 @@ pg_search.resolve_model(), которым её читают все осталь�
 посчитал его score, а сюда попадают строки, у которых вектора нет — например
 после ручной правки title. Текст для вектора и модель обязаны совпасть с
 обходовыми, поэтому текст берётся из pg_embedding_text (одно правило в двух
-диалектах), а модель — из той же таблицы.
+диалектах), а модель — из той же таблицы. Сам запрос к ollama — тоже общий:
+pg_search.embed_batch, где живут адрес, размер партии и обе проверки ответа
+(размерность и КОЛИЧЕСТВО векторов).
 
-Никаких зависимостей: HTTP через urllib, Postgres через psql — драйвера Postgres
-в системе нет, и ради одного скрипта он не заводится.
+Никаких зависимостей: Postgres через psql — драйвера Postgres в системе нет,
+и ради одного скрипта он не заводится.
 """
 from __future__ import annotations
 
@@ -29,17 +31,14 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 from pg_embedding_text import MAX_CHARS, WORKS_TEXT_SQL
-from pg_search import resolve_model
+from pg_search import EMBED_BATCH, embed_batch, resolve_model
 
-OLLAMA = "http://127.0.0.1:5471/api/embed"
 # Объявляются, только если corpus.embedding_model пуста — см. resolve_target().
 DEFAULT_MODEL = "bge-m3"
 DEFAULT_DIMS = 1024
-BATCH = 16
 
 
 def psql(sql: str, tuples_only: bool = True) -> str:
@@ -79,17 +78,15 @@ def resolve_target(env: dict[str, str]) -> tuple[str, int]:
 
 
 def embed(texts: list[str], model: str, dims: int) -> list[list[float]]:
-    payload = json.dumps({"model": model, "input": texts}).encode()
-    req = urllib.request.Request(
-        OLLAMA, data=payload, headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        out = json.load(resp)
-    vecs = out["embeddings"]
-    for v in vecs:
-        if len(v) != dims:
-            raise RuntimeError(f"ожидалось {dims} измерений, пришло {len(v)}")
-    return vecs
+    """Векторы для текстов, через общий шов запроса (pg_search.embed_batch).
+
+    Своего HTTP здесь нет намеренно: у citation.work.embedding два писателя,
+    и запрос к ollama у них обязан быть одним. Второй экземпляр проверял
+    только размерность — и молча писал меньше строк, чем собирался, когда
+    ollama возвращала меньше векторов, чем текстов (zip обрезает по
+    короткому). Обе проверки, адрес и размер партии живут в pg_search.
+    """
+    return embed_batch(model, dims, texts)
 
 
 # Каждый вид записи, который может стать результатом, обязан нести семантический
@@ -146,14 +143,14 @@ def embed_target(name: str, model: str, dims: int) -> int:
     if total == 0:
         print(f"{name}: все записи уже несут семантический ключ")
         return 0
-    print(f"{name}: к обсчёту {total}, модель {model}, партиями по {BATCH}")
+    print(f"{name}: к обсчёту {total}, модель {model}, партиями по {EMBED_BATCH}")
 
     done, started = 0, time.monotonic()
     while True:
         rows = psql(
             f"select id, left({text_expr}, {MAX_CHARS}) from {table} "
             f"where embedding is null and ({content_pred}) "
-            f"order by id limit {BATCH};"
+            f"order by id limit {EMBED_BATCH};"
         ).strip()
         if not rows:
             break

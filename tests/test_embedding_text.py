@@ -10,8 +10,11 @@ to the rule itself.
 """
 from __future__ import annotations
 
+import ast
 import json
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
 
@@ -106,6 +109,29 @@ class SingleContractTests(unittest.TestCase):
         self.assertEqual(frontier.candidate_text("A\nB", " C "),
                          works_text("A\nB", " C "))
         self.assertIs(frontier.MAX_CHARS, pg_embedding_text.MAX_CHARS)
+
+    def test_pg_embed_asks_ollama_through_the_shared_seam(self):
+        """One column, two writers, one request. The local implementation
+        checked the width and not the count, so a short answer from ollama
+        silently updated fewer rows than it was given texts for.
+        """
+        with mock.patch.object(pg_embed, "embed_batch",
+                               return_value=[[0.0]]) as seam:
+            self.assertEqual(pg_embed.embed(["text"], "bge-m3", 1024), [[0.0]])
+        seam.assert_called_once_with("bge-m3", 1024, ["text"])
+        self.assertIs(pg_embed.embed_batch, pg_search.embed_batch)
+        self.assertIs(pg_embed.EMBED_BATCH, pg_search.EMBED_BATCH)
+
+    def test_pg_embed_holds_no_http_client_of_its_own(self):
+        source = Path(pg_embed.__file__).read_text(encoding="utf-8")
+        self.assertFalse(hasattr(pg_embed, "OLLAMA"))
+        self.assertFalse(hasattr(pg_embed, "BATCH"))
+        imported = {alias.name.split(".")[0]
+                    for node in ast.walk(ast.parse(source))
+                    if isinstance(node, (ast.Import, ast.ImportFrom))
+                    for alias in getattr(node, "names", [])}
+        self.assertNotIn("urllib", imported, "второй HTTP-клиент к ollama")
+        self.assertNotIn("api/embed", source)
 
     def test_pg_embed_resolves_the_model_it_does_not_fix_one(self):
         """The constants it kept were a second resolution of the pair the
