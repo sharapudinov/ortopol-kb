@@ -119,6 +119,12 @@ python3 deploy/profile_checks.py --artifact-dir <распакованный>   #
 - **Имя артефакта.** `kb-<профиль>-<дата>.tar.zst`; лексикографически
   `kb-public-…` > `kb-full-…`, поэтому автопоиск «последнего» артефакта фильтрует по
   профилю (`smoke_stack.latest_artifact`) — иначе смок молча проверяет не тот пакет.
+- **Живой тест, пишущий в `measurements`.** Удалить свои строки мало: BIGSERIAL
+  помнит съеденные id, а версионируемый дамп схемы (`lib/tools/measurements`)
+  несёт `setval` последовательности — прогон тестов «сдвигает» дамп в СОСЕДНЕЙ
+  репе, и `corpus/research_completeness.py` падает со STALE DUMP. Уборка такого
+  теста возвращает последовательность к `max(id)` (см.
+  `tests/test_citations_cli.py::RunRowUpdateLiveTests`).
 - **Версия манифеста.** Добавление/переименование поля — это `MANIFEST_SCHEMA_VERSION`
   в `deploy/manifest_contract.py` (и старый артефакт честно падает на версии, а не
   читается с дефолтами).

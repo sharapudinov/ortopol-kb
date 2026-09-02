@@ -215,7 +215,18 @@ class RunRowUpdateLiveTests(unittest.TestCase):
             raise unittest.SkipTest("Postgres not reachable")
         cls.env = env
 
+    # Deleting the fixture rows is not enough to leave the base as found:
+    # the BIGSERIAL keeps every id this class consumed, and the versioned
+    # dump of measurements (lib/tools/measurements) carries the sequence's
+    # setval -- so a test run would show up as drift in a repository it
+    # never touched. Rewound to the largest surviving id, which is what the
+    # sequence said before the fixture.
+    _REWIND = ("SELECT setval(pg_get_serial_sequence('measurements.run', 'id'), "
+               "coalesce((SELECT max(id) FROM measurements.run), 1), "
+               "(SELECT max(id) FROM measurements.run) IS NOT NULL);")
+
     def setUp(self):
+        self.addCleanup(run_sql, self.env, self._REWIND)
         self.addCleanup(run_sql, self.env,
                         "DELETE FROM measurements.run WHERE spike = :'spike';",
                         {"spike": self.SPIKE})
