@@ -22,7 +22,8 @@ import pg_embed
 import pg_embedding_text
 import pg_search
 from paths import default_corpus_dir
-from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
+from pg_common import (PostgresUnavailable, check_postgres_available, load_pgenv,
+                       run_sql, sql_literal)
 from pg_embedding_text import MAX_CHARS, WORKS_TEXT_SQL, works_text
 
 
@@ -132,6 +133,22 @@ class SingleContractTests(unittest.TestCase):
                     for alias in getattr(node, "names", [])}
         self.assertNotIn("urllib", imported, "второй HTTP-клиент к ollama")
         self.assertNotIn("api/embed", source)
+
+    def test_the_declared_default_is_spliced_through_sql_literal(self):
+        """The declaration an empty corpus.embedding_model provokes is a
+        write, and the one place this repository quotes a value into a
+        statement is pg_common.sql_literal() -- the module docstring it
+        carries names the f-string as the alternative it exists to replace.
+        """
+        with mock.patch.object(pg_embed, "resolve_model", return_value=None), \
+             mock.patch.object(pg_embed, "psql", return_value="") as psql, \
+             mock.patch("builtins.print"):
+            self.assertEqual(pg_embed.resolve_target({}),
+                             (pg_embed.DEFAULT_MODEL, pg_embed.DEFAULT_DIMS))
+        statement = psql.call_args.args[0]
+        self.assertIn(sql_literal(pg_embed.DEFAULT_MODEL), statement)
+        self.assertNotIn(f" '{pg_embed.DEFAULT_MODEL}'", statement,
+                         "значение вклеено f-строкой, а не sql_literal()")
 
     def test_pg_embed_resolves_the_model_it_does_not_fix_one(self):
         """The constants it kept were a second resolution of the pair the

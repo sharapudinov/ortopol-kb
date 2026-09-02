@@ -33,6 +33,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from pg_common import sql_literal
 from pg_embedding_text import MAX_CHARS, WORKS_TEXT_SQL
 from pg_search import EMBED_BATCH, embed_batch, resolve_model
 
@@ -72,7 +73,8 @@ def resolve_target(env: dict[str, str]) -> tuple[str, int]:
     print(f"corpus.embedding_model пуста — объявляю {DEFAULT_MODEL}/{DEFAULT_DIMS}; "
           "все дальнейшие читатели прочтут эту пару")
     psql("insert into corpus.embedding_model (id, model, dims) values "
-         f"(1, '{DEFAULT_MODEL}', {DEFAULT_DIMS}) on conflict (id) do nothing;",
+         f"(1, {sql_literal(DEFAULT_MODEL)}, {int(DEFAULT_DIMS)}) "
+         "on conflict (id) do nothing;",
          tuples_only=False)
     return DEFAULT_MODEL, DEFAULT_DIMS
 
