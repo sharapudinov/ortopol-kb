@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
-"""Заполняет pages.embedding векторами bge-m3 через локальную ollama.
+"""Заполняет embedding векторами через локальную ollama.
 
 Идемпотентен: берёт только строки, где embedding IS NULL, поэтому прерванный
 прогон продолжается с того же места, а повторный запуск ничего не пересчитывает.
+
+Модель НЕ константа этого файла: она читается из corpus.embedding_model тем же
+pg_search.resolve_model(), которым её читают все остальные (поиск, обход
+цитирований, смок-проверки пакета). Смешение моделей даёт правдоподобное число,
+а не ошибку, и поймать его нечем — колонки модели у строки нет. Пустая таблица
+означает «модель ещё не объявлена»: тогда объявляет её этот прогон, вслух и
+своими умолчаниями.
+
+Цель `works` — ВТОРОЙ писатель citation.work.embedding, и это добор, а не
+конвейер: обход (pg_load_citations.py) пишет вектор кандидата сразу, как только
+посчитал его score, а сюда попадают строки, у которых вектора нет — например
+после ручной правки title. Текст для вектора и модель обязаны совпасть с
+обходовыми, поэтому текст берётся из pg_embedding_text (одно правило в двух
+диалектах), а модель — из той же таблицы.
 
 Никаких зависимостей: HTTP через urllib, Postgres через psql — драйвера Postgres
 в системе нет, и ради одного скрипта он не заводится.
@@ -10,6 +24,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -17,12 +32,13 @@ import time
 import urllib.request
 from pathlib import Path
 
+from pg_embedding_text import MAX_CHARS, WORKS_TEXT_SQL
+from pg_search import resolve_model
+
 OLLAMA = "http://127.0.0.1:5471/api/embed"
-MODEL = "bge-m3"
-DIMS = 1024
-# bge-m3 держит 8192 токена; режем по символам с большим запасом, чтобы длинная
-# страница не отбрасывалась молча.
-MAX_CHARS = 6000
+# Объявляются, только если corpus.embedding_model пуста — см. resolve_target().
+DEFAULT_MODEL = "bge-m3"
+DEFAULT_DIMS = 1024
 BATCH = 16
 
 
@@ -43,8 +59,27 @@ def psql(sql: str, tuples_only: bool = True) -> str:
         Path(path).unlink(missing_ok=True)
 
 
-def embed(texts: list[str]) -> list[list[float]]:
-    payload = json.dumps({"model": MODEL, "input": texts}).encode()
+def resolve_target(env: dict[str, str]) -> tuple[str, int]:
+    """(model, dims) для этого прогона — из corpus.embedding_model.
+
+    Тот же читатель, что у pg_search.embed_query() и у обхода: одна таблица
+    решает, какой моделью посчитаны ВСЕ векторы базы. Пустая таблица — это не
+    «возьми что хочешь», а «ещё никто не объявил»; тогда прогон объявляет
+    умолчания вслух, и следующий читатель получит уже их.
+    """
+    resolved = resolve_model(env)
+    if resolved is not None:
+        return resolved
+    print(f"corpus.embedding_model пуста — объявляю {DEFAULT_MODEL}/{DEFAULT_DIMS}; "
+          "все дальнейшие читатели прочтут эту пару")
+    psql("insert into corpus.embedding_model (id, model, dims) values "
+         f"(1, '{DEFAULT_MODEL}', {DEFAULT_DIMS}) on conflict (id) do nothing;",
+         tuples_only=False)
+    return DEFAULT_MODEL, DEFAULT_DIMS
+
+
+def embed(texts: list[str], model: str, dims: int) -> list[list[float]]:
+    payload = json.dumps({"model": model, "input": texts}).encode()
     req = urllib.request.Request(
         OLLAMA, data=payload, headers={"Content-Type": "application/json"}
     )
@@ -52,8 +87,8 @@ def embed(texts: list[str]) -> list[list[float]]:
         out = json.load(resp)
     vecs = out["embeddings"]
     for v in vecs:
-        if len(v) != DIMS:
-            raise RuntimeError(f"ожидалось {DIMS} измерений, пришло {len(v)}")
+        if len(v) != dims:
+            raise RuntimeError(f"ожидалось {dims} измерений, пришло {len(v)}")
     return vecs
 
 
@@ -80,9 +115,11 @@ TARGETS = {
         "citation.work",
         # Скелет из внешнего источника несёт заголовок и аннотацию — вместе
         # они и есть смысл записи для фильтра фронтира (косинус к центроиду
-        # семян). Предикат ниже — как у pages: запись без
-        # непустого заголовка семантического содержания не несёт.
-        "replace(replace(coalesce(title,'')||' '||coalesce(abstract,''), E'\n', ' '), E'\r', ' ')",
+        # семян). Выражение НЕ пишется здесь: у этой колонки два писателя, и
+        # правило текста одно на обоих (pg_embedding_text.WORKS_TEXT_SQL и
+        # его питоновский двойник works_text). Предикат ниже — как у pages:
+        # запись без непустого заголовка семантического содержания не несёт.
+        WORKS_TEXT_SQL,
         "btrim(coalesce(title,'')) <> ''",
     ),
 }
@@ -103,13 +140,13 @@ def missing_semantic_key() -> list[tuple[str, int]]:
     ]
 
 
-def embed_target(name: str) -> int:
+def embed_target(name: str, model: str, dims: int) -> int:
     table, text_expr, content_pred = TARGETS[name]
     total = pending(table, content_pred)
     if total == 0:
         print(f"{name}: все записи уже несут семантический ключ")
         return 0
-    print(f"{name}: к обсчёту {total}, модель {MODEL}, партиями по {BATCH}")
+    print(f"{name}: к обсчёту {total}, модель {model}, партиями по {BATCH}")
 
     done, started = 0, time.monotonic()
     while True:
@@ -129,7 +166,7 @@ def embed_target(name: str) -> int:
             # Все оставшиеся записи с пустым текстом — вектор им не из чего строить.
             break
 
-        vecs = embed([t for _, t in pairs])
+        vecs = embed([t for _, t in pairs], model, dims)
         updates = "\n".join(
             f"update {table} set embedding = '{json.dumps(v)}' where id = {pid};"
             for (pid, _), v in zip(pairs, vecs)
@@ -148,7 +185,11 @@ def main() -> int:
         if name not in TARGETS:
             print(f"неизвестная цель: {name}; известны {list(TARGETS)}")
             return 2
-        embed_target(name)
+    # Один раз на прогон: таблица несёт ровно одну строку (CHECK (id = 1)),
+    # и модель не может смениться посреди обсчёта.
+    model, dims = resolve_target(dict(os.environ))
+    for name in which:
+        embed_target(name, model, dims)
 
     gaps = missing_semantic_key()
     if gaps:

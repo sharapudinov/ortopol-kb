@@ -110,6 +110,13 @@ ORDER BY key;
 
 
 def works_without_semantic_key(env: dict) -> list[str]:
+    """Titled works with no vector -- the crawl writes one the moment it
+    scores a candidate, so these are rows it never scored: written before
+    the column existed, or edited by hand since. `python3 pg_embed.py
+    works` fills them with the SAME text rule and the SAME model
+    (pg_embedding_text, corpus.embedding_model), which is what makes the
+    top-up safe to run beside the crawl at all.
+    """
     out = run_sql(env, _NO_SEMANTIC_KEY_SQL, extra_args=["-t", "-A"]).stdout
     return [line.strip() for line in out.splitlines() if line.strip()]
 

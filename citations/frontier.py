@@ -20,17 +20,19 @@ from __future__ import annotations
 import math
 import urllib.request
 
+from pg_embedding_text import MAX_CHARS, works_text
 from pg_search import EMBED_BATCH, OLLAMA_URL, embed_batch
-
-# Same bound pg_embed.py uses: bge-m3 holds 8192 tokens, the cut is by
-# characters with room to spare so a long abstract is truncated, not dropped.
-MAX_CHARS = 6000
 
 
 def candidate_text(title: str | None, abstract: str | None) -> str:
-    """What a node means, for the filter: its title and what it is about."""
-    parts = [p.strip() for p in (title, abstract) if p and p.strip()]
-    return " ".join(parts)[:MAX_CHARS]
+    """What a node means, for the filter: its title and what it is about.
+
+    The rule is pg_embedding_text's, not this module's: the other producer
+    of citation.work.embedding (pg_embed.py) builds the same string in SQL,
+    and two spellings of it would differ by a plausible cosine rather than
+    by an error.
+    """
+    return works_text(title, abstract)
 
 
 def embed_texts(
