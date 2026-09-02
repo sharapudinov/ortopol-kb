@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import json
 
-from pg_common import copy_csv_into, run_sql, scalar
+from pg_common import copy_csv_into, run_sql
+from pg_graph_common import kind_counts
 
 from . import journal, twins
 from .store import STEP_COLUMNS, csv_rows
@@ -173,9 +174,6 @@ def merge_twins(env, crawl_id: str, *, dry_run: bool = False) -> list[dict]:
     return merged
 
 
-def kind_counts(env) -> str:
-    return scalar(
-        env,
-        "SELECT string_agg(kind || '=' || n, ' ' ORDER BY kind) FROM "
-        "(SELECT kind, count(*) n FROM citation.work GROUP BY kind) t;",
-    )
+def kind_census(env) -> str:
+    """The kind breakdown as one printable line, off the shared census."""
+    return " ".join(f"{kind}={n}" for kind, n in sorted(kind_counts(env).items()))

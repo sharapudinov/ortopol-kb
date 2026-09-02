@@ -14,8 +14,13 @@ from __future__ import annotations
 import ast
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
+import _pathfix_deploy  # noqa: F401
+
+import citation_checks
+import citation_profile
 import pg_graph
 import pg_graph_common
 from paths import default_corpus_dir
@@ -105,6 +110,70 @@ class CliLayerTests(unittest.TestCase):
                      "compare_counts", "project", "init_schema"):
             self.assertNotIn(name, defined, f"{name}() belongs to pg_graph_common.py")
             self.assertTrue(hasattr(pg_graph_common, name))
+
+
+class SharedCitationPlumbingTests(unittest.TestCase):
+    """citation_schema_exists() and the kind census answer questions three
+    consumers ask, so they are read from one place. Written verbatim in two
+    modules once, together with FIELD_SEP, they are exactly the drift
+    pg_graph_common.py exists to prevent -- hence the guard below, in the
+    shape CliLayerTests uses on pg_graph.py.
+    """
+
+    CONSUMERS = (Path(citation_checks.__file__), Path(citation_profile.__file__))
+
+    def test_schema_exists_reads_to_regclass(self):
+        with mock.patch.object(pg_graph_common, "scalar", return_value="t") as scalar_mock:
+            self.assertTrue(pg_graph_common.citation_schema_exists({}))
+        self.assertIn("to_regclass('citation.work')", scalar_mock.call_args[0][1])
+        with mock.patch.object(pg_graph_common, "scalar", return_value="f"):
+            self.assertFalse(pg_graph_common.citation_schema_exists({}))
+
+    def test_kind_census_parses_the_separated_rows(self):
+        text = FIELD_SEP.join(("external-skeleton", "382")) + "\n" \
+            + FIELD_SEP.join(("our-document", "56")) + "\n"
+        with mock.patch.object(pg_graph_common, "run_sql", return_value=mock.Mock(stdout=text)):
+            self.assertEqual(pg_graph_common.kind_counts({}),
+                             {"external-skeleton": 382, "our-document": 56})
+
+    def test_kind_census_takes_the_callers_narrowing_clause(self):
+        with mock.patch.object(pg_graph_common, "run_sql",
+                                return_value=mock.Mock(stdout="")) as run_mock:
+            self.assertEqual(pg_graph_common.kind_counts({}, " WHERE w.year > 2000"), {})
+        self.assertIn(" WHERE w.year > 2000", run_mock.call_args[0][1])
+
+    def _definitions(self, path: Path) -> tuple[set[str], set[str]]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        functions = {node.name for node in tree.body
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assigned = {target.id for node in tree.body if isinstance(node, ast.Assign)
+                    for target in node.targets if isinstance(target, ast.Name)}
+        return functions, assigned
+
+    def test_neither_consumer_redeclares_the_shared_primitives(self):
+        for path in self.CONSUMERS:
+            functions, assigned = self._definitions(path)
+            self.assertNotIn("citation_schema_exists", functions, path.name)
+            self.assertNotIn("kind_counts", functions, path.name)
+            self.assertNotIn("counts_by_kind", functions, path.name)
+            self.assertNotIn("FIELD_SEP", assigned, f"{path.name}: import it from pg_graph_common")
+
+    def test_neither_consumer_carries_its_own_copy_of_the_queries(self):
+        for path in self.CONSUMERS:
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("to_regclass('citation.work')", text, path.name)
+            self.assertNotIn("count(*) FROM citation.work w{where}", text, path.name)
+
+    def test_both_consumers_reach_the_shared_layer(self):
+        for path in self.CONSUMERS:
+            imported = {
+                alias.name
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                if isinstance(node, ast.ImportFrom) and node.module == "pg_graph_common"
+                for alias in node.names
+            }
+            self.assertIn("citation_schema_exists", imported, path.name)
+            self.assertIn("kind_counts", imported, path.name)
 
 
 class CrawlStepIndexTests(unittest.TestCase):

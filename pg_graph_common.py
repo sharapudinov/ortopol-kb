@@ -48,6 +48,42 @@ def split_records(stdout: str) -> list[str]:
     return [r.strip("\n") for r in stdout.split(RECORD_SEP) if r.strip("\n")]
 
 
+_SCHEMA_EXISTS_SQL = "SELECT to_regclass('citation.work') IS NOT NULL;"
+_KIND_COUNTS_SQL = "SELECT w.kind, count(*) FROM citation.work w{where} GROUP BY 1 ORDER BY 1;"
+
+
+def citation_schema_exists(env: dict[str, str]) -> bool:
+    """Is schema citation applied to this database at all?
+
+    Here rather than in each asker because three of them ask it -- the
+    completeness run (citation_checks), the packager (deploy/
+    citation_profile) and the crawl CLI under --dry-run -- and to_regclass
+    of one table standing for a whole schema is a convention, not an
+    obvious fact: two spellings of it would answer differently the day the
+    schema gains a table before citation.work exists.
+    """
+    return scalar(env, _SCHEMA_EXISTS_SQL) == "t"
+
+
+def kind_counts(env: dict[str, str], where: str = "") -> dict[str, int]:
+    """{kind: rows} over citation.work, optionally narrowed by `where`.
+
+    The census two callers need in two shapes -- the whole table for the
+    completeness summary, and the shipped-rows-only subset for the public
+    artifact's manifest (`where` carries that predicate, alias `w`). One
+    query and one parse: the parse is the FIELD_SEP contract above, and a
+    second copy of it drifts the moment one caller's separator changes.
+    """
+    out = run_sql(env, _KIND_COUNTS_SQL.format(where=where),
+                  extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
+    counts: dict[str, int] = {}
+    for line in out.splitlines():
+        if line.strip():
+            kind, n = line.split(FIELD_SEP)
+            counts[kind] = int(n)
+    return counts
+
+
 def graph_sql(env: dict[str, str], sql: str, **kwargs):
     """Runs `sql` with AGE activated for this one psql invocation."""
     return run_sql(env, AGE_PREAMBLE + sql, **kwargs)

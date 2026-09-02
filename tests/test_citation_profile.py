@@ -14,21 +14,7 @@ import _pathfix_deploy  # noqa: F401
 import citation_profile
 from manifest_contract import CitationMode
 
-FIELD_SEP = "\x1f"
-
-
-def _psql_rows(rows: list[tuple[str, ...]]) -> mock.Mock:
-    text = "\n".join(FIELD_SEP.join(row) for row in rows)
-    return mock.Mock(stdout=text + ("\n" if text else ""))
-
-
 class SchemaAndPolicyReadTests(unittest.TestCase):
-    def test_schema_exists_true_false(self):
-        with mock.patch.object(citation_profile, "scalar", return_value="t"):
-            self.assertTrue(citation_profile.citation_schema_exists({}))
-        with mock.patch.object(citation_profile, "scalar", return_value="f"):
-            self.assertFalse(citation_profile.citation_schema_exists({}))
-
     def test_public_policy_returns_none_when_row_is_absent(self):
         with mock.patch.object(citation_profile, "scalar", return_value=""):
             self.assertIsNone(citation_profile.citation_public_policy({}))
@@ -71,17 +57,17 @@ class RequireCitationModeTests(unittest.TestCase):
 
 class CitationCountsTests(unittest.TestCase):
     def test_reads_work_cites_and_kind_breakdown(self):
-        rows = [("external-skeleton", "382"), ("our-document", "56")]
+        counts = {"external-skeleton": 382, "our-document": 56}
         with mock.patch.object(citation_profile, "scalar", side_effect=["438", "2425"]), \
-             mock.patch.object(citation_profile, "run_sql", return_value=_psql_rows(rows)):
+             mock.patch.object(citation_profile, "kind_counts", return_value=counts):
             work_n, cites_n, by_kind = citation_profile.citation_counts({})
         self.assertEqual(work_n, 438)
         self.assertEqual(cites_n, 2425)
-        self.assertEqual(by_kind, {"external-skeleton": 382, "our-document": 56})
+        self.assertEqual(by_kind, counts)
 
     def test_empty_kind_breakdown_is_an_empty_dict(self):
         with mock.patch.object(citation_profile, "scalar", side_effect=["0", "0"]), \
-             mock.patch.object(citation_profile, "run_sql", return_value=mock.Mock(stdout="")):
+             mock.patch.object(citation_profile, "kind_counts", return_value={}):
             _work_n, _cites_n, by_kind = citation_profile.citation_counts({})
         self.assertEqual(by_kind, {})
 
@@ -180,22 +166,26 @@ class ShippedRowPredicateTests(unittest.TestCase):
 
 
 class ShippedOnlyCountsTests(unittest.TestCase):
-    def test_shipped_only_counts_apply_the_predicate(self):
-        seen = []
+    def _counted(self, **kwargs) -> tuple[list[str], list[str]]:
+        """(scalar SQL seen, narrowing clauses handed to the shared census)."""
+        seen, narrowed = [], []
         with mock.patch.object(citation_profile, "scalar",
                                 side_effect=lambda env, sql: seen.append(sql) or "0"), \
-             mock.patch.object(citation_profile, "run_sql", return_value=mock.Mock(stdout="")):
-            citation_profile.citation_counts({}, shipped_only=True)
+             mock.patch.object(citation_profile, "kind_counts",
+                                side_effect=lambda env, where="": narrowed.append(where) or {}):
+            citation_profile.citation_counts({}, **kwargs)
+        return seen, narrowed
+
+    def test_shipped_only_counts_apply_the_predicate(self):
+        seen, narrowed = self._counted(shipped_only=True)
         self.assertTrue(all("public_distribution IN (" in sql for sql in seen), seen)
         self.assertIn("JOIN citation.work wa", seen[1])
+        self.assertTrue(all("public_distribution IN (" in where for where in narrowed), narrowed)
 
     def test_default_counts_the_whole_schema(self):
-        seen = []
-        with mock.patch.object(citation_profile, "scalar",
-                                side_effect=lambda env, sql: seen.append(sql) or "0"), \
-             mock.patch.object(citation_profile, "run_sql", return_value=mock.Mock(stdout="")):
-            citation_profile.citation_counts({})
+        seen, narrowed = self._counted()
         self.assertTrue(all("public_distribution" not in sql for sql in seen), seen)
+        self.assertEqual(narrowed, [""])
 
 
 if __name__ == "__main__":

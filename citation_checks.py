@@ -42,14 +42,7 @@ from __future__ import annotations
 import pg_graph_common
 from paths import EXTERNAL_SOURCE_DIR, IIS_SOURCE_DIR
 from pg_common import run_sql, scalar
-
-FIELD_SEP = "\x1f"
-
-_SCHEMA_EXISTS_SQL = "SELECT to_regclass('citation.work') IS NOT NULL;"
-
-
-def citation_schema_exists(env: dict) -> bool:
-    return scalar(env, _SCHEMA_EXISTS_SQL) == "t"
+from pg_graph_common import FIELD_SEP, citation_schema_exists, kind_counts
 
 
 _UNPLACED_SQL = f"""
@@ -137,26 +130,13 @@ def indexed_without_external_document(env: dict) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-_COUNTS_SQL = "SELECT kind, count(*) FROM citation.work GROUP BY kind ORDER BY kind;"
-
-
-def counts_by_kind(env: dict) -> dict[str, int]:
-    out = run_sql(env, _COUNTS_SQL, extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
-    counts: dict[str, int] = {}
-    for line in out.splitlines():
-        if line.strip():
-            kind, n = line.split(FIELD_SEP)
-            counts[kind] = int(n)
-    return counts
-
-
 def citation_summary(env: dict) -> str:
     """One line for corpus_completeness.py's opись report -- purely
     informational, never a source of pass/fail (that is citation_problems).
     """
     if not citation_schema_exists(env):
         return "citation: schema absent"
-    by_kind = counts_by_kind(env)
+    by_kind = kind_counts(env)
     work_total = sum(by_kind.values())
     cites_total = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
     kinds = ", ".join(f"{k}={n}" for k, n in sorted(by_kind.items()))

@@ -190,7 +190,7 @@ def do_merge_twins(env, args) -> int:
     print(f"склеено двойников наших работ: {len(merged)}"
           + (" (--dry-run, ничего не записано)" if args.dry_run else ""))
     if not args.dry_run and merged:
-        print("kind после склейки: " + twin_pass.kind_counts(env))
+        print("kind после склейки: " + twin_pass.kind_census(env))
         vertices, edges = project(env)
         print(f"проекция графа: V={vertices} E={edges}")
         return graph_check(env)

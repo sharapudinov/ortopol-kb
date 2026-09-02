@@ -39,9 +39,8 @@ ensure_corpus_importable()
 
 from legal_profile import SHIPPED_SQL  # noqa: E402
 from manifest_contract import CitationMode, Profile  # noqa: E402
-from pg_common import run_sql, scalar  # noqa: E402
-
-FIELD_SEP = "\x1f"
+from pg_common import scalar  # noqa: E402
+from pg_graph_common import citation_schema_exists, kind_counts  # noqa: E402
 
 # --- the per-document legal cut, as it applies to the citation slice ------
 #
@@ -129,9 +128,7 @@ def shipped_crawl_step_sql(alias: str = "s") -> str:
         f"WHERE {_STEP_MENTIONS.format(alias=alias, ref='r.ref')}))"
     )
 
-_SCHEMA_EXISTS_SQL = "SELECT to_regclass('citation.work') IS NOT NULL;"
 _POLICY_SQL = "SELECT mode FROM citation.public_policy WHERE id = 1;"
-_COUNTS_SQL = "SELECT w.kind, count(*) FROM citation.work w{where} GROUP BY 1 ORDER BY 1;"
 _CITES_COUNT_SQL = """
 SELECT count(*) FROM citation.cites c
 JOIN citation.work wa ON wa.id = c.citing
@@ -144,10 +141,6 @@ class CitationUnclassified(RuntimeError):
     """The citation schema's public-artifact policy is not decided (or not
     recognised) -- the packager must not guess (see module docstring).
     """
-
-
-def citation_schema_exists(env: dict) -> bool:
-    return scalar(env, _SCHEMA_EXISTS_SQL) == "t"
 
 
 def citation_public_policy(env: dict) -> str | None:
@@ -220,11 +213,4 @@ def citation_counts(env: dict, *, shipped_only: bool = False) -> tuple[int, int,
         cites_sql = "SELECT count(*) FROM citation.cites;"
     work_n = int(scalar(env, f"SELECT count(*) FROM citation.work w{work_where};"))
     cites_n = int(scalar(env, cites_sql))
-    rows = run_sql(env, _COUNTS_SQL.format(where=work_where),
-                    extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
-    by_kind: dict[str, int] = {}
-    for line in rows.splitlines():
-        if line.strip():
-            kind, n = line.split(FIELD_SEP)
-            by_kind[kind] = int(n)
-    return work_n, cites_n, by_kind
+    return work_n, cites_n, kind_counts(env, work_where)

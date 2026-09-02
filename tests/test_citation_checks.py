@@ -30,16 +30,6 @@ def _psql_rows(rows: list[tuple[str, ...]]) -> mock.Mock:
     return mock.Mock(stdout=text + ("\n" if text else ""))
 
 
-class SchemaExistsTests(unittest.TestCase):
-    def test_true_when_to_regclass_finds_the_table(self):
-        with mock.patch.object(citation_checks, "scalar", return_value="t"):
-            self.assertTrue(citation_checks.citation_schema_exists({}))
-
-    def test_false_when_to_regclass_is_null(self):
-        with mock.patch.object(citation_checks, "scalar", return_value="f"):
-            self.assertFalse(citation_checks.citation_schema_exists({}))
-
-
 class UnplacedDocumentsTests(unittest.TestCase):
     def test_parses_one_id_per_line(self):
         with mock.patch.object(citation_checks, "run_sql",
@@ -124,25 +114,16 @@ class IndexedWithoutExternalTests(unittest.TestCase):
         self.assertIn("theory/external", sql)
 
 
-class CountsByKindTests(unittest.TestCase):
-    def test_parses_kind_counts(self):
-        rows = [("external-skeleton", "382"), ("our-document", "56")]
-        with mock.patch.object(citation_checks, "run_sql", return_value=_psql_rows(rows)):
-            self.assertEqual(
-                citation_checks.counts_by_kind({}),
-                {"external-skeleton": 382, "our-document": 56},
-            )
-
-
 class CitationSummaryTests(unittest.TestCase):
     def test_missing_schema_says_so(self):
-        with mock.patch.object(citation_checks, "scalar", return_value="f"):
+        with mock.patch.object(citation_checks, "citation_schema_exists", return_value=False):
             self.assertEqual(citation_checks.citation_summary({}), "citation: schema absent")
 
     def test_present_schema_reports_counts(self):
-        rows = [("external-skeleton", "382"), ("our-document", "56")]
-        with mock.patch.object(citation_checks, "scalar", side_effect=["t", "2425"]), \
-             mock.patch.object(citation_checks, "run_sql", return_value=_psql_rows(rows)):
+        counts = {"external-skeleton": 382, "our-document": 56}
+        with mock.patch.object(citation_checks, "citation_schema_exists", return_value=True), \
+             mock.patch.object(citation_checks, "kind_counts", return_value=counts), \
+             mock.patch.object(citation_checks, "scalar", return_value="2425"):
             summary = citation_checks.citation_summary({})
         self.assertIn("438 work", summary)
         self.assertIn("2425 cites", summary)
