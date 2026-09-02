@@ -176,5 +176,44 @@ class FetchPageTests(unittest.TestCase):
         self.assertEqual(self._page([("7", "   "), ("8", "есть")]), [(8, "есть")])
 
 
+class BlankRowsAreExcludedBySqlTests(unittest.TestCase):
+    """A row whose rendered text is empty is never updated, so it stays at
+    the head of `order by id` and is re-selected on every iteration -- and
+    once a whole page of them accumulates, the loop reads the empty page as
+    "no work left" and stops with later rows unembedded. Discarding them in
+    Python was both of those bugs; the fetch must not ask for them.
+    """
+
+    def _sql(self, table: str, text_expr: str, content_pred: str) -> str:
+        with mock.patch.object(pg_embed, "run_sql",
+                                return_value=mock.Mock(stdout="")) as run_sql:
+            pg_embed.fetch_page({}, table, text_expr, content_pred)
+        return run_sql.call_args[0][1]
+
+    def test_the_fetch_asks_the_database_to_skip_blank_text(self):
+        sql = self._sql("corpus.pages", "body", "btrim(body) <> ''")
+        self.assertIn("btrim(body) <> ''", sql)
+
+    def test_every_target_gets_the_same_exclusion_whatever_its_predicate(self):
+        """`runs` is the case the classification cannot cover on its own:
+        its content predicate is literally "true" (measurements.run has no
+        body column), so a row with question/verdict/rules_out/arbiter all
+        empty is pending forever.
+        """
+        for name, (table, text_expr, content_pred) in pg_embed.TARGETS.items():
+            with self.subTest(target=name):
+                sql = self._sql(table, text_expr, content_pred)
+                self.assertIn(f"btrim({text_expr}) <> ''", sql)
+
+    def test_the_pending_count_still_names_what_has_no_key(self):
+        """The count is not narrowed with it: a row that can never carry a
+        vector is exactly what the closing "БЕЗ СЕМАНТИЧЕСКОГО КЛЮЧА" line
+        reports, and hiding it from the count would hide the report.
+        """
+        with mock.patch.object(pg_embed, "scalar", return_value="3") as scalar:
+            pg_embed.pending({}, "measurements.run", "true")
+        self.assertNotIn("btrim", scalar.call_args[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

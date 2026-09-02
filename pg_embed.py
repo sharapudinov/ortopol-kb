@@ -170,11 +170,21 @@ def fetch_page(env: dict[str, str], table: str, text_expr: str,
     считает границей строки не только \n (pg_common's own comment на
     FIELD_SEP/RECORD_SEP). Разделитель в тексте больше не рвёт строку на
     две записи.
+
+    Пустой текст отсекает САМ запрос, а не разбор после него. Такую строку
+    цикл не обновляет никогда, она остаётся в голове `order by id` и
+    перечитывается на каждой итерации; а когда таких строк набирается на
+    целую страницу, цикл принимает её пустоту за «работы больше нет» и
+    останавливается, оставив всё, что ниже, без вектора. Предикат
+    содержания (TARGETS) для этого не годится: у цели `runs` он «true» —
+    у measurements.run нет колонки body, и пустой прогон отличим только по
+    самому выражению текста.
     """
     out = run_sql(
         env,
         f"select id, left({text_expr}, {MAX_CHARS}) from {table} "
         f"where embedding is null and ({content_pred}) "
+        f"and btrim({text_expr}) <> '' "
         f"order by id limit {FETCH_BATCH};",
         extra_args=ROW_ARGS,
     ).stdout
@@ -199,8 +209,9 @@ def embed_target(env: dict[str, str], name: str, model: str, dims: int) -> int:
     while True:
         pairs = fetch_page(env, table, text_expr, content_pred)
         if not pairs:
-            # Страниц не осталось, либо у оставшихся записей пустой текст —
-            # вектор им не из чего строить.
+            # Строк с непустым текстом и без вектора не осталось. Пустые
+            # запрос уже не возвращает (fetch_page), поэтому пустая страница
+            # означает именно конец работы, а не «эта страница вся пустая».
             break
 
         # Вся страница — один \copy плюс один UPDATE: embed() уже разбивает
