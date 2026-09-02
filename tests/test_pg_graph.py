@@ -297,6 +297,31 @@ class JournalBackfillTests(unittest.TestCase):
     def test_running_it_again_changes_nothing(self):
         self.assertEqual(self._backfilled(repeats=2), self._backfilled())
 
+    def _rows_written(self, passes: int) -> list[int]:
+        """How many rows each successive pass of the backfill REWRITES.
+
+        Value-idempotent is not enough: the schema file is applied in full
+        on every `pg_graph.py init` and every non-dry-run crawl, so a guard
+        that keeps matching a row the parse cannot fill any further rewrites
+        it forever -- a new tuple version, WAL, and index maintenance on the
+        three key indexes, on a table that is otherwise append-only.
+        """
+        counted = ("WITH touched AS (" + _backfill_statement().rstrip(";\n ")
+                   + " RETURNING 1) SELECT count(*) FROM touched;\n")
+        out = run_sql(
+            self.env,
+            "BEGIN;\n" + self.FIXTURE + counted * passes + "ROLLBACK;\n",
+            extra_args=["-t", "-A"],
+        ).stdout
+        return [int(line) for line in out.splitlines() if line.strip()]
+
+    def test_the_second_pass_writes_no_row_at_all(self):
+        written = self._rows_written(3)
+        # The fixture's three parseable rows, plus whatever the live journal
+        # still has to fill -- the first pass is the one allowed to write.
+        self.assertGreaterEqual(written[0], 3)
+        self.assertEqual(written[1:], [0, 0], "backfill переписывает те же строки заново")
+
     def test_the_live_journal_has_no_unparsed_score_left(self):
         """The columns are filled wherever the prose ever carried them --
         the state the migration is supposed to leave the base in."""

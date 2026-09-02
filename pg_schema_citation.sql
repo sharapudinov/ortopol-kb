@@ -167,6 +167,18 @@ CREATE INDEX IF NOT EXISTS crawl_step_node_key_idx ON citation.crawl_step (node_
 -- skip no node). Kept in the schema file rather than run by hand once,
 -- because every instance this schema is applied to -- this one, a restored
 -- artifact, a developer's fresh database -- meets the same old rows.
+--
+-- The guard pairs each NULL column with the marker its OWN parse needs, and
+-- that pairing is the difference between value-idempotent and
+-- work-idempotent. "any of the three is NULL AND the reason mentions any of
+-- the four markers" kept matching rows the parse can never fill any
+-- further: a legacy `drop` row carries score= and tau= but no node=, so its
+-- node_key stays NULL and the row matched again on every apply -- and the
+-- whole schema file is applied on every `pg_graph.py init` and every
+-- non-dry-run crawl. On a depth-2-sized journal (~100k rows, overwhelmingly
+-- `drop`) that rewrote most of the table every time: a new tuple version,
+-- WAL, and index maintenance on the three key indexes, for zero changed
+-- values, on a table that is otherwise append-only.
 UPDATE citation.crawl_step SET
     node_key = coalesce(node_key,
                         nullif(substring(reason from 'node=([^ ]+)'), ''),
@@ -174,8 +186,9 @@ UPDATE citation.crawl_step SET
     score = coalesce(score, substring(reason from 'score=(-?[0-9.]+)')::double precision),
     tau = coalesce(tau, substring(reason from 'tau=(-?[0-9.]+)')::double precision)
 WHERE reason IS NOT NULL
-  AND (node_key IS NULL OR score IS NULL OR tau IS NULL)
-  AND reason ~ '(node=|seed=|score=|tau=)';
+  AND ((node_key IS NULL AND reason ~ '(node=|seed=)')
+    OR (score IS NULL AND reason ~ 'score=')
+    OR (tau IS NULL AND reason ~ 'tau='));
 
 -- Escapes a plain string for safe use inside a *Cypher* single-quoted string
 -- literal (backslash-style escaping, like Cypher/JSON -- NOT SQL's
