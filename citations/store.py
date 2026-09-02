@@ -201,7 +201,8 @@ class PostgresWriter:
 
 
 class DryRunWriter:
-    """Collects what a real run would write, and writes nothing.
+    """Counts what a real run would write, keeps a sample of it, and writes
+    nothing.
 
     Same Writer contract as PostgresWriter, per-call counts included: this
     is the estimate a crawl is authorised against, so its numbers have to
@@ -209,7 +210,20 @@ class DryRunWriter:
     covered yet. Nothing here can refuse a row, so these are upper bounds:
     against a graph that already carries an edge, the live writer reports
     fewer (see the Writer contract above).
+
+    The rows themselves are kept only up to SAMPLE_LIMIT per kind. The
+    live writer streams a level through copy_csv_rows and frees it, so its
+    peak follows ONE level; retaining every row made the rehearsal's peak
+    follow the whole crawl instead -- a depth-2 journal is ~100k rows
+    (pg_copy.py), and the mode whose job is to cost a run cheaply held
+    them all on the machine about to make it. What reads them is a report
+    about the shape of the rows, and a report reads a sample: the counts
+    above are the quantity, these are the specimen.
     """
+
+    # Enough to see every kind of row a level produces, few enough that
+    # the whole crawl's worth is a rounding error next to one level's.
+    SAMPLE_LIMIT = 50
 
     def __init__(self, source: str = "openalex"):
         self.source = source
@@ -217,26 +231,33 @@ class DryRunWriter:
         self.promoted_seen = []
         self.counts = {"work": 0, "cites": 0, "step": 0, "twin": 0}
 
+    def _sample(self, kept: list, rows: list) -> int:
+        """Extends `kept` up to SAMPLE_LIMIT and returns how many rows the
+        batch held -- the count is of everything, the list is of the first
+        few. Emptying a sample makes room again, which is how a caller
+        asks for the specimen of the NEXT phase rather than of the run.
+        """
+        room = self.SAMPLE_LIMIT - len(kept)
+        if room > 0:
+            kept += rows[:room]
+        return len(rows)
+
     def works(self, nodes) -> int:
-        accepted = list(nodes)
-        self.works_seen += accepted
-        self.counts["work"] += len(accepted)
-        return len(accepted)
+        accepted = self._sample(self.works_seen, list(nodes))
+        self.counts["work"] += accepted
+        return accepted
 
     def edges(self, edges) -> int:
-        accepted = list(edges)
-        self.edges_seen += accepted
-        self.counts["cites"] += len(accepted)
-        return len(accepted)
+        accepted = self._sample(self.edges_seen, list(edges))
+        self.counts["cites"] += accepted
+        return accepted
 
     def journal(self, steps) -> int:
-        accepted = list(steps)
-        self.steps_seen += accepted
-        self.counts["step"] += len(accepted)
-        return len(accepted)
+        accepted = self._sample(self.steps_seen, list(steps))
+        self.counts["step"] += accepted
+        return accepted
 
     def promote(self, merged) -> int:
-        accepted = list(merged)
-        self.promoted_seen += accepted
-        self.counts["twin"] += len(accepted)
-        return len(accepted)
+        accepted = self._sample(self.promoted_seen, list(merged))
+        self.counts["twin"] += accepted
+        return accepted

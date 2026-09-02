@@ -1,10 +1,14 @@
-"""What the scoring pass holds at once, counted rather than reasoned about.
+"""What a dry run holds at once, counted rather than reasoned about.
 
 A vector is 1024 floats; a depth-2 level is thousands of candidates
 (~4262 distinct references measured at tau=0.50) of which the filter keeps
 a fraction. crawl.scores_of() has always claimed peak memory is a function
 of the KEPT set -- this counts the vectors actually alive at the moment the
 embedder is called and holds the claim to it.
+
+The writer is the other half of the same question, and lives here for the
+same reason: --dry-run is the cheap rehearsal a real crawl is authorised
+against, so what it retains per level is a number to hold it to.
 
 Separate file from test_citations_crawl.py for size (kb/CLAUDE.md
 FILE_SIZE), and because the technique is its own thing: the vectors are
@@ -143,6 +147,50 @@ class PeakIsTheKeptSetTests(unittest.TestCase):
                              f"живых хранимых векторов {alive_seen}, потолок {ceiling}")
         self.assertGreater(len(holders), ceiling,
                            "потолок не ниже уровня — проверка ничего не держит")
+
+
+class DryRunSampleIsBoundedTests(unittest.TestCase):
+    """PostgresWriter streams a level through copy_csv_rows and frees it,
+    so its peak follows ONE level. The dry run kept every row of every
+    level instead, and a depth-2 journal is ~100k rows (pg_copy.py) -- on
+    the machine about to spend a real quota window. It keeps a sample now;
+    the quantity was always in counts.
+    """
+
+    ROWS = 10_000
+
+    def _feed(self, writer) -> None:
+        writer.works([f"W_{i}" for i in range(self.ROWS)])
+        writer.edges([(f"W_{i}", "W_SEED", "cites", "W_SEED") for i in range(self.ROWS)])
+        writer.journal([{"action": "keep", "depth": 2} for _ in range(self.ROWS)])
+        writer.promote([{"key": f"W_{i}"} for i in range(self.ROWS)])
+
+    def test_ten_thousand_rows_of_each_kind_leave_a_bounded_sample(self):
+        writer = DryRunWriter()
+        self._feed(writer)
+        for kind in ("works_seen", "edges_seen", "steps_seen", "promoted_seen"):
+            with self.subTest(kind=kind):
+                self.assertLessEqual(len(getattr(writer, kind)),
+                                     DryRunWriter.SAMPLE_LIMIT)
+
+    def test_the_counts_still_speak_for_every_row(self):
+        """The sample is the specimen; the estimate a crawl is authorised
+        against is the count, and it is of everything submitted.
+        """
+        writer = DryRunWriter()
+        self._feed(writer)
+        self.assertEqual(writer.counts, {"work": self.ROWS, "cites": self.ROWS,
+                                         "step": self.ROWS, "twin": self.ROWS})
+
+    def test_what_is_kept_is_the_head_of_the_batch(self):
+        writer = DryRunWriter()
+        self._feed(writer)
+        self.assertEqual(writer.works_seen[0], "W_0")
+        self.assertEqual(len(writer.works_seen), DryRunWriter.SAMPLE_LIMIT)
+
+    def test_each_call_still_reports_what_it_accepted(self):
+        writer = DryRunWriter()
+        self.assertEqual(writer.works([f"W_{i}" for i in range(self.ROWS)]), self.ROWS)
 
 
 if __name__ == "__main__":
