@@ -1,0 +1,194 @@
+"""The zbMATH fallback: the one thing run 85 left that source doing.
+
+Split from test_pg_load_citations.py (kb/CLAUDE.md FILE_SIZE) along the
+line the module docstrings already draw: that file is about the crawl's
+own arithmetic and encodings, this one about a single third-party surface
+and the distinction it is built around -- "zbMATH does not have it" and
+"we never found out" are different answers, and only the first may ever be
+remembered as an absence.
+
+No network: every opener is a stub, every sleep is captured, every cache is
+a temporary directory.
+"""
+from __future__ import annotations
+
+import tempfile
+import unittest
+import urllib.error
+from pathlib import Path
+from unittest import mock
+
+import _pathfix  # noqa: F401
+import pg_load_citations
+from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
+
+
+class ZbmathAbstractTests(unittest.TestCase):
+    def test_summary_precedes_review(self):
+        record = {"editorial_contributions": [
+            {"contribution_type": "review", "text": "R"},
+            {"contribution_type": "summary", "text": "S"},
+        ]}
+        text, types = abstract_of(record)
+        self.assertTrue(text.startswith("S"))
+        self.assertEqual(types[0], "summary")
+
+    def test_no_contribution_is_none_not_blank(self):
+        self.assertEqual(abstract_of({"editorial_contributions": []}), (None, []))
+        self.assertEqual(abstract_of(None), (None, []))
+
+
+
+class ZbmathFailureVsAbsenceTests(unittest.TestCase):
+    """"zbMATH does not have it" and "the request failed" are different
+    answers, and the crawl's own discipline (a missing thing is a RECORDED
+    decision, never indistinguishable from a bug) applies to both.
+    """
+
+    class _Response:
+        def __init__(self, body):
+            self._body = body.encode()
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def _client(self, opener):
+        return ZbmathClient(opener=opener, sleep=lambda _s: None)
+
+    def test_404_is_a_legitimate_absence(self):
+        def opener(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+        client = self._client(opener)
+        self.assertIsNone(client.document("1234.56789"))
+        self.assertEqual(client.failures, [])
+
+    def test_a_record_without_contributions_is_also_an_absence(self):
+        client = self._client(lambda request, timeout=None: self._Response('{"result": {}}'))
+        self.assertEqual(abstract_of(client.document("1234.56789")), (None, []))
+        self.assertEqual(client.failures, [])
+
+    def test_rate_limit_is_a_failure_not_an_absence(self):
+        def opener(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
+
+        client = self._client(opener)
+        with self.assertRaises(ZbmathUnavailable) as ctx:
+            client.document("1234.56789")
+        self.assertIn("429", str(ctx.exception))
+        self.assertEqual(len(client.failures), 1)
+
+    def test_network_error_is_a_failure_not_an_absence(self):
+        def opener(request, timeout=None):
+            raise TimeoutError("read timed out")
+
+        client = self._client(opener)
+        with self.assertRaises(ZbmathUnavailable):
+            client.document("1234.56789")
+        self.assertEqual(len(client.failures), 1)
+
+    def test_unparseable_body_is_a_failure_too(self):
+        client = self._client(lambda request, timeout=None: self._Response("<html>502</html>"))
+        with self.assertRaises(ZbmathUnavailable):
+            client.document("1234.56789")
+        self.assertEqual(len(client.failures), 1)
+
+    REVIEWED = ('{"result": {"editorial_contributions": '
+                '[{"contribution_type": "review", "text": "разбор"}]}}')
+
+    def test_a_cached_answer_costs_no_second_request(self):
+        """These abstracts are static between runs, and the fallback runs on
+        the startup path of every non-offline invocation: one sequential
+        request per matched seed, with a pause, before anything happens.
+        """
+        calls = []
+
+        def opener(request, timeout=None):
+            calls.append(request.full_url)
+            return self._Response(self.REVIEWED)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = ZbmathClient(opener=opener, sleep=lambda _s: None, cache_dir=Path(tmp))
+            self.assertEqual(abstract_of(first.document("1234.56789"))[0], "разбор")
+            second = ZbmathClient(opener=opener, sleep=lambda _s: None, cache_dir=Path(tmp))
+            self.assertEqual(abstract_of(second.document("1234.56789"))[0], "разбор")
+        self.assertEqual(calls, ["https://api.zbmath.org/v1/document/1234.56789"])
+        self.assertEqual((second.n_requests, second.n_cache_hits), (0, 1))
+
+    def test_a_failure_is_never_cached(self):
+        """A cached blank would turn one 429 into a permanent "no review" --
+        the very confusion ZbmathUnavailable exists to prevent.
+        """
+        def opener(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 429, "Too Many", {}, None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = ZbmathClient(opener=opener, sleep=lambda _s: None, cache_dir=Path(tmp))
+            with self.assertRaises(ZbmathUnavailable):
+                client.document("1234.56789")
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+
+class ZbmathAbstractsJournalTests(unittest.TestCase):
+    """A failed fetch is journalled as action='error', so "no abstract" in
+    the graph can always be told apart from "we never got an answer".
+    """
+
+    class _Writer:
+        def __init__(self):
+            self.steps = []
+
+        def journal(self, steps):
+            self.steps += list(steps)
+            return len(steps)
+
+    def _run(self, document_side_effect, stored=None):
+        writer = self._Writer()
+        client = mock.Mock(n_requests=1, n_cache_hits=0, failures=[],
+                           document=mock.Mock(side_effect=document_side_effect))
+        with mock.patch.object(pg_load_citations, "seed_matches",
+                                return_value={"1997_sm280": "1234.56789"}), \
+             mock.patch.object(pg_load_citations, "stored_zbmath_abstracts",
+                                return_value=stored or {}), \
+             mock.patch.object(pg_load_citations, "ZbmathClient", return_value=client):
+            out = pg_load_citations.zbmath_abstracts(
+                {}, ["1997_sm280"], {"1997_sm280": "W1"}, writer=writer, crawl_id="t",
+            )
+        return out, writer, client
+
+    def test_an_abstract_already_in_the_graph_is_not_asked_for_again(self):
+        """The stored one is used as it stands, provenance included: only
+        rows whose evidence says the abstract came from zbMATH are read back
+        (citations.inputs.stored_zbmath_abstracts), so nothing here can
+        relabel an OpenAlex abstract as a zbMATH review.
+        """
+        out, writer, client = self._run(lambda _id: None,
+                                        stored={"1997_sm280": "уже в графе"})
+        self.assertEqual(out, {"1997_sm280": ("уже в графе", "1234.56789")})
+        client.document.assert_not_called()
+        self.assertEqual(writer.steps, [])
+
+    def test_absence_writes_no_error_row(self):
+        out, writer, _client = self._run(lambda _id: None)
+        self.assertEqual(out, {})
+        self.assertEqual([s["action"] for s in writer.steps], [])
+
+    def test_failure_writes_an_error_row_naming_the_document(self):
+        out, writer, _client = self._run(ZbmathUnavailable("1234.56789: HTTP 429"))
+        self.assertEqual(out, {})
+        self.assertEqual([s["action"] for s in writer.steps], ["error"])
+        self.assertEqual(writer.steps[0]["frontier_key"], "1997_sm280")
+        self.assertIn("429", writer.steps[0]["reason"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+if __name__ == "__main__":
+    unittest.main()

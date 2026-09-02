@@ -23,6 +23,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 API = "https://api.zbmath.org/v1/document"
 USER_AGENT = "ortopol-kb-citations/1.0 (mailto:tooba.mexico@gmail.com)"
@@ -47,14 +48,41 @@ class ZbmathUnavailable(RuntimeError):
 
 
 class ZbmathClient:
-    def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep, pause=PAUSE):
+    """Answers are cached on disk, keyed by the zbMATH document id.
+
+    The same discipline MathnetClient and OpenAlexClient follow, and for the
+    same measured reason: these abstracts do not change between runs, the
+    API returns 429s under load, and the fallback runs on the startup path
+    of every non-offline invocation -- one sequential request per matched
+    seed with a pause between them.
+
+    What is cached is what zbMATH ANSWERED, `null` included: "we asked and
+    it does not have this one" is knowledge, and re-asking for it buys
+    nothing. A failure is never cached -- ZbmathUnavailable means we did not
+    learn anything, and a cached blank would turn one 429 into a permanent
+    verdict, which is the distinction this whole class is built around.
+    """
+
+    def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
+                 pause=PAUSE, cache_dir: Path | None = None):
         self._opener = opener
         self._sleep = sleep
         self.pause = pause
+        self._cache_dir = Path(cache_dir) if cache_dir else None
+        if self._cache_dir:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
         self.n_requests = 0
+        self.n_cache_hits = 0
         # Mirrors MathnetClient.failures in the same call chain: counted and
         # named, never swallowed.
         self.failures: list[str] = []
+
+    def _cached(self, zbmath_id: str) -> Path | None:
+        if not self._cache_dir:
+            return None
+        # The id is a zbMATH document number ('1234.56789'), not a path: the
+        # separator would otherwise make a directory out of it.
+        return self._cache_dir / (zbmath_id.replace("/", "_") + ".json")
 
     def _failed(self, zbmath_id: str, what: str) -> ZbmathUnavailable:
         self.failures.append(f"{zbmath_id}: {what}")
@@ -69,6 +97,16 @@ class ZbmathClient:
         anything about this work, and saying "no abstract" would be a claim
         the request never supported.
         """
+        path = self._cached(zbmath_id)
+        if path is not None and path.is_file():
+            self.n_cache_hits += 1
+            return json.loads(path.read_text(encoding="utf-8"))
+        record = self._fetch(zbmath_id)
+        if path is not None:
+            path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        return record
+
+    def _fetch(self, zbmath_id: str) -> dict | None:
         url = f"{API}/{zbmath_id}"
         request = urllib.request.Request(
             url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}

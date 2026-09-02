@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Where the crawl starts from: the four reads that establish a run.
+"""Where the crawl starts from: the reads that establish a run.
 
 Split from store.py, which is the WRITE seam (Writer / PostgresWriter /
 DryRunWriter) and nothing else. These are the opposite direction and answer
@@ -14,6 +14,8 @@ contracts is exactly how a crawl ends up scoring against a model the corpus
 was never embedded with.
 """
 from __future__ import annotations
+
+import json
 
 from pg_common import run_sql, sql_literal
 
@@ -45,6 +47,33 @@ def seed_matches(env, run_id: int, source: str) -> dict[str, str]:
         document_id, _, matched_id = line.partition("\x1f")
         matches[document_id] = matched_id
     return matches
+
+
+def stored_zbmath_abstracts(env) -> dict[str, str]:
+    """document_id -> the zbMATH abstract citation.work already holds.
+
+    The fallback's own memory, and the reason it is safe to skip the
+    request: the abstract is static between runs, and its provenance is
+    recorded (evidence.abstract_source, store.PostgresWriter.evidence_of),
+    so a stored one can stand in for the fetch WITHOUT the run pretending
+    an OpenAlex abstract came from zbMATH. Only rows that say zbmath count
+    -- an OpenAlex abstract arrives again with the record and needs no
+    fallback at all.
+
+    An abstract is prose with newlines in it, so it travels as JSON rather
+    than as separated fields: psql's row separator is a newline and no
+    field separator saves a value that contains one (kb/CLAUDE.md, "что
+    легко сломать"). json_agg escapes it and the whole answer is one line.
+    """
+    out = run_sql(
+        env,
+        "SELECT coalesce(json_agg(json_build_array(document_id, abstract)), '[]') "
+        "FROM citation.work WHERE document_id IS NOT NULL AND abstract IS NOT NULL "
+        "AND evidence->>'abstract_source' = 'zbmath';",
+        extra_args=["-t", "-A"],
+    ).stdout.strip()
+    return {document_id: abstract
+            for document_id, abstract in json.loads(out or "[]") if abstract}
 
 
 def fresh_keys(env, days: int) -> set[str]:

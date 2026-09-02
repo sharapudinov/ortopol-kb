@@ -102,3 +102,14 @@ def default_mathnet_cache_dir() -> Path:
     re-seed must not have to earn them again.
     """
     return data_root() / "corpus" / "cache" / "mathnet"
+
+
+def default_zbmath_cache_dir() -> Path:
+    """zbMATH documents, keyed by the zbMATH id, for the same reason again.
+
+    The abstracts the seeds fall back on are static between runs, the API
+    already answers 429 under load, and the fallback sits on the startup
+    path of every non-offline invocation -- one sequential request per
+    matched seed, tens of seconds, before anything else happens.
+    """
+    return data_root() / "corpus" / "cache" / "zbmath"

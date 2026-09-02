@@ -1,19 +1,17 @@
 """Offline unit tests for the citation snowball's building blocks.
 
 No network and no database: abstract reconstruction, the 50-id batch cap,
-node identity (the twin union), the frontier arithmetic, the zbMATH
-abstract fallback, the rate-limit reaction and the CSV/vector encodings the
-loader writes through.
+node identity (the twin union), the frontier arithmetic, the rate-limit
+reaction and the CSV/vector encodings the loader writes through.
 
 The crawl itself and its idempotency against real SQL live in
-test_citations_crawl.py.
+test_citations_crawl.py and test_citations_crawl_live.py; the zbMATH
+fallback, cache included, in test_zbmath_fallback.py.
 """
 from __future__ import annotations
 
 import random
 import unittest
-import urllib.error
-from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import (
@@ -23,7 +21,6 @@ from _citation_fixtures import (
     unit,
     work,
 )
-import pg_load_citations
 from citations import frontier, registry
 from citations.openalex_client import (
     OpenAlexClient,
@@ -33,7 +30,6 @@ from citations.openalex_client import (
     short_id,
 )
 from citations.store import csv_rows, vector_literal
-from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 
 # Verbatim from research/citation-sources/data/openalex_works_A5066843289_p1.json
 # (W2074536792). Kept whole rather than trimmed: a truncated index would let a
@@ -187,21 +183,6 @@ class FrontierMathTests(unittest.TestCase):
         self.assertEqual(frontier.candidate_text(None, None), "")
 
 
-class ZbmathAbstractTests(unittest.TestCase):
-    def test_summary_precedes_review(self):
-        record = {"editorial_contributions": [
-            {"contribution_type": "review", "text": "R"},
-            {"contribution_type": "summary", "text": "S"},
-        ]}
-        text, types = abstract_of(record)
-        self.assertTrue(text.startswith("S"))
-        self.assertEqual(types[0], "summary")
-
-    def test_no_contribution_is_none_not_blank(self):
-        self.assertEqual(abstract_of({"editorial_contributions": []}), (None, []))
-        self.assertEqual(abstract_of(None), (None, []))
-
-
 class HeaderResponse:
     """Minimal urlopen stand-in: body plus headers, usable as a context manager."""
 
@@ -349,106 +330,6 @@ class CsvEncodingTests(unittest.TestCase):
     def test_vector_literal_is_pgvector_shaped(self):
         self.assertEqual(vector_literal([1.0, 0.5]), "[1.0,0.5]")
         self.assertIsNone(vector_literal(None))
-
-
-
-
-class ZbmathFailureVsAbsenceTests(unittest.TestCase):
-    """"zbMATH does not have it" and "the request failed" are different
-    answers, and the crawl's own discipline (a missing thing is a RECORDED
-    decision, never indistinguishable from a bug) applies to both.
-    """
-
-    class _Response:
-        def __init__(self, body):
-            self._body = body.encode()
-
-        def read(self):
-            return self._body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-    def _client(self, opener):
-        return ZbmathClient(opener=opener, sleep=lambda _s: None)
-
-    def test_404_is_a_legitimate_absence(self):
-        def opener(request, timeout=None):
-            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
-
-        client = self._client(opener)
-        self.assertIsNone(client.document("1234.56789"))
-        self.assertEqual(client.failures, [])
-
-    def test_a_record_without_contributions_is_also_an_absence(self):
-        client = self._client(lambda request, timeout=None: self._Response('{"result": {}}'))
-        self.assertEqual(abstract_of(client.document("1234.56789")), (None, []))
-        self.assertEqual(client.failures, [])
-
-    def test_rate_limit_is_a_failure_not_an_absence(self):
-        def opener(request, timeout=None):
-            raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
-
-        client = self._client(opener)
-        with self.assertRaises(ZbmathUnavailable) as ctx:
-            client.document("1234.56789")
-        self.assertIn("429", str(ctx.exception))
-        self.assertEqual(len(client.failures), 1)
-
-    def test_network_error_is_a_failure_not_an_absence(self):
-        def opener(request, timeout=None):
-            raise TimeoutError("read timed out")
-
-        client = self._client(opener)
-        with self.assertRaises(ZbmathUnavailable):
-            client.document("1234.56789")
-        self.assertEqual(len(client.failures), 1)
-
-    def test_unparseable_body_is_a_failure_too(self):
-        client = self._client(lambda request, timeout=None: self._Response("<html>502</html>"))
-        with self.assertRaises(ZbmathUnavailable):
-            client.document("1234.56789")
-        self.assertEqual(len(client.failures), 1)
-
-
-class ZbmathAbstractsJournalTests(unittest.TestCase):
-    """A failed fetch is journalled as action='error', so "no abstract" in
-    the graph can always be told apart from "we never got an answer".
-    """
-
-    class _Writer:
-        def __init__(self):
-            self.steps = []
-
-        def journal(self, steps):
-            self.steps += list(steps)
-            return len(steps)
-
-    def _run(self, document_side_effect):
-        writer = self._Writer()
-        client = mock.Mock(n_requests=1, failures=[], document=mock.Mock(side_effect=document_side_effect))
-        with mock.patch.object(pg_load_citations, "seed_matches",
-                                return_value={"1997_sm280": "1234.56789"}), \
-             mock.patch.object(pg_load_citations, "ZbmathClient", return_value=client):
-            out = pg_load_citations.zbmath_abstracts(
-                {}, ["1997_sm280"], {"1997_sm280": "W1"}, writer=writer, crawl_id="t",
-            )
-        return out, writer
-
-    def test_absence_writes_no_error_row(self):
-        out, writer = self._run(lambda _id: None)
-        self.assertEqual(out, {})
-        self.assertEqual([s["action"] for s in writer.steps], [])
-
-    def test_failure_writes_an_error_row_naming_the_document(self):
-        out, writer = self._run(ZbmathUnavailable("1234.56789: HTTP 429"))
-        self.assertEqual(out, {})
-        self.assertEqual([s["action"] for s in writer.steps], ["error"])
-        self.assertEqual(writer.steps[0]["frontier_key"], "1997_sm280")
-        self.assertIn("429", writer.steps[0]["reason"])
 
 
 if __name__ == "__main__":
