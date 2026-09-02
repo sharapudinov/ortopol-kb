@@ -40,11 +40,11 @@ class CocitationSqlTests(unittest.TestCase):
     def test_defaults_are_named_once_and_reach_the_query(self):
         seen = {}
 
-        def fake_graph_sql(env, sql, variables=None, extra_args=None):
+        def fake_run_sql(env, sql, variables=None, extra_args=None):
             seen.update(variables or {})
             return mock.Mock(stdout="")
 
-        with mock.patch.object(pgcoci.pg_graph_common, "graph_sql", side_effect=fake_graph_sql):
+        with mock.patch.object(pgcoci, "run_sql", side_effect=fake_run_sql):
             pgcoci.cocitation({})
         self.assertEqual(seen["max_out_degree"], str(pgcoci.MAX_OUT_DEGREE))
         self.assertEqual(seen["limit"], str(pgcoci.COCITATION_LIMIT))

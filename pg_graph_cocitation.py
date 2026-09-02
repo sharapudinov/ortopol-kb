@@ -6,9 +6,11 @@ Cypher for the reason pg_graph_candidates.py's docstring gives for its own
 half. The two graph-shaped consumers (citers, hybrid) live in
 pg_graph_cypher.py, and no module re-exports another.
 
-Talks to Postgres through `pg_graph_common.graph_sql()` like everything else
-that touches this schema -- see that module's own docstring for why AGE's
-LOAD + search_path preamble has to be applied per psql invocation.
+Talks to Postgres through plain `pg_common.run_sql()`, not through the AGE
+session seam: nothing here names ag_catalog, cypher() or a citation_graph
+label table, so requiring `LOAD 'age'` would buy a dependency and no
+answer -- including in the shipped artifact, where this module travels and
+the recipient's role may not be able to load the extension at all.
 
 Data functions only: CLI argument parsing, dispatch and table printing live
 in pg_graph.py, which imports this module and is imported by nothing.
@@ -17,8 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pg_graph_common
-from pg_common import FIELD_SEP, ROW_ARGS, split_records
+from pg_common import FIELD_SEP, ROW_ARGS, run_sql, split_records
 
 
 # A citing work with more outgoing references than this generates no pairs
@@ -82,8 +83,8 @@ def cocitation(env, min_count: int = 2, max_out_degree: int = MAX_OUT_DEGREE,
     variables = {"min_count": str(int(min_count)),
                  "max_out_degree": str(int(max_out_degree)),
                  "limit": str(int(limit))}
-    result = pg_graph_common.graph_sql(env, _COCITATION_SQL, variables=variables,
-                                 extra_args=ROW_ARGS)
+    result = run_sql(env, _COCITATION_SQL, variables=variables,
+                     extra_args=ROW_ARGS)
     pairs = []
     for rec in split_records(result.stdout):
         a_key, a_title, b_key, b_title, n = rec.split(FIELD_SEP, 4)

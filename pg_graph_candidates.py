@@ -10,9 +10,12 @@ pg_graph_cypher.py. No module re-exports another: a facade would put the
 files back into one surface, so that a change to another module's private
 SQL constants would be a change to this module's exports.
 
-Talks to Postgres through `pg_graph_common.graph_sql()` like everything else
-that touches this schema -- see that module's own docstring for why AGE's
-LOAD + search_path preamble has to be applied per psql invocation.
+Talks to Postgres through plain `pg_common.run_sql()`, not through the AGE
+session seam: the statement below names neither ag_catalog nor cypher() nor
+a citation_graph label table, so requiring `LOAD 'age'` would buy a
+dependency and no answer -- including in the shipped artifact, where this
+module travels and the recipient's role may not be able to load the
+extension at all.
 
 Data functions only: CLI argument parsing, dispatch and table printing live
 in pg_graph.py, which imports this module and is imported by nothing.
@@ -21,10 +24,9 @@ from __future__ import annotations
 
 import sys
 
-import pg_graph_common
 import pg_search
 from citation_vocab import WorkKind
-from pg_common import FIELD_SEP, ROW_ARGS, split_records
+from pg_common import FIELD_SEP, ROW_ARGS, run_sql, split_records
 
 
 _CENTROID_EXPR = (
@@ -174,8 +176,7 @@ def candidates(env, top: int = 20, query: str | None = None, min_links: int = 0)
         variables = {"top": str(int(top))}
     if min_links > 0:
         variables["min_links"] = str(int(min_links))
-    result = pg_graph_common.graph_sql(env, sql, variables=variables,
-                                 extra_args=ROW_ARGS)
+    result = run_sql(env, sql, variables=variables, extra_args=ROW_ARGS)
     rows = []
     for rec in split_records(result.stdout):
         key, year, title, score, links = rec.split(FIELD_SEP, 4)

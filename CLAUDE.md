@@ -57,9 +57,17 @@ GRAPH_IS_PROJECTION [HARD, 2026-09-02]: истина графа цитирова
   (citation_checks.py) ловят расхождение как PROJECTION STALE.
   Верность проекции — КОНТЕНТНАЯ, не количественная: читатели берут из графа
   свойства (key/kind/year/title, source ребра), а UPDATE title/kind на
-  существующей строке счётчиков не меняет. Отпечатки обеих сторон считает
-  pg_graph_common.content_fingerprints(), вердикт — projection_faults();
-  сравнение только |V|/|E| в новом коде запрещено как класс.
+  существующей строке счётчиков не меняет. Отпечатки обеих сторон и счётчики
+  снимает одним запросом pg_graph_common.projection_reading(), вердикт —
+  projection_faults(); сравнение только |V|/|E| в новом коде запрещено как
+  класс, и что сам запрос читает title/kind с ОБЕИХ сторон, проверяется
+  офлайн (tests/test_pg_graph_projection.py) — живой тест на машине без
+  Postgres пропускается и обеднённый отпечаток пропустил бы.
+  Шов graph_sql() — ТОЛЬКО для операторов, говорящих с AGE (cypher(),
+  ag_catalog, label-таблицы citation_graph); реляционный запрос по
+  citation.work/citation.cites идёт через pg_common.run_sql, иначе шов
+  означает «упоминает схему citation», а запрос падает там, где LOAD 'age'
+  недоступен (в том числе у получателя артефакта).
 CITATION_POLICY_IS_DATA [HARD, 2026-09-02]: режим схемы citation в профиле public —
   строка citation.public_policy (full-skeleton | topology-only | none), пишет
   владелец; без строки public-сборка отказывается (тот же принцип, что

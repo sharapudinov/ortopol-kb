@@ -46,7 +46,7 @@ class CandidatesDecodingTests(unittest.TestCase):
                    ("W2", "", "Undated", "0.80", "0"))
 
     def _candidates(self, stdout: str, **kwargs):
-        with mock.patch.object(pgcand.pg_graph_common, "graph_sql",
+        with mock.patch.object(pgcand, "run_sql",
                                return_value=_answer(stdout)) as sql:
             return pgcand.candidates(mock.sentinel.env, **kwargs), sql
 
@@ -68,7 +68,7 @@ class CandidatesDecodingTests(unittest.TestCase):
     def test_a_question_nothing_can_embed_is_an_empty_answer_and_a_word(self):
         said = io.StringIO()
         with mock.patch.object(pgcand.pg_search, "embed_query", return_value=None), \
-             mock.patch.object(pgcand.pg_graph_common, "graph_sql") as sql, \
+             mock.patch.object(pgcand, "run_sql") as sql, \
              redirect_stderr(said):
             rows = pgcand.candidates(mock.sentinel.env, query="Чебышёв")
         self.assertEqual(rows, [])

@@ -41,9 +41,8 @@ from pg_common import FIELD_SEP, run_sql, run_sql_file, scalar, scalar_row
 # citation.work/cites, not the journal columns), the journal's one-time
 # backfill last (it depends on the columns the first file adds).
 # kb/CLAUDE.md FILE_SIZE split pg_schema_citation.sql along those seams.
-# Named, not merely ordered: the readers that check one file's own claims
-# (its indexes, its projection shape, its backfill statements) name the one
-# they mean, so inserting a file cannot silently point them at another.
+# Named, not merely ordered: a reader checking one file's own claims names
+# the one it means, so inserting a file cannot re-point it at another.
 _HERE = Path(__file__).resolve().parent
 SCHEMA_DEFINITION = _HERE / "pg_schema_citation.sql"
 SCHEMA_CONSTRAINTS = _HERE / "pg_schema_citation_constraints.sql"
@@ -96,7 +95,17 @@ def kind_counts(env: dict[str, str], where: str = "") -> dict[str, int]:
 
 
 def graph_sql(env: dict[str, str], sql: str, **kwargs):
-    """Runs `sql` with AGE activated for this one psql invocation."""
+    """Runs `sql` with AGE activated for this one psql invocation.
+
+    For statements that speak to AGE -- a cypher() call, an ag_catalog
+    table, a citation_graph label table -- and for no others. A plain
+    relational query over citation.work/citation.cites goes through
+    pg_common.run_sql(): routed here, the preamble would come to mean
+    "mentions the citation schema" rather than "needs AGE loaded", and a
+    query needing only Postgres and pgvector would fail wherever LOAD 'age'
+    is unavailable. Read off the call sites by
+    tests/test_pg_graph_projection.py.
+    """
     return run_sql(env, AGE_PREAMBLE + sql, **kwargs)
 
 
@@ -223,14 +232,6 @@ def projection_reading(env: dict[str, str]) -> Projection:
     ).stdout.strip().split(FIELD_SEP)
     work_n, cites_n, vertex_n, edge_n = (int(value) for value in row[:4])
     return Projection(work_n, cites_n, vertex_n, edge_n, *row[4:])
-
-
-def content_fingerprints(env: dict[str, str]) -> tuple[str, str, str, str]:
-    """(work, graph work, cites, graph cites) md5s: the content half of the
-    reading, for a caller that wants only the digests."""
-    seen = projection_reading(env)
-    return (seen.work_digest, seen.graph_work_digest,
-            seen.cites_digest, seen.graph_cites_digest)
 
 
 def projection_diff(env: dict[str, str]) -> Projection | None:

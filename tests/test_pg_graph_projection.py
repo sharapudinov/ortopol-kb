@@ -8,10 +8,12 @@ live-instance fact no stub stands in for.
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
@@ -61,6 +63,84 @@ class ProjectionFaultsTests(unittest.TestCase):
         self.assertEqual(len(faults), 1)
         self.assertIn("content fingerprint differs", faults[0])
         self.assertIn("рёбра", faults[0])
+
+
+class ReadingSqlIsAboutContentTests(unittest.TestCase):
+    """The digest statement itself, read without a database.
+
+    Dropping title or kind from either side degrades the projection check
+    back to a comparison of counts -- the exact regression
+    GRAPH_IS_PROJECTION exists to catch -- and every existing test of the
+    digests is behind a live-Postgres skip, so an offline run would go on
+    passing. These read the SQL text instead.
+    """
+
+    SQL = pg_graph_common._READING_SQL.format(graph=pg_graph_common.GRAPH_NAME)
+
+    def test_the_relational_digest_is_over_the_properties_the_graph_carries(self):
+        for column in ("w.key", "w.kind", "w.year", "w.title"):
+            self.assertIn(column, self.SQL, "содержательный отпечаток обеднён")
+
+    def test_the_graph_digest_reads_the_same_properties_off_the_label_table(self):
+        for name in ("'\"key\"'", "'\"kind\"'", "'\"year\"'", "'\"title\"'"):
+            self.assertIn(f"properties->>{name}", self.SQL)
+
+    def test_the_graph_side_reads_the_projection_and_not_the_tables(self):
+        self.assertIn('citation_graph."Work"', self.SQL)
+        self.assertIn('citation_graph."CITES"', self.SQL)
+
+    def test_both_sides_are_ordered_under_one_collation(self):
+        """A digest that depends on the database's collation compares two
+        orderings, not two contents.
+        """
+        self.assertEqual(self.SQL.count('COLLATE "C"'), 8)
+
+    def test_the_reading_carries_four_counts_and_four_digests(self):
+        self.assertEqual(len(pg_graph_common.Projection._fields), 8)
+        self.assertEqual(self.SQL.count("md5("), 4)
+
+
+class TheAgeSeamIsForAgeStatementsTests(unittest.TestCase):
+    """graph_sql() prepends LOAD 'age' + search_path, and that is the whole
+    of what it says about a statement. A purely relational query routed
+    through it acquires a dependency on the extension being loadable for no
+    answer -- in the shipped artifact too, where the graph query modules
+    travel and the recipient's role may not be able to load it -- and the
+    seam stops meaning "this speaks Cypher".
+    """
+
+    ROOT = Path(pg_graph_common.__file__).resolve().parent
+
+    def _callers(self) -> dict[str, str]:
+        found = {}
+        for path in sorted(self.ROOT.glob("pg_*.py")):
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                target = node.func
+                name = getattr(target, "attr", None) or getattr(target, "id", None)
+                if name == "graph_sql" and path.name != "pg_graph_common.py":
+                    found[path.name] = source
+        return found
+
+    def test_only_modules_that_speak_to_age_reach_for_the_preamble(self):
+        callers = self._callers()
+        self.assertTrue(callers, "шов не вызывается ниоткуда -- сканировать нечего")
+        for name, source in callers.items():
+            self.assertTrue(
+                "cypher(" in source or "ag_catalog" in source,
+                f"{name}: реляционный запрос идёт через шов AGE -- "
+                "ему нужен pg_common.run_sql()")
+
+    def test_the_relational_consumers_are_off_the_seam(self):
+        """The control for the rule above: these two ask plain SQL over
+        citation.work/citation.cites plus pgvector, and are named here so
+        the rule cannot pass by scanning nothing.
+        """
+        self.assertNotIn("pg_graph_candidates.py", self._callers())
+        self.assertNotIn("pg_graph_cocitation.py", self._callers())
 
 
 class ProjectionReadTests(unittest.TestCase):
