@@ -5,7 +5,7 @@ behaviour is test_pg_graph.py's job.
 
 A live-database class at the bottom exercises citation_problems() against
 the real corpus (skipped, not failed, when Postgres is unreachable -- same
-convention as test_pg_graph.py's CitationGraphLiveTests).
+convention as test_pg_graph_live.py's CitationGraphLiveTests).
 """
 from __future__ import annotations
 

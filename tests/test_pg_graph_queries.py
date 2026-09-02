@@ -59,7 +59,7 @@ class CitersQueryTests(unittest.TestCase):
     what calls citation.cypher_literal() to produce it) -- these tests
     exercise only the text splicing and depth handling, not the escaping
     algorithm itself, which is pg_schema_citation.sql's job and is tested
-    live against the real SQL function in test_pg_graph.py.
+    live against the real SQL function in test_pg_graph_live.py.
     """
     def test_depth_bound_enforced(self):
         with self.assertRaises(ValueError):
