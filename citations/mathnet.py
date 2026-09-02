@@ -88,12 +88,33 @@ class MathnetClient:
             return None
         return self._cache.path(f"{identifier}.html")
 
+    def _no_citation_line(self, identifier: str) -> Path | None:
+        """Where "the site answered, and its <title> carries no citation" is
+        recorded -- the archive-redirect page the module docstring describes.
+
+        A marker of its own rather than the body alone: the body IS kept
+        beside it (a better parser deserves the chance to re-read it), but
+        such a page can be shorter than the 2000-byte floor that keeps a
+        truncated body from being trusted, and then nothing would stand
+        between it and a fresh request on every startup. The same rule
+        ZbmathClient states: cache what the source ANSWERED, never cache a
+        failure -- a transport error still bypasses this entirely.
+        """
+        if self._cache is None:
+            return None
+        return self._cache.path(f"{identifier}.no-citation.json")
+
     def titles(self, identifier: str) -> tuple[list[str], list[int]]:
         """([titles], [years]); ([], []) with the id recorded in .failures."""
         path = self._cached(identifier)
         if path is not None and path.is_file() and path.stat().st_size > 2000:
             self.n_cache_hits += 1
             return parse_titles(path.read_text(encoding="utf-8"))
+        negative = self._no_citation_line(identifier)
+        if negative is not None and negative.is_file():
+            self.n_cache_hits += 1
+            self.failures.append(f"{identifier}: страница без цитат в <title>")
+            return [], []
         request = urllib.request.Request(BASE + identifier,
                                          headers={"User-Agent": USER_AGENT})
         try:
@@ -106,9 +127,11 @@ class MathnetClient:
         self.n_requests += 1
         self._sleep(self.pause)
         titles, years = parse_titles(raw)
-        if not titles:
-            self.failures.append(f"{identifier}: страница без цитат в <title>")
-            return [], []
         if path is not None:
             self._cache.write(path, raw)
+        if not titles:
+            if negative is not None:
+                self._cache.write(negative, '{"titles": []}')
+            self.failures.append(f"{identifier}: страница без цитат в <title>")
+            return [], []
         return titles, years

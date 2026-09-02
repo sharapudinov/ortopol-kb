@@ -249,13 +249,32 @@ class MathnetClientTests(unittest.TestCase):
         self.assertEqual(len(client.failures), 1)
         self.assertIn("без цитат", client.failures[0])
 
-    def test_a_titleless_page_is_not_cached(self):
-        """Nothing was learned, so a retry must be free to ask again."""
+    def test_a_titleless_page_is_cached_as_the_negative_answer_it_is(self):
+        """The request SUCCEEDED -- the page simply carries no citation line.
+
+        Re-asking buys nothing and costs a 0.6 s pause against a site that
+        starts timing out, on the startup path of every non-offline run.
+        The failure stays recorded on the cached round, so the gap in the
+        identity anchor is as visible on the second run as on the first.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             opener = _Sequence([_Response(b"<html><body>redirected</body></html>"),
                                 _Response(PAGE.encode("windows-1251"))])
             client = self._client(opener, Path(tmp))
-            client.titles("mzm8442")
+            self.assertEqual(client.titles("mzm8442"), ([], []))
+            self.assertEqual(client.titles("mzm8442"), ([], []))
+        self.assertEqual(opener.calls, 1, "успешный ответ спрошен дважды")
+        self.assertEqual(client.n_requests, 1)
+        self.assertEqual(client.n_cache_hits, 1)
+        self.assertEqual(len(client.failures), 2)
+
+    def test_a_transport_failure_is_still_asked_again(self):
+        """A cached blank would turn one timeout into a permanent verdict."""
+        with tempfile.TemporaryDirectory() as tmp:
+            opener = _Sequence([TimeoutError("read timed out"),
+                                _Response(PAGE.encode("windows-1251"))])
+            client = self._client(opener, Path(tmp))
+            self.assertEqual(client.titles("mzm8442"), ([], []))
             titles, _years = client.titles("mzm8442")
         self.assertEqual(opener.calls, 2)
         self.assertEqual(titles, ["Русское название", "English title"])
