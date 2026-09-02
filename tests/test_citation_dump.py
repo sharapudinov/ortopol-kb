@@ -18,6 +18,7 @@ import _pathfix_deploy  # noqa: F401
 
 import citation_columns
 import citation_dump
+import schema_catalog
 import citation_profile
 from legal_profile import SHIPPED_SQL
 from manifest_contract import CitationMode, Profile, schemas_for
@@ -124,8 +125,13 @@ class CopySelectTests(unittest.TestCase):
 
 
 class SetvalTests(unittest.TestCase):
+    """The statement itself is schema_catalog's, written for both dumps
+    (test_public_dump.SerialColumnsAreRepositionedTests holds the two to
+    one emission); this asserts the citation half's own arguments.
+    """
+
     def test_a_serial_column_gets_a_setval_statement(self):
-        sql = citation_dump._setval_sql("work", "id").decode()
+        sql = schema_catalog.setval_sql(citation_dump.SCHEMA, "work", "id").decode()
         self.assertIn("pg_get_serial_sequence('citation.work', 'id')", sql)
         self.assertIn("coalesce((SELECT max(id) FROM citation.work), 1)", sql)
 

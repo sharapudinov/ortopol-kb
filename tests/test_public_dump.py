@@ -1,10 +1,17 @@
-"""Unit tests for deploy/public_dump.py: no live Postgres, no pg_dump.
+"""Unit tests for deploy/public_dump.py's corpus half: no live Postgres,
+no pg_dump.
 
 The dump is assembled from real subprocess output, so the pieces under test
 here are the ones that decide WHAT gets asked of the server -- the column
 lists (read from the catalog, never typed out) and the COPY selects that
 apply the legal cut -- plus the assembled file's shape, with pg_dump/psql
 replaced by stubs that write known text.
+
+The handshake with the citation half (whether dump_citation() is called at
+all, and what its slice of the file then looks like) is
+test_public_dump_citation.py's -- the split is kb/CLAUDE.md FILE_SIZE, along
+the seam the module itself keeps between the schema it cuts per document
+and the schema it cuts per policy.
 """
 from __future__ import annotations
 
@@ -18,19 +25,14 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
+from _dump_fixtures import CORPUS_COLUMNS, CORPUS_SERIALS
 
-import citation_dump
-import citation_profile
 import dump_scan
 import public_dump
+import schema_catalog
 from legal_profile import Unclassified
 from manifest_contract import CitationMode, Profile, base_schemas_for, schemas_for
 
-# The citation tables a dump writes today, in restore order -- the live
-# assertion that this is what the catalog and the foreign keys say lives in
-# test_citation_dump_live.py.
-DUMPED_CITATION_TABLES = ("work", "cites", "crawl_step", "public_policy",
-                          "schema_backfill")
 
 
 class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
@@ -244,12 +246,86 @@ class WriteCopyBlockTests(unittest.TestCase):
         self.assertIn("TO STDOUT", argv[-1])
 
 
+class SerialColumnsAreRepositionedTests(unittest.TestCase):
+    """The safeguard schema_catalog was introduced for, on the schema its
+    own docstring calls the more sensitive one.
+
+    corpus.pages.id is the only BIGSERIAL the corpus has, and the dump was
+    correct only because PAGES_EXCLUDED happens to drop it from the COPY --
+    hand-kept knowledge beside a classification guard that never looks at
+    it. A corpus table added with a serial id has to appear in TABLE_ALIASES
+    and _SOURCE to build, and neither of them says anything about sequences.
+    """
+
+    def _block(self, table, columns, serials):
+        buffer = io.BytesIO()
+        with mock.patch.object(public_dump, "stream_stdout",
+                                side_effect=lambda argv, env, dst: dst.write(b"row\n")):
+            public_dump.write_copy_block({}, buffer, table, columns, serials=serials)
+        return buffer.getvalue().decode()
+
+    def test_a_serial_column_is_reset_after_the_copy_terminator(self):
+        text = self._block("pages", ["document_id", "page_number"], ["id"])
+        self.assertLess(text.index("\\.\n"), text.index("setval"))
+        self.assertIn("pg_get_serial_sequence('corpus.pages', 'id')", text)
+
+    def test_a_table_with_no_sequence_gets_no_statement(self):
+        self.assertNotIn("setval", self._block("documents", ["id"], ()))
+
+    def test_both_dumps_write_the_same_statement(self):
+        """One emission, parameterised by schema: the corpus half used to
+        have none at all while the citation half had its own copy.
+        """
+        self.assertEqual(
+            schema_catalog.setval_sql("corpus", "pages", "id"),
+            schema_catalog.setval_sql("citation", "work", "id")
+            .replace(b"citation.work", b"corpus.pages"))
+
+    def test_an_empty_table_does_not_burn_its_first_id(self):
+        sql = schema_catalog.setval_sql("corpus", "pages", "id").decode()
+        self.assertIn("IS NOT NULL", sql)
+        self.assertIn("coalesce", sql)
+
+    def test_the_columns_to_reset_are_the_catalogs_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gz_path = Path(tmp) / "01_dump.sql.gz"
+            with mock.patch.object(public_dump, "require_classified"), \
+                 mock.patch.object(public_dump, "corpus_tables",
+                                    return_value=list(DumpPublicTests.COLUMNS)), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                                    return_value=dict(DumpPublicTests.COLUMNS)), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                                    return_value=CORPUS_SERIALS), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                                    return_value=CORPUS_SERIALS) as serials_mock, \
+                 mock.patch.object(public_dump, "stream_stdout",
+                                    side_effect=lambda argv, env, dst: dst.write(b"row\n")):
+                public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
+            serials_mock.assert_called_once_with({}, "corpus")
+            self.assertEqual(dump_scan.sequence_resets(gz_path), {"corpus.pages.id"})
+
+    def test_a_new_serial_column_is_reset_without_being_named_anywhere(self):
+        """The point of asking the catalog: nothing below mentions the
+        table, and its sequence still travels correctly.
+        """
+        columns = dict(DumpPublicTests.COLUMNS, pages=["document_id", "page_number"])
+        with tempfile.TemporaryDirectory() as tmp:
+            gz_path = Path(tmp) / "01_dump.sql.gz"
+            with mock.patch.object(public_dump, "require_classified"), \
+                 mock.patch.object(public_dump, "corpus_tables", return_value=list(columns)), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                                    return_value=columns), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                                    return_value={"documents": ["id"], "pages": ["id"]}), \
+                 mock.patch.object(public_dump, "stream_stdout",
+                                    side_effect=lambda argv, env, dst: dst.write(b"row\n")):
+                public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
+            self.assertEqual(dump_scan.sequence_resets(gz_path),
+                             {"corpus.documents.id", "corpus.pages.id"})
+
+
 class DumpPublicTests(unittest.TestCase):
-    COLUMNS = {
-        "documents": ["id", "source_blob"],
-        "pages": ["document_id", "page_number", "body", "embedding"],
-        "embedding_model": ["id", "model"],
-    }
+    COLUMNS = CORPUS_COLUMNS
 
     def _run(self, tmp, stream_side_effect=None):
         gz_path = Path(tmp) / "01_dump.sql.gz"
@@ -265,6 +341,8 @@ class DumpPublicTests(unittest.TestCase):
                                 return_value=list(DumpPublicTests.COLUMNS)), \
              mock.patch.object(public_dump.schema_catalog, "schema_columns",
                                 return_value=dict(DumpPublicTests.COLUMNS)), \
+             mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                                return_value=CORPUS_SERIALS), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=fake_stream):
             public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
         return gz_path, classified_mock
@@ -312,148 +390,14 @@ class DumpPublicTests(unittest.TestCase):
                                     return_value=list(DumpPublicTests.COLUMNS)), \
                  mock.patch.object(public_dump.schema_catalog, "schema_columns",
                                     return_value=dict(DumpPublicTests.COLUMNS)), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                                    return_value=CORPUS_SERIALS), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=boom):
                 with self.assertRaises(RuntimeError) as ctx:
                     public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
             self.assertIn("nope", str(ctx.exception))
             self.assertFalse(gz_path.exists())
 
-
-class CitationDumpIntegrationTests(unittest.TestCase):
-    """dump_public()'s citation-schema gate and dispatch -- the column-level
-    blanking behaviour under CitationMode.TOPOLOGY_ONLY belongs to
-    citation_dump.py's own tests (test_citation_dump.py); this covers the
-    handshake between the two modules.
-    """
-
-    CITATION_COLUMNS = {
-        "work": ["id", "key", "title", "abstract", "evidence"],
-        "cites": ["citing", "cited", "evidence"],
-        "crawl_step": ["id", "crawl_id"],
-        "public_policy": ["id", "mode", "note"],
-        "schema_backfill": ["name", "applied_at"],
-    }
-
-    def _fake_stream(self, argv, env, dst):
-        dst.write(b"-- DDL\n" if "pg_dump" in argv[0] else b"row\n")
-
-    def _run(self, tmp, citation_mode):
-        gz_path = Path(tmp) / "01_dump.sql.gz"
-        with mock.patch.object(public_dump, "require_classified"), \
-             mock.patch.object(public_dump, "corpus_tables",
-                                return_value=list(DumpPublicTests.COLUMNS)), \
-             mock.patch.object(public_dump.schema_catalog, "schema_columns",
-                                return_value=dict(DumpPublicTests.COLUMNS)), \
-             mock.patch.object(public_dump, "stream_stdout", side_effect=self._fake_stream), \
-             mock.patch.object(citation_dump, "citation_tables",
-                                return_value=list(DUMPED_CITATION_TABLES)), \
-             mock.patch.object(citation_dump, "schema_columns",
-                                return_value=dict(self.CITATION_COLUMNS)), \
-             mock.patch.object(citation_dump, "schema_serial_columns",
-                                    return_value={}), \
-             mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
-            public_dump.dump_public({}, gz_path, citation_mode=citation_mode)
-        return gz_path
-
-    def test_none_mode_ships_no_citation_schema(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = self._run(tmp, CitationMode.NONE)
-            self.assertEqual(dump_scan.schema_names(gz_path), {"corpus"})
-
-    def test_full_skeleton_mode_ships_citation_schema(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = self._run(tmp, CitationMode.FULL_SKELETON)
-            self.assertEqual(dump_scan.schema_names(gz_path), {"corpus", "citation"})
-
-    def test_every_mode_dumps_exactly_what_the_manifest_will_declare(self):
-        """MANIFEST_DESCRIBES_ARTIFACT, checked against the dump's own bytes:
-        manifest.json's schemas[] is schemas_for(), and so is this.
-        """
-        for mode in CitationMode.ALL:
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
-                gz_path = self._run(tmp, mode)
-                self.assertEqual(dump_scan.schema_names(gz_path),
-                                 set(schemas_for(Profile.PUBLIC, mode)))
-
-    def test_topology_only_blanks_abstracts_and_evidence(self):
-        # End-to-end through dump_public() -- the column-level SQL itself is
-        # test_citation_dump.py's CopySelectTests; this confirms the actual
-        # bytes public_dump.dump_public() produces carry no abstract/evidence.
-        gz_path = None
-        seen_selects = []
-
-        def capturing_stream(argv, env, dst):
-            if argv[0] == "psql":
-                seen_selects.append(argv[-1])
-            self._fake_stream(argv, env, dst)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "01_dump.sql.gz"
-            with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "corpus_tables",
-                                    return_value=list(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
-                                    return_value=dict(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump, "stream_stdout", side_effect=capturing_stream), \
-                 mock.patch.object(citation_dump, "citation_tables",
-                                    return_value=list(DUMPED_CITATION_TABLES)), \
-                 mock.patch.object(citation_dump, "schema_columns",
-                                    return_value=dict(self.CITATION_COLUMNS)), \
-                 mock.patch.object(citation_dump, "schema_serial_columns",
-                                    return_value={}), \
-                 mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
-                public_dump.dump_public({}, gz_path, citation_mode=CitationMode.TOPOLOGY_ONLY)
-        work_select = next(s for s in seen_selects if "citation.work" in s)
-        cites_select = next(s for s in seen_selects if "citation.cites" in s)
-        self.assertIn("NULL::text AS abstract", work_select)
-        self.assertIn("NULL::jsonb AS evidence", work_select)
-        self.assertIn("NULL::jsonb AS evidence", cites_select)
-
-    def test_the_dump_never_reads_the_policy_itself(self):
-        """The mode arrives as a value from build_package.main(), which
-        resolved it once for the manifest and the dump alike. If this module
-        asked the database again, the two could disagree -- so the policy
-        reader is made to explode here and the dump must not notice.
-        """
-        with mock.patch.object(citation_profile, "require_citation_mode",
-                                side_effect=AssertionError("policy re-read by the dump")), \
-             mock.patch.object(citation_profile, "citation_public_policy",
-                                side_effect=AssertionError("policy re-read by the dump")):
-            with tempfile.TemporaryDirectory() as tmp:
-                gz_path = self._run(tmp, CitationMode.FULL_SKELETON)
-                self.assertEqual(dump_scan.schema_names(gz_path), {"corpus", "citation"})
-
-    def test_dumps_never_carry_age_catalog(self):
-        # Defense in depth on top of --schema already whitelisting corpus:
-        # both DDL invocations must explicitly exclude the AGE-owned schemas
-        # (apache/age issue #2503, see pg_schema_citation.sql's header).
-        seen_argv = []
-
-        def capture(argv, env, dst):
-            seen_argv.append(argv)
-            self._fake_stream(argv, env, dst)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "01_dump.sql.gz"
-            with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "corpus_tables",
-                                    return_value=list(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
-                                    return_value=dict(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump, "stream_stdout", side_effect=capture), \
-                 mock.patch.object(citation_dump, "citation_tables",
-                                    return_value=list(DUMPED_CITATION_TABLES)), \
-                 mock.patch.object(citation_dump, "schema_columns",
-                                    return_value=dict(self.CITATION_COLUMNS)), \
-                 mock.patch.object(citation_dump, "schema_serial_columns",
-                                    return_value={}), \
-                 mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
-                public_dump.dump_public({}, gz_path, citation_mode=CitationMode.FULL_SKELETON)
-        pg_dump_argvs = [argv for argv in seen_argv if argv[0] == "pg_dump"]
-        self.assertEqual(len(pg_dump_argvs), 2)  # corpus DDL, citation DDL
-        for argv in pg_dump_argvs:
-            self.assertIn("--exclude-schema=citation_graph", argv)
-            self.assertIn("--exclude-schema=ag_catalog", argv)
 
 
 if __name__ == "__main__":

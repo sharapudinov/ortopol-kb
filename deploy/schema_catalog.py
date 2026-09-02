@@ -184,6 +184,28 @@ def schema_serial_columns(env: dict, schema: str) -> dict[str, list[str]]:
     return _by_table(env, _SERIAL_COLUMNS_SQL, schema)
 
 
+def setval_sql(schema: str, table: str, column: str) -> bytes:
+    """The statement that repositions one sequence-owning column's sequence
+    after its COPY block, for either dump to write.
+
+    Addressed through pg_get_serial_sequence rather than by sequence name:
+    the name is pg_dump's business and a renamed one is not this module's to
+    know. coalesce + the third argument together cover the empty table --
+    setval(seq, 1, false) leaves the first row at 1, where setval(seq, 1,
+    true) would silently burn it.
+
+    Lives here, beside the catalog read that says WHICH columns need it, so
+    both dumps emit the same statement: written once per dump, the corpus
+    half simply had none, and the guarantee rested on a hand-written
+    exclusion list instead.
+    """
+    return (
+        f"SELECT setval(pg_get_serial_sequence('{schema}.{table}', '{column}'), "
+        f"coalesce((SELECT max({column}) FROM {schema}.{table}), 1), "
+        f"(SELECT max({column}) FROM {schema}.{table}) IS NOT NULL);\n"
+    ).encode()
+
+
 def columns_of(columns: dict[str, list[str]], table: str, schema: str,
                exclude: tuple[str, ...] = ()) -> list[str]:
     """`table`'s dumpable columns out of a schema-wide read, or a refusal.

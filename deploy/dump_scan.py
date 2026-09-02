@@ -76,6 +76,28 @@ def schema_names(dump_path: Path) -> set[str]:
     return found
 
 
+SETVAL = re.compile(
+    rf"^SELECT setval\(pg_get_serial_sequence\('({_NAME})\.({_NAME})', '({_NAME})'\)")
+
+
+def sequence_resets(dump_path: Path) -> set[str]:
+    """Every "<schema>.<table>.<column>" whose sequence the dump repositions.
+
+    A COPY block that carries a sequence-owning column, or one that omits it
+    and lets the restore-side DEFAULT assign it, both leave a sequence whose
+    position the recipient inherits; the setval() is what makes that position
+    right, and it is the kind of statement whose absence nothing notices --
+    the restore succeeds and the FIRST INSERT afterwards collides. Read here
+    so the assertion is about the shipped bytes, like every other question
+    this module answers.
+
+    Only the form schema_catalog.setval_sql() writes: pg_dump emits its own,
+    keyed by sequence NAME, for the profile it produces whole.
+    """
+    return {f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+            for m in (SETVAL.match(line) for line in _decompress_lines(dump_path)) if m}
+
+
 def scan(
     dump_path: Path,
     row_visitors: dict[str, Callable[[dict[str, str]], None]] | None = None,

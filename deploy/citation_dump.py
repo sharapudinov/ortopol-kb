@@ -52,6 +52,7 @@ from schema_catalog import (
     restore_order,
     schema_columns,
     schema_serial_columns,
+    setval_sql,
 )
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import CitationMode, strips_content
@@ -149,14 +150,6 @@ def copy_select(table: str, columns: list[str], mode: str) -> str:
     return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
-def _setval_sql(table: str, column: str) -> bytes:
-    return (
-        f"SELECT setval(pg_get_serial_sequence('citation.{table}', '{column}'), "
-        f"coalesce((SELECT max({column}) FROM citation.{table}), 1), "
-        f"(SELECT max({column}) FROM citation.{table}) IS NOT NULL);\n"
-    ).encode()
-
-
 def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
                      mode: str, serials=()) -> None:
     dst.write(f"COPY citation.{table} ({', '.join(columns)}) FROM stdin;\n".encode())
@@ -165,7 +158,7 @@ def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
     stream_stdout(argv, env, dst)
     dst.write(b"\\.\n")
     for column in serials:
-        dst.write(_setval_sql(table, column))
+        dst.write(setval_sql(SCHEMA, table, column))
     dst.write(b"\n")
 
 

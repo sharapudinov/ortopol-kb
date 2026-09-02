@@ -58,6 +58,14 @@ block, and profile_checks.check_schemas compares SCHEMAS, not tables, so
 nothing downstream contradicts an empty one. What stays hand-written is
 the per-schema knowledge -- which alias a table's projection uses and
 which rows it contributes -- and an unclassified table is a refusal.
+
+So is the third catalog question, WHICH columns own a sequence: every one
+of them gets a setval() after its COPY block. The corpus half used to emit
+none, and was correct only because the single BIGSERIAL it has is the one
+PAGES_EXCLUDED happens to drop from the COPY -- hand-kept knowledge, and
+knowledge nothing checks, since a table only has to appear in TABLE_ALIASES
+and _SOURCE to build. A sequence left at 1 restores cleanly and collides on
+the recipient's first insert.
 """
 from __future__ import annotations
 
@@ -91,9 +99,11 @@ PUBLIC_SCHEMAS = base_schemas_for(Profile.PUBLIC)
 
 # pages.id is a BIGSERIAL nothing references (probes address a page by
 # document_id + page_number). Omitting it from the COPY lets the sequence
-# assign ids on restore, in the deterministic order of the ORDER BY below,
-# and leaves the sequence itself correctly positioned afterward -- no
-# setval() to emit and keep in sync.
+# assign ids on restore, in the deterministic order of the ORDER BY below.
+# The sequence is then repositioned explicitly like every other one in the
+# dump (write_copy_block's serials), so nothing about the restore rests on
+# this exclusion: a corpus table whose id DOES travel gets the same
+# treatment, which is what the exclusion used to be standing in for.
 PAGES_EXCLUDED = ("id",)
 
 # One alias per dumped table, so _select_expression() never has to guess.
@@ -161,18 +171,29 @@ def _copy_select(table: str, columns: list[str]) -> str:
     return f"COPY (SELECT {projection}\n{_SOURCE[table]}) TO STDOUT"
 
 
-def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str]) -> None:
+def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
+                     serials=()) -> None:
     """Writes one `COPY corpus.<table> (cols) FROM stdin;` block, streaming
     the server-side COPY TO STDOUT output between the header and the `\\.`
     terminator -- the same shape pg_dump emits, so the result is an ordinary
     psql-restorable dump with no special-case loader.
+
+    `serials` are the table's sequence-owning columns, and each gets the
+    setval() the citation half has always written (schema_catalog.
+    setval_sql). Asked of the catalog rather than reasoned about per table:
+    a sequence left at 1 restores without complaint and hands the
+    recipient's first insert an id already taken, which is a failure at
+    their end rather than at ours.
     """
     header = f"COPY corpus.{table} ({', '.join(columns)}) FROM stdin;\n"
     dst.write(header.encode())
     argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
             "-c", _copy_select(table, columns)]
     stream_stdout(argv, env, dst)
-    dst.write(b"\\.\n\n")
+    dst.write(b"\\.\n")
+    for column in serials:
+        dst.write(schema_catalog.setval_sql(SCHEMA, table, column))
+    dst.write(b"\n")
 
 
 def _dump_ddl(env: dict, dst: IO[bytes]) -> None:
@@ -224,7 +245,11 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
     """
     require_classified(env)
     tables = corpus_tables(env)
+    # Both catalog questions are asked once for the whole schema, as the
+    # citation half asks them: one read answers for every table, and a
+    # per-table read costs a psql process each time round the loop.
     columns = schema_catalog.schema_columns(env, SCHEMA)
+    serials = schema_catalog.schema_serial_columns(env, SCHEMA)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             dst.write(PREAMBLE.encode())
@@ -232,7 +257,8 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
             dst.write(b"\n")
             for table in tables:
                 write_copy_block(env, dst, table, schema_catalog.columns_of(
-                    columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ())))
+                    columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ())),
+                    serials=serials.get(table, ()))
             dst.write(b"\n")
             citation_dump.dump_citation(env, dst, citation_mode)
     except CommandFailed as exc:
