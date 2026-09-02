@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
-import pg_load_citations
+from citations import seed_metadata
 from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 
 
@@ -152,13 +152,14 @@ class ZbmathAbstractsJournalTests(unittest.TestCase):
         writer = self._Writer()
         client = mock.Mock(n_requests=1, n_cache_hits=0, failures=[],
                            document=mock.Mock(side_effect=document_side_effect))
-        with mock.patch.object(pg_load_citations, "seed_matches",
+        with mock.patch.object(seed_metadata, "seed_matches",
                                 return_value={"1997_sm280": "1234.56789"}), \
-             mock.patch.object(pg_load_citations, "stored_zbmath_abstracts",
+             mock.patch.object(seed_metadata, "stored_zbmath_abstracts",
                                 return_value=stored or {}), \
-             mock.patch.object(pg_load_citations, "ZbmathClient", return_value=client):
-            out = pg_load_citations.zbmath_abstracts(
+             mock.patch.object(seed_metadata, "ZbmathClient", return_value=client):
+            out = seed_metadata.zbmath_abstracts(
                 {}, ["1997_sm280"], {"1997_sm280": "W1"}, writer=writer, crawl_id="t",
+                log=lambda *_: None,
             )
         return out, writer, client
 

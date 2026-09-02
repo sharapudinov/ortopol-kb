@@ -17,18 +17,49 @@ from __future__ import annotations
 
 import json
 
+from paths import IIS_SOURCE_DIR
 from pg_common import run_sql, sql_literal
 
+# The measurement that established which OpenAlex/zbMATH record each of our
+# documents is (measurements.citation_source_coverage). A run number, i.e. a
+# fact about the data, so it belongs beside the read that uses it rather
+# than in whichever entry point happens to call that read.
+COVERAGE_RUN = 85
 
-def corpus_document_ids(env, source_dir: str = "theory/iis") -> list[str]:
+# The seed document set, written ONCE. Both readings below are of THIS
+# predicate: "what counts as a seed document" changing for the crawl but not
+# for its Math-Net title anchor produces seeds the twin rule cannot anchor,
+# and nothing reports it.
+_SEED_DOCUMENTS_SQL = (
+    "SELECT id, coalesce(source_url, '') FROM corpus.documents "
+    "WHERE source_dir = :'dir' AND extraction_state <> 'metadata' ORDER BY id;"
+)
+
+
+def corpus_seed_documents(env, source_dir: str = IIS_SOURCE_DIR) -> list[tuple[str, str]]:
+    """[(document id, source_url or '')] for the corpus the crawl seeds from.
+
+    source_dir is paths.IIS_SOURCE_DIR by default and never the literal:
+    corpus.documents.source_dir carries that exact string, and a second
+    spelling of it returns zero rows rather than failing (paths.py's own
+    docstring).
+    """
     out = run_sql(
-        env,
-        "SELECT id FROM corpus.documents WHERE source_dir = :'dir' "
-        "AND extraction_state <> 'metadata' ORDER BY id;",
+        env, _SEED_DOCUMENTS_SQL,
         variables={"dir": source_dir},
-        extra_args=["-t", "-A"],
+        extra_args=["-t", "-A", "-F", "\x1f"],
     ).stdout.strip()
-    return [line for line in out.split("\n") if line]
+    rows = []
+    for line in out.split("\n"):
+        if not line:
+            continue
+        document_id, _, url = line.partition("\x1f")
+        rows.append((document_id, url))
+    return rows
+
+
+def corpus_document_ids(env, source_dir: str = IIS_SOURCE_DIR) -> list[str]:
+    return [document_id for document_id, _url in corpus_seed_documents(env, source_dir)]
 
 
 def seed_matches(env, run_id: int, source: str) -> dict[str, str]:

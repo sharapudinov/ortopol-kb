@@ -12,8 +12,13 @@ Split by responsibility rather than by line count:
                      §7: before the union, Jaccard was understated threefold);
 - frontier        -- the relevance filter: embeddings, seed centroid, cosine,
                      and the distribution helpers the tau calibration reports;
-- store           -- Postgres: every write this crawl makes;
-- crawl           -- the BFS itself, over the four above.
+- inputs          -- the reads that establish a run: the seed document set,
+                     the run-85 matches, the vectors and abstracts already
+                     stored; store -- Postgres: every write this crawl makes;
+- seed_metadata   -- what the seeds know about themselves beyond OpenAlex
+                     (zbMATH abstracts, Math-Net titles), assembled from the
+                     clients and inputs above rather than in the CLI;
+- crawl           -- the BFS itself, over the ones above.
 
 Nothing here imports from research/: the spike's tooling was the prototype,
 this package is the shipped code and must stand on its own.
