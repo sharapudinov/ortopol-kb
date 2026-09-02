@@ -2,6 +2,9 @@
 return a canned CompletedProcess, so the ACTUAL "-F field_sep" split logic
 and the empty-output branch run for real, unlike the deploy tests (which
 stub scalar_row itself wholesale and never exercise this code).
+
+sql_literal is tested twice over: against the text it produces, and -- when
+Postgres is reachable -- against what the server makes of that text.
 """
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 
 import pg_common
+from paths import default_corpus_dir
 
 
 def _completed(stdout: str):
@@ -101,6 +105,58 @@ class RowOrNoneTests(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("nearest_page", message)
         self.assertIn("expected 2 column", message)
+
+
+class SqlLiteralTests(unittest.TestCase):
+    """psql script variables (:'name') cover a single value; a list of them
+    inside one statement has no binding form, so the literal has to be built
+    -- once, here, rather than with an f-string at each call site.
+    """
+
+    def test_plain_value_is_quoted(self):
+        self.assertEqual(pg_common.sql_literal("30 days"), "E'30 days'")
+
+    def test_single_quote_is_escaped(self):
+        self.assertEqual(pg_common.sql_literal("o'zna"), r"E'o\'zna'")
+
+    def test_backslash_is_doubled_before_anything_else(self):
+        # Order matters: a backslash inserted while escaping a quote must
+        # not itself get doubled afterwards.
+        self.assertEqual(pg_common.sql_literal(r"a\'b"), r"E'a\\\'b'")
+
+    def test_nul_byte_is_refused_rather_than_silently_truncated(self):
+        with self.assertRaises(ValueError):
+            pg_common.sql_literal("a\x00b")
+
+
+class SqlLiteralRoundTripTests(unittest.TestCase):
+    """The only assertion that matters in the end: what the SERVER reads
+    back out of the literal is the string that went in.
+    """
+
+    HOSTILE = ["o'zna", r"back\slash", r"both\'kinds", 'quote"and\'apostrophe', "перенос\nстроки"]
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            env = pg_common.load_pgenv(default_corpus_dir() / ".pgenv")
+        except pg_common.PostgresUnavailable as exc:
+            raise unittest.SkipTest(f"Postgres not configured: {exc}")
+        if not pg_common.check_postgres_available(env):
+            raise unittest.SkipTest("Postgres not reachable")
+        cls.env = env
+
+    def test_hostile_strings_survive_the_round_trip(self):
+        values = ", ".join(f"({pg_common.sql_literal(v)})" for v in self.HOSTILE)
+        out = pg_common.run_sql(
+            self.env,
+            f"SELECT string_agg(v, chr(31) ORDER BY ord) FROM "
+            f"(SELECT row_number() OVER () AS ord, v FROM (VALUES {values}) AS t(v)) s;",
+            extra_args=["-t", "-A"],
+        ).stdout
+        # The newline case makes the whole output multi-line; only the
+        # separator-joined payload is compared, not the line structure.
+        self.assertEqual(out.rstrip("\n").split("\x1f"), self.HOSTILE)
 
 
 if __name__ == "__main__":

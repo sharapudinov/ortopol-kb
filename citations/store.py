@@ -21,7 +21,7 @@ import csv
 import io
 import json
 
-from pg_common import copy_csv_into, run_sql, scalar_row
+from pg_common import copy_csv_into, run_sql, scalar_row, sql_literal
 
 WORK_COLUMNS = (
     "key", "doi", "title", "abstract", "year", "authors", "external_ids",
@@ -142,10 +142,18 @@ def seed_matches(env, run_id: int, source: str) -> dict[str, str]:
 
 
 def fresh_keys(env, days: int) -> set[str]:
-    """Keys fetched within `days` -- what --resume declines to re-fetch."""
+    """Keys fetched within `days` -- what --resume declines to re-fetch.
+
+    The interval is the one value here that cannot travel as a psql script
+    variable: `interval :'days'` is not valid syntax, and the concatenated
+    form would still have to be quoted. sql_literal() is that quoting, in
+    the one place the whole repository shares -- not an f-string, which is
+    what the module docstring above rules out.
+    """
+    interval = sql_literal(f"{int(days)} days")
     out = run_sql(
         env,
-        f"SELECT key FROM citation.work WHERE fetched_at > now() - interval '{int(days)} days';",
+        f"SELECT key FROM citation.work WHERE fetched_at > now() - interval {interval};",
         extra_args=["-t", "-A"],
     ).stdout.strip()
     return {line for line in out.split("\n") if line}

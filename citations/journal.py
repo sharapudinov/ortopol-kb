@@ -42,6 +42,18 @@ def seed_error(crawl_id, document_id, openalex_id) -> dict:
                  reason="матч run 85 не отдан OpenAlex по openalex_id")
 
 
+def zbmath_error(crawl_id, document_id, zbmath_id, reason) -> dict:
+    """The zbMATH abstract fallback did not answer for this seed.
+
+    Not the same row as "zbMATH has no review for it", which leaves no row
+    at all and simply no abstract: this one says we never found out. Without
+    it a transient 429 during the seeding pass is indistinguishable, forever
+    after, from a work zbMATH genuinely does not review.
+    """
+    return _step(crawl_id, 0, "error", frontier_key=document_id,
+                 candidate_key=zbmath_id, reason=f"zbmath: {reason}")
+
+
 def keep(crawl_id, depth, candidate_key, node_key, score, tau, relation,
          frontier_key=None) -> dict:
     return _step(crawl_id, depth, "keep", frontier_key=frontier_key or None,

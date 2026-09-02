@@ -16,10 +16,11 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
-from citations import hub_report, journal, twins
+from citations import hub_report, journal, twin_pass, twins
 from citations.crawl import HUB_CAP, Snowball
 from citations.store import DryRunWriter
 
@@ -272,6 +273,74 @@ class MathnetParseTests(unittest.TestCase):
         self.assertEqual(mathnet_id("https://www.mathnet.ru/rus/sm1659"), "sm1659")
         self.assertIsNone(mathnet_id(""))
         self.assertIsNone(mathnet_id("https://doi.org/10.1/x"))
+
+
+class TwinPromotionBatchTests(unittest.TestCase):
+    """Promotions are staged and applied in ONE statement, not one psql
+    process per node: the N+1 write pattern the rest of the package already
+    avoids (citations/store.py stages every bulk write the same way), and a
+    failure mid-loop would otherwise leave a half-promoted set with no
+    journal rows written at all.
+    """
+
+    MERGED = [
+        {"key": "W_EN", "document_id": "2019_rm9846", "seed_key": "W_RU", "rule": "title"},
+        {"key": "W_FR", "document_id": "2015_demr1", "seed_key": "W_RU2", "rule": "doi"},
+    ]
+
+    def test_one_staged_update_for_the_whole_batch(self):
+        sql_calls, copy_calls = [], []
+        with mock.patch.object(twin_pass, "run_sql",
+                                side_effect=lambda env, sql, **kw: sql_calls.append(sql)), \
+             mock.patch.object(twin_pass, "copy_csv_into",
+                                side_effect=lambda env, target, csv: copy_calls.append((target, csv))):
+            promoted = twin_pass.promote({}, self.MERGED)
+        self.assertEqual(promoted, 2)
+        self.assertEqual(len(copy_calls), 1, "по одному COPY на строку")
+        self.assertEqual(len(sql_calls), 2, "staging DDL + один UPDATE")
+        self.assertIn("citation.stage_twin", copy_calls[0][0])
+        self.assertIn("W_EN", copy_calls[0][1])
+        self.assertIn("W_FR", copy_calls[0][1])
+        update = sql_calls[1]
+        self.assertIn("UPDATE citation.work w", update)
+        self.assertIn("FROM citation.stage_twin s", update)
+        self.assertIn("WHERE w.key = s.key", update)
+        self.assertIn("'twin_of', s.seed_key", update)
+
+    def test_empty_batch_touches_the_database_at_all_never(self):
+        with mock.patch.object(twin_pass, "run_sql") as sql_mock, \
+             mock.patch.object(twin_pass, "copy_csv_into") as copy_mock:
+            self.assertEqual(twin_pass.promote({}, []), 0)
+        sql_mock.assert_not_called()
+        copy_mock.assert_not_called()
+
+    def test_merge_twins_promotes_once_for_every_match(self):
+        with mock.patch.object(twin_pass, "seed_titles", return_value=[
+                 {"key": "W_RU", "document_id": "2019_rm9846", "titles": ["Некоторая работа"],
+                  "mathnet_id": ""}]), \
+             mock.patch.object(twin_pass, "corpus_years", return_value={"2019_rm9846": [2019]}), \
+             mock.patch.object(twin_pass, "skeleton_nodes", return_value=[
+                 ("W_EN", "Некоторая работа", 2019, "")]), \
+             mock.patch.object(twin_pass, "promote", return_value=1) as promote_mock, \
+             mock.patch.object(twin_pass, "copy_csv_into"):
+            merged = twin_pass.merge_twins({}, "crawl-1")
+        self.assertEqual(len(merged), 1)
+        promote_mock.assert_called_once()
+        self.assertEqual(len(promote_mock.call_args.args[1]), 1)
+
+    def test_dry_run_promotes_nothing(self):
+        with mock.patch.object(twin_pass, "seed_titles", return_value=[
+                 {"key": "W_RU", "document_id": "2019_rm9846", "titles": ["Некоторая работа"],
+                  "mathnet_id": ""}]), \
+             mock.patch.object(twin_pass, "corpus_years", return_value={"2019_rm9846": [2019]}), \
+             mock.patch.object(twin_pass, "skeleton_nodes", return_value=[
+                 ("W_EN", "Некоторая работа", 2019, "")]), \
+             mock.patch.object(twin_pass, "promote") as promote_mock, \
+             mock.patch.object(twin_pass, "copy_csv_into") as copy_mock:
+            merged = twin_pass.merge_twins({}, "crawl-1", dry_run=True)
+        self.assertEqual(len(merged), 1)
+        promote_mock.assert_not_called()
+        copy_mock.assert_not_called()
 
 
 if __name__ == "__main__":

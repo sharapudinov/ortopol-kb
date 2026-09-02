@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from citations import frontier, hub_report, threshold_store, twin_pass
+from citations import frontier, hub_report, journal, threshold_store, twin_pass
 from citations.calibration import (
     REPORT_PATH,
     SPIKE,
@@ -46,7 +46,7 @@ from citations.store import (
     seed_matches,
 )
 from citations.mathnet import MathnetClient, mathnet_id
-from citations.zbmath_client import ZbmathClient, abstract_of
+from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 from paths import default_cache_dir, default_corpus_dir, default_mathnet_cache_dir
 from pg_common import PostgresUnavailable, load_pgenv, run_sql
 from pg_graph import check as graph_check
@@ -61,22 +61,38 @@ def build_client(args) -> OpenAlexClient:
                           max_quota_wait=args.max_quota_wait)
 
 
-def zbmath_abstracts(env, documents, matches) -> dict[str, tuple[str, str]]:
+def zbmath_abstracts(env, documents, matches, writer=None, crawl_id=None) -> dict[str, tuple[str, str]]:
     """document_id -> (abstract, zbmath id) for seeds OpenAlex left blank.
 
     Called for every seed matched in zbMATH; the crawl decides per node
     whether it needs the fallback (OpenAlex abstract wins when it exists).
+
+    A seed simply missing from zbMATH contributes nothing and needs no row.
+    A seed whose FETCH failed is a different thing entirely -- we never
+    learned whether it has a review -- and it goes into the journal as
+    action='error' (citations/journal.zbmath_error), so a later reader can
+    tell the two apart instead of seeing one indistinguishable blank.
     """
     zb_matches = seed_matches(env, COVERAGE_RUN, "zbmath")
     client = ZbmathClient()
-    out = {}
+    out, errors = {}, []
     for document in documents:
         if document not in matches or document not in zb_matches:
             continue
-        text, types = abstract_of(client.document(zb_matches[document]))
+        try:
+            record = client.document(zb_matches[document])
+        except ZbmathUnavailable as exc:
+            errors.append(journal.zbmath_error(crawl_id, document, zb_matches[document], str(exc)))
+            continue
+        text, _types = abstract_of(record)
         if text:
             out[document] = (text, zb_matches[document])
+    if errors and writer is not None:
+        writer.journal(errors)
     print(f"zbMATH: рефератов добыто {len(out)} за {client.n_requests} запросов")
+    if client.failures:
+        print(f"zbMATH НЕ ОТВЕТИЛ по {len(client.failures)} запросам — "
+              f"это не «реферата нет», а «мы не узнали»: {', '.join(client.failures[:10])}")
     return out
 
 
@@ -256,7 +272,8 @@ def main(argv: list[str] | None = None) -> int:
                         tau=args.tau if args.tau is not None else float("inf"),
                         crawl_id=crawl_id, skip_keys=skip, hub_cap=args.hub_cap)
     try:
-        abstracts = zbmath_abstracts(env, documents, matches)
+        abstracts = zbmath_abstracts(env, documents, matches,
+                                     writer=writer, crawl_id=crawl_id)
         snowball.seed(documents, matches, abstracts, mathnet_names(env))
         print(f"семян: {len(snowball.seed_keys)}; "
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")

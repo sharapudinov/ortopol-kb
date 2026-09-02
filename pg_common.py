@@ -6,7 +6,7 @@ are meant to run on their own machines, every Postgres interaction in this
 repository goes through the psql command-line client, which any Postgres
 installation already provides.
 
-Two mechanisms, both avoiding shell string interpolation of untrusted data:
+Three mechanisms, all avoiding shell string interpolation of untrusted data:
 
 - Query parameters go through psql script variables (`-v name=value`,
   referenced in SQL as `:'name'`), which only work when the SQL is read as
@@ -15,6 +15,9 @@ Two mechanisms, both avoiding shell string interpolation of untrusted data:
 - Bulk loads go through `\\copy ... FROM 'tempfile' WITH (FORMAT csv)`,
   with the CSV built by Python's csv module (correct quoting of embedded
   commas/quotes/newlines) and written to its own temp file.
+- Where neither fits -- a LIST of values inside one statement, for which
+  psql has no binding form at all -- sql_literal() builds the quoted
+  literal. One implementation, so no call site invents an f-string.
 """
 from __future__ import annotations
 
@@ -81,6 +84,30 @@ def run_sql(
         return run_sql_file(env, script_path, variables, extra_args)
     finally:
         script_path.unlink(missing_ok=True)
+
+
+def sql_literal(value) -> str:
+    """One value as a SQL string literal, safe to splice into a statement.
+
+    For the cases psql's own `-v name=value` / :'name' binding cannot reach:
+    it substitutes ONE value, so a list of keys inside a single statement
+    (an IN (...) list, a Cypher WHERE ... IN [...]) has no bound form. The
+    alternative every such call site would otherwise reach for is an
+    f-string, and this repository's data is third-party text.
+
+    E'' with backslash escaping rather than plain quote-doubling: E'' means
+    the same thing whatever standard_conforming_strings is set to, while a
+    plain '...' literal changes meaning with it. Backslashes are doubled
+    FIRST -- a backslash inserted while escaping a quote must not be doubled
+    afterwards, the same ordering citation.cypher_literal() documents.
+
+    A NUL byte cannot appear in a Postgres text value at all, and letting it
+    through would truncate the statement rather than fail it.
+    """
+    text = str(value)
+    if "\x00" in text:
+        raise ValueError("NUL byte cannot appear in a SQL string literal")
+    return "E'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def copy_csv_into(env: dict[str, str], table_columns: str, csv_text: str) -> subprocess.CompletedProcess:

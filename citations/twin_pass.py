@@ -104,16 +104,43 @@ def skeleton_nodes(env):
     return rows
 
 
-def promote(env, key: str, document_id: str, seed_key: str, rule: str) -> None:
-    """Idempotent: rerunning on an already-promoted node changes nothing."""
-    run_sql(
-        env,
-        "UPDATE citation.work SET kind = 'our-document', document_id = :'doc', "
-        "evidence = coalesce(evidence, '{}'::jsonb) || jsonb_build_object("
-        "  'twin_of', :'seed', 'twin_rule', :'rule') "
-        "WHERE key = :'key';",
-        variables={"doc": document_id, "seed": seed_key, "key": key, "rule": rule},
-    )
+PROMOTE_COLUMNS = ("key", "document_id", "seed_key", "rule")
+
+_PROMOTE_STAGE_DDL = """
+DROP TABLE IF EXISTS citation.stage_twin;
+CREATE UNLOGGED TABLE citation.stage_twin (
+    key TEXT, document_id TEXT, seed_key TEXT, rule TEXT);
+"""
+
+_PROMOTE_UPDATE = """
+UPDATE citation.work w
+SET kind = 'our-document',
+    document_id = s.document_id,
+    evidence = coalesce(w.evidence, '{}'::jsonb)
+               || jsonb_build_object('twin_of', s.seed_key, 'twin_rule', s.rule)
+FROM citation.stage_twin s
+WHERE w.key = s.key;
+DROP TABLE citation.stage_twin;
+"""
+
+
+def promote(env, merged: list[dict]) -> int:
+    """Promotes the whole batch in ONE statement, staged the way every other
+    bulk write in this package is (citations/store.py): a psql process,
+    connection and transaction per promoted node is the N+1 write pattern,
+    and it also made the pass non-atomic -- a failure halfway through left
+    some nodes promoted and no journal rows written at all.
+
+    Idempotent, as the per-row form was: rerunning over already-promoted
+    nodes writes the same values again.
+    """
+    if not merged:
+        return 0
+    rows = [[m["key"], m["document_id"], m["seed_key"], m["rule"]] for m in merged]
+    run_sql(env, _PROMOTE_STAGE_DDL)
+    copy_csv_into(env, f"citation.stage_twin ({', '.join(PROMOTE_COLUMNS)})", csv_rows(rows))
+    run_sql(env, _PROMOTE_UPDATE)
+    return len(rows)
 
 
 def merge_twins(env, crawl_id: str, *, dry_run: bool = False) -> list[dict]:
@@ -135,9 +162,8 @@ def merge_twins(env, crawl_id: str, *, dry_run: bool = False) -> list[dict]:
         document_id, seed_key, rule = hit
         merged.append({"key": key, "title": title, "rule": rule,
                        "document_id": document_id, "seed_key": seed_key})
-        if not dry_run:
-            promote(env, key, document_id, seed_key, rule)
     if merged and not dry_run:
+        promote(env, merged)
         copy_csv_into(
             env, f"citation.crawl_step ({', '.join(STEP_COLUMNS)})",
             csv_rows([[journal.twin(crawl_id, m["key"], m["document_id"],
