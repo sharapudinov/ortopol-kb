@@ -26,9 +26,11 @@ from citations.openalex_client import (
     OpenAlexClient,
     OpenAlexError,
     QuotaExhausted,
+    note_direction,
     page_index,
     sidecar_name,
 )
+from citations.openalex_records import direction_of
 
 PAGE = ('<html><head><title>И. И. Шарапудинов, “Русское название”, Матем. сб., '
         '180:9 (1989), 1–10; I. I. Sharapudinov, “English title”, '
@@ -168,6 +170,7 @@ class OpenAlexSidecarTests(unittest.TestCase):
             sidecar = page.with_name(sidecar_name(page.name))
             note = json.loads(sidecar.read_text(encoding="utf-8"))
         self.assertEqual(note, {"filter": "referenced_works:W1|W2",
+                                "direction": "cites",
                                 "oql": "works where it cites (W1 or W2)",
                                 "count": 18904})
 
@@ -207,7 +210,30 @@ class OpenAlexSidecarTests(unittest.TestCase):
 
     def test_a_page_with_no_filter_still_gets_an_index(self):
         note = page_index({"meta": {"count": 3, "x_query": {"oql": "works", "url": "/works"}}})
-        self.assertEqual(note, {"filter": "works", "oql": "works", "count": 3})
+        self.assertEqual(note, {"filter": "works", "direction": None,
+                                "oql": "works", "count": 3})
+
+    def test_the_direction_is_read_off_the_filter_in_both_spellings(self):
+        """OpenAlex echoes the request's filter back normalised: the crawl
+        asks `cites:`/`openalex_id:` and x_query.url answers
+        `referenced_works:`/`ids.openalex:`. Both name the same direction,
+        and a filter naming neither belongs to no direction at all.
+        """
+        self.assertEqual(direction_of("referenced_works:W1|W2"), "cites")
+        self.assertEqual(direction_of("cites:W1|W2"), "cites")
+        self.assertEqual(direction_of("ids.openalex:W1"), "openalex_id")
+        self.assertEqual(direction_of("openalex_id:W1"), "openalex_id")
+        self.assertIsNone(direction_of("authorships.author.id:A1"))
+        self.assertIsNone(direction_of(""))
+
+    def test_an_index_written_before_the_direction_was_a_field_still_has_one(self):
+        """Sidecars are durable and are not rewritten. `filter` is what the
+        direction was always derived from, so an old index answers too.
+        """
+        self.assertEqual(
+            note_direction({"filter": "referenced_works:W1", "oql": "", "count": 3}),
+            "cites")
+        self.assertIsNone(note_direction({"filter": "ids.openalex:W1", "direction": None}))
 
 
 class NoClientHoldsAPathTests(unittest.TestCase):

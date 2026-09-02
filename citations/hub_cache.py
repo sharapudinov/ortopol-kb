@@ -22,15 +22,58 @@ import json
 
 from . import openalex_client
 
-# Как OpenAlex формулирует запрос «кто цитирует эти 50» в meta.x_query.oql.
-# Проверено на всём кэше: маркер стоит ровно у 253 страниц батчей cites: и
-# ни у одной из 6 страниц направления «вниз» (openalex id).
-CITES_MARKER = "works where it cites"
-# Сколько байт головы страницы читается на префильтр. meta идёт первым
-# объектом тела, x_query — вторым полем meta, так что маркер лежит в первых
-# сотнях байт; запас на порядки. Если в голове нет даже x_query, страница
-# устроена иначе, и решает уже разбор целиком, а не догадка.
+# Сколько байт головы страницы читается. meta идёт ПЕРВЫМ объектом тела и
+# весит сотни байт, а всё, что нужно замеру, лежит в нём — значит целиком
+# читать страницу (десятки мегабайт у батча «вниз») не нужно ни разу.
+# Запас на порядки; если meta в голову не уложилась, читается тело.
 HEAD_BYTES = 65536
+
+
+def meta_in_head(head: str) -> dict | None:
+    """Объект meta, вырезанный из головы страницы скобочным курсором.
+
+    Всё, что нужно замеру, лежит в meta (openalex_client.page_index), а тело
+    страницы батча «вниз» — десятки мегабайт, которые json.loads разворачивает
+    в полный граф объектов ради двух чисел. Курсор считает скобки, пропуская
+    строки и экранирование, поэтому вырезанный кусок — валидный JSON.
+
+    None, если meta в голову не уложилась или оказалась не объектом: это не
+    ошибка, а «здесь дешёвым путём не вышло», и читатель идёт длинным.
+    """
+    start = head.find('"meta"')
+    if start < 0:
+        return None
+    start = head.find("{", start + len('"meta"'))
+    if start < 0:
+        return None
+    depth, in_string, escaped = 0, False, False
+    for position in range(start, len(head)):
+        symbol = head[position]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif symbol == "\\":
+                escaped = True
+            elif symbol == '"':
+                in_string = False
+            continue
+        if symbol == '"':
+            in_string = True
+        elif symbol == "{":
+            depth += 1
+        elif symbol == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    meta = json.loads(head[start:position + 1])
+                except ValueError:
+                    return None
+                # Голова страницы начинается с meta, но если бы кэш принёс
+                # страницу другой формы, первым "meta" мог оказаться чужой
+                # вложенный ключ. Тогда — длинный путь, а не тихий ноль.
+                usable = isinstance(meta, dict) and ("x_query" in meta or "count" in meta)
+                return meta if usable else None
+    return None
 
 
 class HubCacheReader:
@@ -56,16 +99,14 @@ class HubCacheReader:
         self._notes: dict[str, dict | None] = {}
 
     def batch_note(self, name: str) -> dict | None:
-        """{filter, oql, count} страницы кэша: из памяти читателя, из
-        сайдкара, иначе разбором.
+        """{filter, direction, oql, count} страницы кэша: из памяти
+        читателя, из сайдкара, иначе разбором головы.
 
         Сайдкар пишет сам клиент рядом со страницей
         (openalex_client.page_index), но кэш долговечен и не стирается: 259
         страниц лежат с тех пор, когда сайдкаров не было. Для них — один
-        проход: префильтр по СЫРОМУ тексту головы (страница батча «вниз»
-        весит десятки мегабайт, и разбирать её ради двух полей нечего),
-        затем разбор и запись сайдкара, чтобы следующий прогон читал
-        килобайты.
+        проход по ГОЛОВЕ (meta идёт первым объектом тела) и запись
+        сайдкара, чтобы следующий прогон читал килобайты.
         """
         if name not in self._notes:
             self._notes[name] = self._read_note(name)
@@ -82,29 +123,44 @@ class HubCacheReader:
         head = self.cache.read(name, limit=HEAD_BYTES)
         if head is None:
             return None
-        if CITES_MARKER not in head and '"x_query"' in head:
-            return None
-        body = self.cache.read(name)
-        if body is None:
-            return None
-        try:
-            note = openalex_client.page_index(json.loads(body))
-        except ValueError:
+        note = self._note_from(meta_in_head(head))
+        if note is None:
+            # meta в голову не уложилась — страница устроена иначе, чем все
+            # 259 в кэше, и тогда её читают целиком. Единственный путь, на
+            # котором тело батча «вниз» становится объектом.
+            note = self._note_from(self._whole_meta(name))
+        if note is None:
             return None
         self.cache.write(sidecar, json.dumps(note, ensure_ascii=False))
         return note
 
+    @staticmethod
+    def _note_from(meta) -> dict | None:
+        return None if meta is None else openalex_client.page_index({"meta": meta})
+
+    def _whole_meta(self, name: str):
+        body = self.cache.read(name)
+        if body is None:
+            return None
+        try:
+            return (json.loads(body) or {}).get("meta")
+        except ValueError:
+            return None
+
     def batch_counts(self) -> list[int]:
-        """meta.count каждого батча `cites:` из кэша — по одному числу на батч."""
+        """meta.count каждого батча «вверх» — по одному числу на батч.
+
+        Направление берётся из поля страницы (openalex_client.note_direction,
+        выведено из `filter=`), а не из английской фразы x_query.oql: oql —
+        текст ЧУЖОЙ витрины, и его переформулировка обнулила бы весь замер
+        молча, отчитавшись «нечего мерить» о полном кэше.
+        """
         seen: dict[str, int] = {}
         for name in sorted(self.cache.names()):
             if not name.endswith(".json") or name.endswith(openalex_client.SIDECAR_SUFFIX):
                 continue
             note = self.batch_note(name)
-            if note is None:
-                continue
-            oql = note.get("oql") or ""
-            if "cites" not in oql or "openalex id" in oql:
+            if note is None or openalex_client.note_direction(note) != "cites":
                 continue
             seen.setdefault(note.get("filter") or "", note.get("count") or 0)
         return sorted(seen.values(), reverse=True)

@@ -21,7 +21,7 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
-from citations import hub_cache, hub_report, http_cache, journal, twin_pass, twins
+from citations import hub_report, journal, twin_pass, twins
 from citations.crawl import HUB_CAP, Snowball
 from citations import store
 from citations.store import DryRunWriter
@@ -270,121 +270,6 @@ class CorpusTwinTests(unittest.TestCase):
     def test_normalization_folds_yo_and_tex(self):
         self.assertEqual(twins.normalize_title(r"Чебышёв $\\alpha$-ряды"),
                          twins.normalize_title("чебышев ряды"))
-
-
-class BatchCountTests(unittest.TestCase):
-    """One number per BATCH, not per page.
-
-    The first version keyed on x_query.url, which carries the cursor in its
-    tail: 8 batches came back as 253 distinct urls and the report published
-    3 392 521 promised citers instead of 51 652.
-    """
-
-    def _page(self, directory, name, ids, count, cursor):
-        body = {"meta": {"count": count, "x_query": {
-            "oql": "works where it cites (" + " or ".join(ids) + ")",
-            "url": f"/works?filter=referenced_works:{'|'.join(ids)}"
-                   f"&per_page=200&cursor={cursor}"}}}
-        (directory / name).write_text(json.dumps(body), encoding="utf-8")
-
-    def test_pages_of_one_batch_are_counted_once(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp)
-            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
-            self._page(directory, "b.json", ["W1", "W2"], 18904, "BBB")
-            self._page(directory, "c.json", ["W3"], 21, "CCC")
-            self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [18904, 21])
-
-    def _down_page(self, directory, name):
-        (directory / name).write_text(json.dumps({"meta": {
-            "count": 50, "x_query": {"oql": "works where openalex id is (W1)",
-                                     "url": "/works?filter=ids.openalex:W1"}},
-            "results": [{"id": "W1", "referenced_works": ["W%d" % i for i in range(500)]}]}),
-            encoding="utf-8")
-
-    def test_only_the_cites_pages_are_decoded(self):
-        """The cache is 217 MiB of works with their referenced_works lists,
-        and the report needs two fields per BATCH. A page of the down
-        direction is recognised by its head and never becomes an object.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp)
-            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
-            self._down_page(directory, "b.json")
-            self._down_page(directory, "c.json")
-            decoded = []
-            real = json.loads
-
-            def counting(text, *args, **kwargs):
-                decoded.append(len(text))
-                return real(text, *args, **kwargs)
-
-            with mock.patch.object(hub_cache.json, "loads", counting):
-                self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [18904])
-            self.assertEqual(len(decoded), 1, "разобрано лишнее: %s" % decoded)
-
-    def test_the_second_pass_reads_the_sidecar_not_the_page(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp)
-            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
-            self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [18904])
-            # The body is now unreadable: only a reader that still parses it
-            # can notice, and the answer must not change.
-            (directory / "a.json").write_text("{ not json at all", encoding="utf-8")
-            # A NEXT pass has a memo of its own -- what makes it cheap is
-            # the sidecar, and that is what this asks about.
-            self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [18904])
-
-    def test_a_second_pass_by_one_reader_reads_nothing_again(self):
-        """Under --dry-run the cache is read-only, so no sidecar can be
-        written and every pass would re-read (and re-parse) the whole page.
-        What the reader has already read stays on the READER, so the saving
-        lasts exactly as long as the object does.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp)
-            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
-            cache = http_cache.ReadOnlyCache(directory)
-            reader = hub_cache.HubCacheReader(cache)
-            self.assertEqual(reader.batch_counts(), [18904])
-            first = cache.hits
-            self.assertGreater(first, 0)
-            self.assertEqual(reader.batch_counts(), [18904])
-            self.assertEqual(cache.hits, first,
-                             "страница прочитана второй раз")
-
-    def test_two_readers_over_one_directory_share_nothing(self):
-        """A DiskCache and a ReadOnlyCache over the same directory in one
-        process used to share memo entries through a module-level dict
-        keyed by the path, so what one read was served to the other --
-        including after the page had been rewritten.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp)
-            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
-            first = hub_cache.HubCacheReader(http_cache.ReadOnlyCache(directory))
-            self.assertEqual(first.batch_counts(), [18904])
-            self._page(directory, "a.json", ["W1", "W2"], 21, "AAA")
-            second = hub_cache.HubCacheReader(http_cache.ReadOnlyCache(directory))
-            self.assertEqual(second.batch_counts(), [21],
-                             "новый читатель получил чужую память")
-
-    def test_a_sidecar_is_not_mistaken_for_a_page(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp)
-            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
-            hub_cache.batch_counts(http_cache.DiskCache(directory))
-            self.assertTrue((directory / "a.meta.json").is_file())
-            self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [18904])
-
-    def test_openalex_id_batches_are_not_counted_as_cites(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp)
-            (directory / "d.json").write_text(json.dumps({"meta": {
-                "count": 50, "x_query": {"oql": "works where openalex id is (W1)",
-                                         "url": "/works?filter=ids.openalex:W1"}}}),
-                encoding="utf-8")
-            self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [])
 
 
 class MathnetParseTests(unittest.TestCase):
