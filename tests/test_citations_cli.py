@@ -23,7 +23,7 @@ import pg_graph_common
 import pg_load_citations
 from citations import hub_report, spike_runs, threshold_store
 from citations.openalex_client import QuotaExhausted
-from citations.store import DryRunWriter
+from citations.store import DryRunWriter, PostgresWriter
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql, scalar
 
@@ -92,6 +92,29 @@ class DryRunTouchesNothingTests(unittest.TestCase):
         harness.init_schema.assert_not_called()
         said = "".join(str(call.args[0]) for call in stderr.write.call_args_list)
         self.assertIn("pg_graph.py init", said)
+
+    def test_dry_run_merge_twins_builds_the_writer_that_cannot_write(self):
+        """The fourth mode used to take a dry_run flag and guard two raw
+        statements with it; it now gets the same object substitution as the
+        other three."""
+        with ExitStack() as stack:
+            harness = _MainHarness(stack)
+            merge = stack.enter_context(
+                mock.patch.object(pg_load_citations.twin_pass, "merge_twins",
+                                  return_value=[]))
+            code = pg_load_citations.main(["--merge-twins", "--dry-run"])
+        self.assertEqual(code, 0)
+        harness.init_schema.assert_not_called()
+        self.assertIs(merge.call_args.args[2], harness.writers[0])
+
+    def test_a_real_merge_twins_writes_through_the_database_writer(self):
+        with ExitStack() as stack:
+            _harness = _MainHarness(stack)
+            merge = stack.enter_context(
+                mock.patch.object(pg_load_citations.twin_pass, "merge_twins",
+                                  return_value=[]))
+            pg_load_citations.main(["--merge-twins"])
+        self.assertIsInstance(merge.call_args.args[2], PostgresWriter)
 
     def test_dry_run_crawl_applies_no_schema_either(self):
         with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:

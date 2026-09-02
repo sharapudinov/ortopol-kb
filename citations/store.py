@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Every Postgres write the snowball makes, and the reads it starts from.
+"""Every Postgres write the snowball makes, through one seam.
+
+The reads a run starts from are next door in citations/inputs.py; nothing
+below writes anywhere except through the two Writer implementations, which
+is what makes "--dry-run writes nothing" a property of construction.
 
 Same two mechanisms as the rest of the repository (pg_common.py): script
 variables for parameters, `\\copy` from a csv module-built temp file for
@@ -22,7 +26,7 @@ import io
 import json
 from typing import Protocol, runtime_checkable
 
-from pg_common import copy_csv_into, run_sql, scalar_row, sql_literal
+from pg_common import copy_csv_into, run_sql
 
 WORK_COLUMNS = (
     "key", "doi", "title", "abstract", "year", "authors", "external_ids",
@@ -88,6 +92,26 @@ DROP TABLE citation.stage_cites;
 """
 
 
+PROMOTE_COLUMNS = ("key", "document_id", "seed_key", "rule")
+
+_PROMOTE_STAGE_DDL = """
+DROP TABLE IF EXISTS citation.stage_twin;
+CREATE UNLOGGED TABLE citation.stage_twin (
+    key TEXT, document_id TEXT, seed_key TEXT, rule TEXT);
+"""
+
+_PROMOTE_UPDATE = """
+UPDATE citation.work w
+SET kind = 'our-document',
+    document_id = s.document_id,
+    evidence = coalesce(w.evidence, '{}'::jsonb)
+               || jsonb_build_object('twin_of', s.seed_key, 'twin_rule', s.rule)
+FROM citation.stage_twin s
+WHERE w.key = s.key;
+DROP TABLE citation.stage_twin;
+"""
+
+
 def csv_rows(rows: list[list]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
@@ -104,62 +128,6 @@ def vector_literal(vector) -> str | None:
     return None if vector is None else "[" + ",".join(repr(float(v)) for v in vector) + "]"
 
 
-# -- reads ---------------------------------------------------------------
-def embedding_model(env) -> tuple[str, int]:
-    model, dims = scalar_row(
-        env, "SELECT model, dims FROM corpus.embedding_model WHERE id = 1;",
-        expected_columns=2,
-    )
-    return model, int(dims)
-
-
-def corpus_document_ids(env, source_dir: str = "theory/iis") -> list[str]:
-    out = run_sql(
-        env,
-        "SELECT id FROM corpus.documents WHERE source_dir = :'dir' "
-        "AND extraction_state <> 'metadata' ORDER BY id;",
-        variables={"dir": source_dir},
-        extra_args=["-t", "-A"],
-    ).stdout.strip()
-    return [line for line in out.split("\n") if line]
-
-
-def seed_matches(env, run_id: int, source: str) -> dict[str, str]:
-    out = run_sql(
-        env,
-        "SELECT document_id, matched_id FROM measurements.citation_source_coverage "
-        "WHERE run_id = :run AND source = :'source' AND matched_id IS NOT NULL "
-        "ORDER BY document_id;",
-        variables={"run": str(int(run_id)), "source": source},
-        extra_args=["-t", "-A", "-F", "\x1f"],
-    ).stdout.strip()
-    matches = {}
-    for line in out.split("\n"):
-        if not line:
-            continue
-        document_id, _, matched_id = line.partition("\x1f")
-        matches[document_id] = matched_id
-    return matches
-
-
-def fresh_keys(env, days: int) -> set[str]:
-    """Keys fetched within `days` -- what --resume declines to re-fetch.
-
-    The interval is the one value here that cannot travel as a psql script
-    variable: `interval :'days'` is not valid syntax, and the concatenated
-    form would still have to be quoted. sql_literal() is that quoting, in
-    the one place the whole repository shares -- not an f-string, which is
-    what the module docstring above rules out.
-    """
-    interval = sql_literal(f"{int(days)} days")
-    out = run_sql(
-        env,
-        f"SELECT key FROM citation.work WHERE fetched_at > now() - interval {interval};",
-        extra_args=["-t", "-A"],
-    ).stdout.strip()
-    return {line for line in out.split("\n") if line}
-
-
 # -- writes --------------------------------------------------------------
 @runtime_checkable
 class Writer(Protocol):
@@ -169,7 +137,7 @@ class Writer(Protocol):
     Every method takes the rows produced by ONE step of the crawl and
     returns how many of them IT accepted -- not the running total. counts
     accumulates those same per-call numbers under 'work' / 'cites' /
-    'step'. Spelled out here because the two implementations had drifted
+    'step' / 'twin'. Spelled out here because the two implementations had drifted
     into three conventions between them, and the dry run's numbers are what
     the decision to spend a real quota window is made on.
 
@@ -186,6 +154,8 @@ class Writer(Protocol):
 
     def journal(self, steps) -> int: ...
 
+    def promote(self, merged) -> int: ...
+
 
 class PostgresWriter:
     """The live-database implementation of what crawl.py needs written."""
@@ -193,7 +163,7 @@ class PostgresWriter:
     def __init__(self, env, source: str = "openalex"):
         self.env = env
         self.source = source
-        self.counts = {"work": 0, "cites": 0, "step": 0}
+        self.counts = {"work": 0, "cites": 0, "step": 0, "twin": 0}
 
     def works(self, nodes) -> int:
         rows = []
@@ -260,6 +230,26 @@ class PostgresWriter:
         self.counts["step"] += len(rows)
         return len(rows)
 
+    def promote(self, merged) -> int:
+        """Promotes the whole batch in ONE statement, staged the way every
+        other bulk write here is: a psql process, connection and transaction
+        per promoted node is the N+1 write pattern, and it also made the
+        pass non-atomic -- a failure halfway through left some nodes
+        promoted and no journal rows written at all.
+
+        Idempotent, as the per-row form was: rerunning over already-promoted
+        nodes writes the same values again.
+        """
+        rows = [[m["key"], m["document_id"], m["seed_key"], m["rule"]] for m in merged]
+        if not rows:
+            return 0
+        run_sql(self.env, _PROMOTE_STAGE_DDL)
+        copy_csv_into(self.env, f"citation.stage_twin ({', '.join(PROMOTE_COLUMNS)})",
+                      csv_rows(rows))
+        run_sql(self.env, _PROMOTE_UPDATE)
+        self.counts["twin"] += len(rows)
+        return len(rows)
+
 
 class DryRunWriter:
     """Collects what a real run would write, and writes nothing.
@@ -272,7 +262,8 @@ class DryRunWriter:
     def __init__(self, source: str = "openalex"):
         self.source = source
         self.works_seen, self.edges_seen, self.steps_seen = [], [], []
-        self.counts = {"work": 0, "cites": 0, "step": 0}
+        self.promoted_seen = []
+        self.counts = {"work": 0, "cites": 0, "step": 0, "twin": 0}
 
     def works(self, nodes) -> int:
         accepted = list(nodes)
@@ -290,4 +281,10 @@ class DryRunWriter:
         accepted = list(steps)
         self.steps_seen += accepted
         self.counts["step"] += len(accepted)
+        return len(accepted)
+
+    def promote(self, merged) -> int:
+        accepted = list(merged)
+        self.promoted_seen += accepted
+        self.counts["twin"] += len(accepted)
         return len(accepted)

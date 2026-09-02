@@ -12,6 +12,7 @@ offline rather than left to the next crawl to rediscover:
 """
 from __future__ import annotations
 
+import inspect
 import json
 import pathlib
 import tempfile
@@ -22,6 +23,7 @@ import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
 from citations import hub_report, journal, twin_pass, twins
 from citations.crawl import HUB_CAP, Snowball
+from citations import store
 from citations.store import DryRunWriter
 
 
@@ -337,9 +339,9 @@ class MathnetParseTests(unittest.TestCase):
 
 
 class TwinPromotionBatchTests(unittest.TestCase):
-    """Promotions are staged and applied in ONE statement, not one psql
-    process per node: the N+1 write pattern the rest of the package already
-    avoids (citations/store.py stages every bulk write the same way), and a
+    """The promotion goes through the same Writer seam the crawl uses, and
+    is staged and applied in ONE statement, not one psql process per node:
+    the N+1 write pattern the rest of the package already avoids, and a
     failure mid-loop would otherwise leave a half-promoted set with no
     journal rows written at all.
     """
@@ -349,13 +351,23 @@ class TwinPromotionBatchTests(unittest.TestCase):
         {"key": "W_FR", "document_id": "2015_demr1", "seed_key": "W_RU2", "rule": "doi"},
     ]
 
+    SEEDS = [{"key": "W_RU", "document_id": "2019_rm9846",
+              "titles": ["Некоторая работа"], "mathnet_id": ""}]
+
+    def _found(self, writer):
+        with mock.patch.object(twin_pass, "seed_titles", return_value=self.SEEDS), \
+             mock.patch.object(twin_pass, "corpus_years", return_value={"2019_rm9846": [2019]}), \
+             mock.patch.object(twin_pass, "skeleton_nodes", return_value=[
+                 ("W_EN", "Некоторая работа", 2019, "")]):
+            return twin_pass.merge_twins({}, "crawl-1", writer)
+
     def test_one_staged_update_for_the_whole_batch(self):
         sql_calls, copy_calls = [], []
-        with mock.patch.object(twin_pass, "run_sql",
+        with mock.patch.object(store, "run_sql",
                                 side_effect=lambda env, sql, **kw: sql_calls.append(sql)), \
-             mock.patch.object(twin_pass, "copy_csv_into",
+             mock.patch.object(store, "copy_csv_into",
                                 side_effect=lambda env, target, csv: copy_calls.append((target, csv))):
-            promoted = twin_pass.promote({}, self.MERGED)
+            promoted = store.PostgresWriter({}).promote(self.MERGED)
         self.assertEqual(promoted, 2)
         self.assertEqual(len(copy_calls), 1, "по одному COPY на строку")
         self.assertEqual(len(sql_calls), 2, "staging DDL + один UPDATE")
@@ -369,39 +381,35 @@ class TwinPromotionBatchTests(unittest.TestCase):
         self.assertIn("'twin_of', s.seed_key", update)
 
     def test_empty_batch_touches_the_database_at_all_never(self):
-        with mock.patch.object(twin_pass, "run_sql") as sql_mock, \
-             mock.patch.object(twin_pass, "copy_csv_into") as copy_mock:
-            self.assertEqual(twin_pass.promote({}, []), 0)
+        with mock.patch.object(store, "run_sql") as sql_mock, \
+             mock.patch.object(store, "copy_csv_into") as copy_mock:
+            self.assertEqual(store.PostgresWriter({}).promote([]), 0)
         sql_mock.assert_not_called()
         copy_mock.assert_not_called()
 
-    def test_merge_twins_promotes_once_for_every_match(self):
-        with mock.patch.object(twin_pass, "seed_titles", return_value=[
-                 {"key": "W_RU", "document_id": "2019_rm9846", "titles": ["Некоторая работа"],
-                  "mathnet_id": ""}]), \
-             mock.patch.object(twin_pass, "corpus_years", return_value={"2019_rm9846": [2019]}), \
-             mock.patch.object(twin_pass, "skeleton_nodes", return_value=[
-                 ("W_EN", "Некоторая работа", 2019, "")]), \
-             mock.patch.object(twin_pass, "promote", return_value=1) as promote_mock, \
-             mock.patch.object(twin_pass, "copy_csv_into"):
-            merged = twin_pass.merge_twins({}, "crawl-1")
+    def test_merge_twins_promotes_and_journals_every_match(self):
+        writer = DryRunWriter()
+        merged = self._found(writer)
         self.assertEqual(len(merged), 1)
-        promote_mock.assert_called_once()
-        self.assertEqual(len(promote_mock.call_args.args[1]), 1)
+        self.assertEqual([m["key"] for m in writer.promoted_seen], ["W_EN"])
+        self.assertEqual([s["action"] for s in writer.steps_seen], ["keep"])
+        self.assertEqual(writer.steps_seen[0]["node_key"], "W_RU")
+        self.assertEqual(writer.counts["twin"], 1)
 
-    def test_dry_run_promotes_nothing(self):
-        with mock.patch.object(twin_pass, "seed_titles", return_value=[
-                 {"key": "W_RU", "document_id": "2019_rm9846", "titles": ["Некоторая работа"],
-                  "mathnet_id": ""}]), \
-             mock.patch.object(twin_pass, "corpus_years", return_value={"2019_rm9846": [2019]}), \
-             mock.patch.object(twin_pass, "skeleton_nodes", return_value=[
-                 ("W_EN", "Некоторая работа", 2019, "")]), \
-             mock.patch.object(twin_pass, "promote") as promote_mock, \
-             mock.patch.object(twin_pass, "copy_csv_into") as copy_mock:
-            merged = twin_pass.merge_twins({}, "crawl-1", dry_run=True)
+    def test_a_dry_run_of_the_twin_pass_issues_no_statement_at_all(self):
+        """Not "the flag was checked at both call sites" -- the mode has no
+        object that can write, which is the DRY_RUN_WRITES_NOTHING form the
+        other three modes already have.
+        """
+        with mock.patch.object(store, "run_sql") as sql_mock, \
+             mock.patch.object(store, "copy_csv_into") as copy_mock:
+            merged = self._found(DryRunWriter())
         self.assertEqual(len(merged), 1)
-        promote_mock.assert_not_called()
+        sql_mock.assert_not_called()
         copy_mock.assert_not_called()
+
+    def test_merge_twins_has_no_dry_run_flag_left_to_get_wrong(self):
+        self.assertNotIn("dry_run", inspect.signature(twin_pass.merge_twins).parameters)
 
 
 if __name__ == "__main__":

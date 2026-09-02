@@ -10,7 +10,8 @@ it is cheap, idempotent and rerunnable after every crawl. Three steps:
 2. build both indexes (twins.py) and test every external-skeleton node:
    DOI suffix first, normalized title + year second;
 3. promote a match to kind='our-document' with the seed's document_id and
-   evidence.twin_of, and journal it.
+   evidence.twin_of, and journal it -- both through the Writer seam
+   (citations/store.py), so --dry-run writes nothing by construction.
 
 Edges are untouched by design. The translation really is cited by whoever
 cites it; collapsing those edges into the original would destroy attested
@@ -25,11 +26,10 @@ from __future__ import annotations
 
 import json
 
-from pg_common import copy_csv_into, run_sql
+from pg_common import run_sql
 from pg_graph_common import kind_counts
 
 from . import journal, twins
-from .store import STEP_COLUMNS, csv_rows
 
 
 def corpus_years(env) -> dict[str, list[int]]:
@@ -105,47 +105,15 @@ def skeleton_nodes(env):
     return rows
 
 
-PROMOTE_COLUMNS = ("key", "document_id", "seed_key", "rule")
+def merge_twins(env, crawl_id: str, writer) -> list[dict]:
+    """[{key, title, document_id, seed_key}] for every node promoted.
 
-_PROMOTE_STAGE_DDL = """
-DROP TABLE IF EXISTS citation.stage_twin;
-CREATE UNLOGGED TABLE citation.stage_twin (
-    key TEXT, document_id TEXT, seed_key TEXT, rule TEXT);
-"""
-
-_PROMOTE_UPDATE = """
-UPDATE citation.work w
-SET kind = 'our-document',
-    document_id = s.document_id,
-    evidence = coalesce(w.evidence, '{}'::jsonb)
-               || jsonb_build_object('twin_of', s.seed_key, 'twin_rule', s.rule)
-FROM citation.stage_twin s
-WHERE w.key = s.key;
-DROP TABLE citation.stage_twin;
-"""
-
-
-def promote(env, merged: list[dict]) -> int:
-    """Promotes the whole batch in ONE statement, staged the way every other
-    bulk write in this package is (citations/store.py): a psql process,
-    connection and transaction per promoted node is the N+1 write pattern,
-    and it also made the pass non-atomic -- a failure halfway through left
-    some nodes promoted and no journal rows written at all.
-
-    Idempotent, as the per-row form was: rerunning over already-promoted
-    nodes writes the same values again.
+    Reads the database directly and writes through `writer` only -- the same
+    seam the crawl uses (citations/store.py). A --dry-run pass is a
+    DryRunWriter, not a flag consulted at two call sites: "writes nothing"
+    is then a property of which object was constructed, which is reviewable
+    once, rather than of two conditionals staying correct.
     """
-    if not merged:
-        return 0
-    rows = [[m["key"], m["document_id"], m["seed_key"], m["rule"]] for m in merged]
-    run_sql(env, _PROMOTE_STAGE_DDL)
-    copy_csv_into(env, f"citation.stage_twin ({', '.join(PROMOTE_COLUMNS)})", csv_rows(rows))
-    run_sql(env, _PROMOTE_UPDATE)
-    return len(rows)
-
-
-def merge_twins(env, crawl_id: str, *, dry_run: bool = False) -> list[dict]:
-    """[{key, title, document_id, seed_key}] for every node promoted."""
     seeds = seed_titles(env)
     if not seeds:
         raise RuntimeError(
@@ -163,14 +131,10 @@ def merge_twins(env, crawl_id: str, *, dry_run: bool = False) -> list[dict]:
         document_id, seed_key, rule = hit
         merged.append({"key": key, "title": title, "rule": rule,
                        "document_id": document_id, "seed_key": seed_key})
-    if merged and not dry_run:
-        promote(env, merged)
-        copy_csv_into(
-            env, f"citation.crawl_step ({', '.join(STEP_COLUMNS)})",
-            csv_rows([[journal.twin(crawl_id, m["key"], m["document_id"],
-                                    m["seed_key"]).get(c) for c in STEP_COLUMNS]
-                      for m in merged]),
-        )
+    if merged:
+        writer.promote(merged)
+        writer.journal([journal.twin(crawl_id, m["key"], m["document_id"], m["seed_key"])
+                        for m in merged])
     return merged
 
 

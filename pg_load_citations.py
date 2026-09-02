@@ -36,14 +36,13 @@ from citations.spike_runs import (
     record_calibration,
     record_hub_report,
 )
-from citations.store import (
-    DryRunWriter,
-    PostgresWriter,
+from citations.inputs import (
     corpus_document_ids,
     embedding_model,
     fresh_keys,
     seed_matches,
 )
+from citations.store import DryRunWriter, PostgresWriter
 from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 from paths import default_cache_dir, default_corpus_dir, default_mathnet_cache_dir
 from pg_common import PostgresUnavailable, load_pgenv, run_sql
@@ -135,8 +134,10 @@ def make_embedder(model: str, dims: int):
 
 
 def do_merge_twins(env, args) -> int:
-    merged = twin_pass.merge_twins(env, args.crawl_id or "merge-twins",
-                                   dry_run=args.dry_run)
+    # Same construction main() makes for the crawl: the mode's promise is
+    # kept by WHICH writer exists, not by a flag consulted per statement.
+    writer = DryRunWriter() if args.dry_run else PostgresWriter(env)
+    merged = twin_pass.merge_twins(env, args.crawl_id or "merge-twins", writer)
     for item in merged:
         print(f"  {item['key']} -> {item['document_id']} [{item['rule']}] "
               f"(семя {item['seed_key']}): {item['title'][:64]}")
