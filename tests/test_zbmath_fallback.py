@@ -38,6 +38,29 @@ class ZbmathAbstractTests(unittest.TestCase):
         self.assertTrue(text.startswith("S"))
         self.assertEqual(types[0], "summary")
 
+    def test_a_blank_contribution_is_named_by_neither_half(self):
+        """The types are what the abstract is MADE of, so a contribution
+        whose text is whitespace cannot appear among them: it does not
+        reach the joined text, and evidence.abstract_source naming it would
+        attribute the abstract to a source that contributed nothing.
+        """
+        record = {"editorial_contributions": [
+            {"contribution_type": "summary", "text": "   \n  "},
+            {"contribution_type": "review", "text": "R"},
+        ]}
+        self.assertEqual(abstract_of(record), ("R", ["review"]))
+
+    def test_a_record_of_nothing_but_blanks_is_no_abstract(self):
+        record = {"editorial_contributions": [
+            {"contribution_type": "summary", "text": "  "},
+            {"contribution_type": "review", "text": ""},
+        ]}
+        self.assertEqual(abstract_of(record), (None, []))
+
+    def test_a_contribution_without_a_type_is_still_named(self):
+        record = {"editorial_contributions": [{"text": "T"}]}
+        self.assertEqual(abstract_of(record), ("T", ["unknown"]))
+
     def test_no_contribution_is_none_not_blank(self):
         self.assertEqual(abstract_of({"editorial_contributions": []}), (None, []))
         self.assertEqual(abstract_of(None), (None, []))

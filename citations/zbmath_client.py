@@ -154,19 +154,25 @@ def abstract_of(record: dict | None) -> tuple[str | None, list[str]]:
     Returns (None, []) rather than an empty string when the record carries
     no editorial contribution -- "we looked and there was nothing" and "we
     stored a blank" must not read the same downstream.
+
+    ONE filtered list of (type, text) pairs, and both halves of the answer
+    come out of it. Filtering twice -- once for a truthy text, once for a
+    non-empty stripped one -- left a whitespace-only contribution out of the
+    joined text while its type stayed in the list, so
+    citation.work.evidence.abstract_source could name a source not
+    represented in citation.work.abstract at all.
     """
     if not record:
         return None, []
-    contributions = [c for c in (record.get("editorial_contributions") or []) if c.get("text")]
-    if not contributions:
+    pairs = [(contribution.get("contribution_type") or "unknown",
+              (contribution.get("text") or "").strip())
+             for contribution in (record.get("editorial_contributions") or [])]
+    pairs = [pair for pair in pairs if pair[1]]
+    if not pairs:
         return None, []
-    contributions.sort(
-        key=lambda c: CONTRIBUTION_ORDER.index(c.get("contribution_type"))
-        if c.get("contribution_type") in CONTRIBUTION_ORDER
+    pairs.sort(
+        key=lambda pair: CONTRIBUTION_ORDER.index(pair[0])
+        if pair[0] in CONTRIBUTION_ORDER
         else len(CONTRIBUTION_ORDER)
     )
-    texts = [c["text"].strip() for c in contributions if c["text"].strip()]
-    if not texts:
-        return None, []
-    types = [c.get("contribution_type") or "unknown" for c in contributions]
-    return "\n\n".join(texts), types
+    return "\n\n".join(text for _type, text in pairs), [t for t, _text in pairs]
