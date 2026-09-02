@@ -181,17 +181,30 @@ def do_crawl(env, snowball: Snowball, client, args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Флаги, а не подкоманды: форма CLI записана в провенансе.
+
+    Поля `reproduce` прогонов 89 и 93 (measurements.run) цитируют именно
+    флаговую форму — это команда, которой воспроизводится замер, и
+    переписать её задним числом нельзя. Взаимоисключение режимов и
+    принадлежность --tau обходу выражены группой и валидацией ниже; это
+    ровно то, что подкоманды дали бы структурно, без потери провенанса.
+    """
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tau", type=float, default=None,
                         help="порог косинуса; обязателен для обхода, умолчания нет")
     parser.add_argument("--depth", type=int, default=2)
-    parser.add_argument("--calibrate", action="store_true",
-                        help="посчитать score всех кандидатов depth-1 и записать распределение")
-    parser.add_argument("--merge-twins", action="store_true",
-                        help="склеить с корпусом переводы наших же работ (сети не требует)")
-    parser.add_argument("--hub-report", action="store_true",
-                        help="замер цены расширения вверх по типу связи (сети не требует)")
+    # Четыре режима — альтернативы, и это заявлено парсеру, а не спрятано в
+    # порядке if'ов ниже: `--hub-report --calibrate` раньше молча выполнял
+    # первый и выбрасывал второй запрос, отчитавшись успехом о замере,
+    # которого не просили. Обход — режим по умолчанию, у него флага нет.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--calibrate", action="store_true",
+                      help="посчитать score всех кандидатов depth-1 и записать распределение")
+    mode.add_argument("--merge-twins", action="store_true",
+                      help="склеить с корпусом переводы наших же работ (сети не требует)")
+    mode.add_argument("--hub-report", action="store_true",
+                      help="замер цены расширения вверх по типу связи (сети не требует)")
     parser.add_argument("--hub-cap", type=int, default=HUB_CAP,
                         help="узел с cited_by_count больше этого не спрашивается вверх")
     parser.add_argument("--crawl-id", default=None)
@@ -207,9 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pgenv", type=Path, default=None)
     args = parser.parse_args(argv)
 
+    # --tau принадлежит одному режиму — обходу. --calibrate его ИЗМЕРЯЕТ, а
+    # два офлайновых режима считают по уже записанному, и требовать порог с
+    # них значило бы просить число, которое они не читают.
     offline = args.merge_twins or args.hub_report
     if not offline and not args.calibrate and args.tau is None:
-        parser.error("--tau обязателен для обхода (умолчания нет); сначала --calibrate")
+        parser.error("--tau обязателен для обхода: умолчания нет и не будет "
+                     "(порог измеряется, а не выбирается) — сначала --calibrate; "
+                     "режимам --merge-twins/--hub-report порог не нужен вовсе")
 
     corpus_dir = default_corpus_dir()
     try:

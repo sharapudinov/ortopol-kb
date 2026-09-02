@@ -139,11 +139,46 @@ class DryRunTouchesNothingTests(unittest.TestCase):
         harness.run_sql_file.assert_not_called()
 
 
+class ModeExclusivityTests(unittest.TestCase):
+    """The four modes are alternatives, and argparse is told so.
+
+    They used to be independent booleans dispatched by a fall-through if
+    chain, so `--hub-report --calibrate` ran hub-report and discarded the
+    other request in silence -- reporting success for a measurement nobody
+    asked for. Precedence by statement order is not an interface.
+    """
+
+    def _refused(self, argv):
+        with self.assertRaises(SystemExit) as ctx, mock.patch("sys.stderr"):
+            pg_load_citations.main(argv)
+        return ctx.exception.code
+
+    def test_two_modes_at_once_are_refused(self):
+        for argv in (["--hub-report", "--calibrate"],
+                     ["--merge-twins", "--hub-report"],
+                     ["--calibrate", "--merge-twins"]):
+            self.assertEqual(self._refused(argv), 2, argv)
+
+
 class MainFailurePathTests(unittest.TestCase):
     def test_no_tau_is_an_argparse_error(self):
         with self.assertRaises(SystemExit) as ctx, mock.patch("sys.stderr"):
             pg_load_citations.main(["--depth", "1"])
         self.assertEqual(ctx.exception.code, 2)
+
+    def test_calibrate_is_what_measures_tau_so_it_needs_none(self):
+        """The requirement belongs to the crawl alone: --calibrate exists
+        precisely to produce the number, and the two offline modes read what
+        is already written.
+        """
+        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
+            _harness = _MainHarness(stack)
+            stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
+                                                  return_value=None))
+            code = pg_load_citations.main(
+                ["--calibrate", "--dry-run", "--cache-dir", cache])
+        # Stopped at the model check, i.e. well past the tau validation.
+        self.assertEqual(code, 1)
 
     def test_an_exhausted_quota_is_journalled_before_the_non_zero_exit(self):
         message = "осталось 3 запросов OpenAlex, окно сбросится через 83942 с"
