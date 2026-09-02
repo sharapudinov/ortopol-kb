@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
 import paths
@@ -282,7 +283,14 @@ class WriterModeIsAnObjectTests(unittest.TestCase):
     """
 
     TREE = ast.parse(LOADER.read_text(encoding="utf-8"))
-    MODES = ("do_crawl", "do_merge_twins", "do_hub_report")
+    SPIKE_CLI = CITATIONS_DIR / "spike_cli.py"
+    # The four mode bodies, wherever they live: the two that talk about the
+    # graph stayed with the command line, the two that talk about
+    # measurements moved beside the writer seam they report on.
+    MODES = {LOADER: ("do_crawl", "do_merge_twins"),
+             SPIKE_CLI: ("do_hub_report", "do_calibrate")}
+    CONSTRUCTORS = ("DryRunWriter", "PostgresWriter",
+                    "DryRunMeasurementsWriter", "MeasurementsWriter")
 
     def test_both_seams_carry_the_mode_on_the_writer(self):
         for writer, dry in ((PostgresWriter({}), False), (DryRunWriter(), True),
@@ -299,20 +307,74 @@ class WriterModeIsAnObjectTests(unittest.TestCase):
 
     def test_no_mode_branches_on_the_flag_once_a_writer_exists(self):
         """The flag builds objects and is never consulted again: inside the
-        mode functions every mention of args.dry_run is a construction (the
-        writer's ternary, a cache's keyword), and nothing branches on it.
+        mode functions every mention of args.dry_run is a construction (a
+        cache's keyword), and nothing branches on it.
         """
-        functions = {node.name: node for node in ast.walk(self.TREE)
-                     if isinstance(node, ast.FunctionDef)}
-        for name in self.MODES:
-            with self.subTest(mode=name):
-                self.assertEqual(self._branching_uses(functions[name]), 0,
-                                 f"{name}(): режим спрашивается у писателя, не у флага")
+        for path, names in self.MODES.items():
+            functions = self._functions(path)
+            for name in names:
+                with self.subTest(mode=name):
+                    self.assertEqual(self._branching_uses(functions[name]), 0,
+                                     f"{name}(): режим спрашивается у писателя, не у флага")
 
-    def test_do_crawl_is_not_even_handed_the_command_line(self):
-        functions = {node.name: node for node in ast.walk(self.TREE)
-                     if isinstance(node, ast.FunctionDef)}
-        self.assertNotIn("args", [a.arg for a in functions["do_crawl"].args.args])
+    def test_neither_graph_mode_is_even_handed_the_command_line(self):
+        functions = self._functions(LOADER)
+        for name in ("do_crawl", "do_merge_twins"):
+            with self.subTest(mode=name):
+                self.assertNotIn("args", [a.arg for a in functions[name].args.args])
+
+    def test_every_writer_is_built_in_one_place(self):
+        """The mode -> object rule, spelled once.
+
+        It used to be spelled three times and with two different
+        predicates: do_merge_twins() re-derived its own graph writer from
+        `args` on --dry-run alone, while main() built the crawl's on
+        --dry-run OR --calibrate. A fifth mode that must not write to
+        citation.* only had to be added to one of them to be live-writing
+        when reached through the other -- the very failure the seam rules
+        out, back at the construction site.
+        """
+        for path, expected in ((LOADER, self.CONSTRUCTORS), (self.SPIKE_CLI, ())):
+            built = self._constructor_sites(path)
+            with self.subTest(module=path.name):
+                self.assertEqual(set(built), set(expected),
+                                 f"{path.name}: писателей строит writers_for()")
+                for name, enclosing in built.items():
+                    self.assertEqual(enclosing, {"writers_for"},
+                                     f"{name}() строится вне writers_for(): {enclosing}")
+
+    def test_the_two_predicates_are_the_ones_writers_for_declares(self):
+        """The graph writer and the measurements writer genuinely differ --
+        --calibrate writes no citation.* row but DOES record a run -- and
+        that difference is one expression each, in one function.
+        """
+        writer, measurements = pg_load_citations.writers_for(
+            mock.Mock(dry_run=False, calibrate=True), {})
+        self.assertIs(writer.dry, True)
+        self.assertIs(measurements.dry, False)
+        for dry_run in (True, False):
+            writer, measurements = pg_load_citations.writers_for(
+                mock.Mock(dry_run=dry_run, calibrate=False), {})
+            with self.subTest(dry_run=dry_run):
+                self.assertIs(writer.dry, dry_run)
+                self.assertIs(measurements.dry, dry_run)
+
+    @staticmethod
+    def _functions(path: Path) -> dict:
+        return {node.name: node
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                if isinstance(node, ast.FunctionDef)}
+
+    @classmethod
+    def _constructor_sites(cls, path: Path) -> dict:
+        """{writer class: the functions that call it} for one module."""
+        found: dict[str, set] = {}
+        for function in cls._functions(path).values():
+            for node in ast.walk(function):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id in cls.CONSTRUCTORS):
+                    found.setdefault(node.func.id, set()).add(function.name)
+        return found
 
     @staticmethod
     def _is_flag(node) -> bool:

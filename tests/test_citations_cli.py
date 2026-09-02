@@ -1,56 +1,31 @@
-"""pg_load_citations.py's main(): what the CLI PROMISES and what it says.
+"""pg_load_citations.py's main(): what the CLI PROMISES.
 
 No network, no database. The write ORDER of the two spike modes is
-test_spike_runs.py's -- here the modes are only driven, and what is asserted
-is the loader's own half: --dry-run touches nothing (the schema DDL
-included), a refusal names the entry point that fixes it, an exhausted quota
-is journalled before the non-zero exit, and the crawl refuses to start
-without a measured tau.
+test_spike_runs.py's and what those two modes SAY is
+test_citations_cli_spikes.py's (kb/CLAUDE.md FILE_SIZE, split along the
+seam citations/spike_cli.py keeps); here the modes are only driven, and
+what is asserted is the loader's own half: --dry-run touches nothing (the
+schema DDL included), a refusal names the entry point that fixes it, an
+exhausted quota is journalled before the non-zero exit, and the crawl
+refuses to start without a measured tau.
 """
 from __future__ import annotations
 
 import io
-import json
 import pathlib
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
-import paths
+from _loader_harness import MainHarness
 
-import pg_graph_common
 import pg_load_citations
-from citations import hub_cache, hub_report, seed_metadata, spike_runs, threshold_store
+from citations import hub_cache, seed_metadata
 from citations.openalex_client import OpenAlexError, QuotaExhausted
-from citations.store import DryRunWriter, PostgresWriter
-
-ENV = {"PGHOST": "test"}
-
-
-class _MainHarness:
-    """Everything main() reaches on its way to the mode under test."""
-
-    def __init__(self, stack, *, schema_exists=True):
-        self.init_schema = stack.enter_context(
-            mock.patch.object(pg_load_citations, "init_schema"))
-        self.run_sql_file = stack.enter_context(
-            mock.patch.object(pg_graph_common, "run_sql_file"))
-        self.upsert_run = stack.enter_context(
-            mock.patch.object(threshold_store, "upsert_run", return_value=1))
-        stack.enter_context(mock.patch.object(pg_load_citations, "load_pgenv",
-                                              return_value=ENV))
-        stack.enter_context(mock.patch.object(pg_load_citations, "citation_schema_exists",
-                                              return_value=schema_exists))
-        self.writers: list[DryRunWriter] = []
-        stack.enter_context(mock.patch.object(pg_load_citations, "DryRunWriter",
-                                              side_effect=self._writer))
-
-    def _writer(self, *_args, **_kwargs):
-        self.writers.append(DryRunWriter())
-        return self.writers[-1]
+from citations.store import PostgresWriter
 
 
 class DryRunTouchesNothingTests(unittest.TestCase):
@@ -63,7 +38,7 @@ class DryRunTouchesNothingTests(unittest.TestCase):
 
     def _run(self, argv, **kwargs):
         with ExitStack() as stack:
-            harness = _MainHarness(stack, **kwargs)
+            harness = MainHarness(stack, **kwargs)
             code = pg_load_citations.main(argv)
         return code, harness
 
@@ -103,7 +78,7 @@ class DryRunTouchesNothingTests(unittest.TestCase):
         statements with it; it now gets the same object substitution as the
         other three."""
         with ExitStack() as stack:
-            harness = _MainHarness(stack)
+            harness = MainHarness(stack)
             merge = stack.enter_context(
                 mock.patch.object(pg_load_citations.twin_pass, "merge_twins",
                                   return_value=[]))
@@ -114,7 +89,7 @@ class DryRunTouchesNothingTests(unittest.TestCase):
 
     def test_a_real_merge_twins_writes_through_the_database_writer(self):
         with ExitStack() as stack:
-            _harness = _MainHarness(stack)
+            _harness = MainHarness(stack)
             merge = stack.enter_context(
                 mock.patch.object(pg_load_citations.twin_pass, "merge_twins",
                                   return_value=[]))
@@ -123,7 +98,7 @@ class DryRunTouchesNothingTests(unittest.TestCase):
 
     def test_dry_run_crawl_applies_no_schema_either(self):
         with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
-            harness = _MainHarness(stack)
+            harness = MainHarness(stack)
             stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
                                                   return_value=("bge-m3", 1024)))
             stack.enter_context(mock.patch.object(pg_load_citations, "corpus_document_ids",
@@ -176,7 +151,7 @@ class ModelIsTheCorpusModelTests(unittest.TestCase):
 
     def _refuse(self, argv):
         with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
-            harness = _MainHarness(stack)
+            harness = MainHarness(stack)
             stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
                                                   return_value=None))
             documents = stack.enter_context(
@@ -220,7 +195,7 @@ class MainFailurePathTests(unittest.TestCase):
         is already written.
         """
         with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
-            _harness = _MainHarness(stack)
+            _harness = MainHarness(stack)
             stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
                                                   return_value=None))
             code = pg_load_citations.main(
@@ -229,9 +204,9 @@ class MainFailurePathTests(unittest.TestCase):
         self.assertEqual(code, 1)
 
     @staticmethod
-    def _harness_for(stack) -> _MainHarness:
+    def _harness_for(stack) -> MainHarness:
         """Everything main() reaches before the crawl itself raises."""
-        harness = _MainHarness(stack)
+        harness = MainHarness(stack)
         stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
                                               return_value=("bge-m3", 1024)))
         stack.enter_context(mock.patch.object(pg_load_citations, "corpus_document_ids",
@@ -283,149 +258,6 @@ class MainFailurePathTests(unittest.TestCase):
         self.assertIn("500", steps[0]["reason"])
 
 
-class HubReportCliTests(unittest.TestCase):
-    """The mode's reporting half, which is the loader's: which refusals the
-    process makes, with what exit code, and what a dry run leaves behind.
-
-    The write order the mode follows once it gets that far is
-    test_spike_runs.py's; nothing here reaches a writer that writes.
-    """
-
-    def _page(self, directory: pathlib.Path, name: str, count: int) -> None:
-        body = {"meta": {"count": count, "x_query": {
-            "oql": "works where it cites (W1)",
-            "url": "/works?filter=referenced_works:W1"}}}
-        (directory / name).write_text(json.dumps(body), encoding="utf-8")
-
-    def _main(self, argv: list[str]) -> tuple[int, str, _MainHarness]:
-        out = io.StringIO()
-        with ExitStack() as stack:
-            harness = _MainHarness(stack)
-            stack.enter_context(mock.patch("sys.stderr", out))
-            stack.enter_context(redirect_stdout(out))
-            code = pg_load_citations.main(argv)
-        return code, out.getvalue(), harness
-
-    def test_a_missing_cache_directory_is_refused_and_never_created(self):
-        """A working cache creates its own directory, so the check has to
-        happen before the object does -- otherwise the mode measures the
-        empty directory it just made.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            absent = pathlib.Path(tmp) / "never-written"
-            code, said, harness = self._main(
-                ["--hub-report", "--cache-dir", str(absent)])
-            self.assertEqual(code, 1)
-            self.assertFalse(absent.exists())
-        self.assertIn("кэша ответов нет", said)
-        harness.upsert_run.assert_not_called()
-
-    def test_a_cache_with_no_cites_batches_is_refused_by_name(self):
-        with tempfile.TemporaryDirectory() as cache:
-            code, said, harness = self._main(["--hub-report", "--cache-dir", cache])
-        self.assertEqual(code, 1)
-        self.assertIn("ни одного батча cites", said)
-        self.assertIn(cache, said)
-        harness.upsert_run.assert_not_called()
-
-    def test_a_dry_run_over_a_real_cache_adds_no_sidecar(self):
-        """The whole point of handing the mode a cache OBJECT: the reading
-        pass writes a sidecar per page it had to parse, and under --dry-run
-        that write must not happen -- the data tree is exactly as found.
-        """
-        with tempfile.TemporaryDirectory() as cache:
-            directory = pathlib.Path(cache)
-            self._page(directory, "a.json", 18904)
-            code, said, harness = self._main(
-                ["--hub-report", "--dry-run", "--cache-dir", cache])
-            self.assertEqual(sorted(p.name for p in directory.iterdir()), ["a.json"])
-        self.assertEqual(code, 0)
-        self.assertIn("18904", said)
-        harness.upsert_run.assert_not_called()
-
-    def test_the_report_root_is_the_one_paths_resolves(self):
-        """paths.py owns "where the data tree is", and it locates it by a
-        marker (theory/iis/) rather than by position. Inverting
-        default_corpus_dir() with .parent re-derives the same fact from an
-        assumption about the corpus directory's place, and would put the
-        reports one directory off the day that assumption changes.
-        """
-        record = spike_runs.HubRecord([1], 7, [], pathlib.Path("research/r.md"))
-        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
-            _MainHarness(stack)
-            report = stack.enter_context(mock.patch.object(
-                pg_load_citations, "record_hub_report", return_value=record))
-            stack.enter_context(mock.patch.object(
-                pg_load_citations, "default_corpus_dir",
-                return_value=pathlib.Path(cache) / "elsewhere" / "corpus"))
-            stack.enter_context(redirect_stdout(io.StringIO()))
-            code = pg_load_citations.main(["--hub-report", "--cache-dir", cache])
-        self.assertEqual(code, 0)
-        self.assertEqual(report.call_args[0][2], paths.data_root())
-
-    def test_a_real_run_prints_the_run_it_wrote(self):
-        """Also the complement to the dry-run guard above: a run that is not
-        dry DOES apply the schema, so the guard cannot pass by never
-        applying it at all.
-        """
-        record = spike_runs.HubRecord(
-            [18904], 7, [["cites", "384", "9000", "1200", "3", "15000"]],
-            pathlib.Path("research/citation-hub/report.md"))
-        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
-            harness = _MainHarness(stack)
-            stack.enter_context(mock.patch.object(
-                pg_load_citations, "record_hub_report", return_value=record))
-            out = io.StringIO()
-            stack.enter_context(redirect_stdout(out))
-            code = pg_load_citations.main(["--hub-report", "--cache-dir", cache])
-        self.assertEqual(code, 0)
-        harness.init_schema.assert_called_once()
-        self.assertIn("run 7", out.getvalue())
-        self.assertIn("узлов depth-1: 384", out.getvalue())
-
-
-class CalibrateCliTests(unittest.TestCase):
-    """The same division for the other spike mode: the refusal is the
-    writer seam's to raise and the loader's to report.
-    """
-
-    def _drive(self, record_side_effect):
-        out = io.StringIO()
-        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
-            _harness = _MainHarness(stack)
-            for name, value in (("resolve_model", ("bge-m3", 1024)),
-                                ("corpus_document_ids", ["doc_a"]),
-                                ("seed_matches", {"doc_a": "W1"}),
-                                ("zbmath_abstracts", {}),
-                                ("mathnet_names", {})):
-                stack.enter_context(mock.patch.object(pg_load_citations, name,
-                                                      return_value=value))
-            stack.enter_context(mock.patch.object(
-                pg_load_citations, "Snowball",
-                return_value=mock.Mock(seed_keys=[])))
-            stack.enter_context(mock.patch.object(
-                pg_load_citations, "record_calibration", **record_side_effect))
-            stack.enter_context(mock.patch("sys.stderr", out))
-            stack.enter_context(redirect_stdout(out))
-            code = pg_load_citations.main(
-                ["--calibrate", "--dry-run", "--cache-dir", cache])
-        return code, out.getvalue()
-
-    def test_nothing_to_calibrate_is_a_message_and_exit_one(self):
-        code, said = self._drive(
-            {"side_effect": spike_runs.NothingToMeasure("кандидатов depth-1 нет")})
-        self.assertEqual(code, 1)
-        self.assertIn("кандидатов depth-1 нет", said)
-
-    def test_a_dry_calibration_says_what_it_would_have_written(self):
-        record = spike_runs.CalibrationRecord(0, 0.52, 390,
-                                              pathlib.Path("research/threshold.md"))
-        code, said = self._drive({"return_value": record})
-        self.assertEqual(code, 0)
-        self.assertIn("390 записалось бы", said)
-        self.assertIn("research/threshold.md", said)
-
-
 class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
     """The third channel DRY_RUN_WRITES_NOTHING names: the caches.
 
@@ -448,7 +280,7 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
         """A crawl with no seeds: enough to CONSTRUCT all four caches,
         which is where the directories appear.
         """
-        _harness = _MainHarness(stack)
+        _harness = MainHarness(stack)
         cache = tree / "cache"
         for module, name, value in (
             (pg_load_citations, "resolve_model", ("bge-m3", 1024)),
