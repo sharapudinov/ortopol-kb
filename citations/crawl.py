@@ -178,9 +178,10 @@ class Snowball:
         embedded: an empty string would land somewhere arbitrary on the
         sphere instead of being visibly unusable.
 
-        A candidate is scored as registry.ScoringFields (key, title,
-        abstract), never as a Node: it becomes a node in registry.add(),
-        after it has passed tau, and only then is its record absorbed."""
+        A candidate is scored as registry.ScoringFields (key, title, and
+        the abstract still inverted), never as a Node: it becomes a node in
+        registry.add(), after it has passed tau, and only then is its
+        record absorbed."""
         fresh, seen = [], set()
         for record, relation, source_key in candidates:
             identity = short_id(record.get("id"))

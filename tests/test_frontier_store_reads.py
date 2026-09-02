@@ -9,12 +9,14 @@ drops and journals, this one about what a level pays for.
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, build_snowball, unit, work
 from citations import frontier
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH, KEY_BATCH
+from citations import registry
 from citations.registry import scoring_fields
 from citations.store import DryRunWriter
 
@@ -48,6 +50,22 @@ class StoredVectorsAreReusedTests(unittest.TestCase):
         # One read per CHUNK, naming that chunk's keys -- not one per key,
         # and not one dict over the whole level.
         self.assertEqual(asked, [[f"W{i}" for i in range(10)]])
+
+    def test_the_abstract_is_rebuilt_only_for_the_candidates_embedded(self):
+        """A candidate whose vector is already stored is never read for its
+        text, so reassembling its abstract -- sort the (position, word)
+        pairs of the inverted index, join them -- is work nobody wants. It
+        is the calibrate-then-crawl pair and every --resume re-crawl that
+        pay it, i.e. exactly the runs where most candidates are known.
+        """
+        records = [work(f"W{i}", title=f"Candidate {i}",
+                        abstract={"чебышёв": [1], "многочлен": [0]}) for i in range(10)]
+        stored = {f"W{i}": unit(i) for i in (1, 3, 5, 7)}
+        with mock.patch.object(registry, "restore_abstract",
+                               wraps=registry.restore_abstract) as restore:
+            holders = [scoring_fields(record) for record in records]
+            list(frontier.vectors_for(PlannedEmbedder({}), lambda keys: stored, holders))
+        self.assertEqual(restore.call_count, 6)
 
     def test_the_store_is_read_a_block_at_a_time(self):
         """The read side is chunked too: a dict over the whole level holds a

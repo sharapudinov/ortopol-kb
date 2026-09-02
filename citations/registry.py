@@ -85,17 +85,29 @@ class ScoringFields(NamedTuple):
     candidate and then built AGAIN by registry.add() for the ones kept.
     Scoring needs the title and the abstract; the key names the row it
     belongs to.
+
+    The abstract stays INVERTED here and is restored on read. OpenAlex
+    ships it as {word: [positions]}, and turning that back into text is a
+    sort and a join per candidate -- work frontier.vectors_for() asks for
+    only where the vector is not already in citation.work, which on the
+    documented calibrate-then-crawl pair and on every --resume re-crawl is
+    a small minority of the level. Node.absorb() keeps its own eager
+    restore: the rows actually written need the text.
     """
     key: str
     title: str | None
-    abstract: str | None
+    abstract_index: dict | None
+
+    @property
+    def abstract(self) -> str | None:
+        return restore_abstract(self.abstract_index) or None
 
 
 def scoring_fields(record: dict) -> ScoringFields:
     return ScoringFields(
         short_id(record.get("id")),
         record_title(record),
-        restore_abstract(record.get("abstract_inverted_index")) or None,
+        record.get("abstract_inverted_index"),
     )
 
 
