@@ -23,13 +23,11 @@ The journal follows the shape of crawl_step's columns: one `fetch` row per
 expanded frontier node (n_found candidates from it, n_kept of them), one
 `keep`/`drop` row per candidate, `seed`/`seed-missing` at depth 0.
 
-Every keep and every drop carries its score in the reason, in a fixed
-machine-readable form -- `score=0.6123 tau=0.5000 relation=cites` -- so the
-score distribution at depths the tau calibration never saw is a query, not a
-re-crawl:
+Every keep and every drop carries its score and the tau it was measured
+against in columns of their own, so the score distribution at depths the tau
+calibration never saw is a query, not a re-crawl:
 
-    SELECT depth, action,
-           substring(reason from 'score=(-?[0-9.]+)')::float8 AS score
+    SELECT depth, action, score
     FROM citation.crawl_step WHERE crawl_id = ...
 """
 from __future__ import annotations

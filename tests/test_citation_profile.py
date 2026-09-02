@@ -143,15 +143,24 @@ class ShippedRowPredicateTests(unittest.TestCase):
         ctes = citation_profile.crawl_step_cut_ctes()
         self.assertEqual(ctes.count("j.frontier_key = r.ref"), 1)
         self.assertEqual(ctes.count("j.candidate_key = r.ref"), 1)
-        self.assertEqual(ctes.count("strpos(coalesce(j.reason, ''), r.ref)"), 1)
+        self.assertEqual(ctes.count("j.node_key = r.ref"), 1)
         # Both vocabularies reach all three columns through one union.
         self.assertIn("SELECT ref FROM cut_documents UNION SELECT ref FROM cut_keys", ctes)
 
-    def test_the_equality_branches_are_separate_from_the_substring_one(self):
-        """An OR of two equalities and a strpos() is ONE non-sargable join
-        qualifier: the equalities can then never reach
-        crawl_step_frontier_key_idx / crawl_step_candidate_key_idx. Split
-        into UNION branches, each equality is an ordinary indexable join.
+    def test_the_journal_cut_matches_names_in_columns_only(self):
+        """The node key is a column of crawl_step, not a fragment of its
+        prose: a substring branch over `reason` served no index and could
+        match a name inside a sentence that named nothing sensitive.
+        """
+        ctes = citation_profile.crawl_step_cut_ctes()
+        self.assertNotIn("strpos(", ctes)
+        self.assertNotIn("j.reason", ctes)
+
+    def test_every_branch_is_a_separate_indexable_equality(self):
+        """An OR of three equalities is ONE non-sargable join qualifier:
+        none of them could then reach crawl_step_frontier_key_idx /
+        crawl_step_candidate_key_idx / crawl_step_node_key_idx. Split into
+        UNION branches, each is an ordinary indexable join.
         """
         ctes = citation_profile.crawl_step_cut_ctes()
         branches = ctes[ctes.index("cut_steps AS MATERIALIZED"):].split("UNION")

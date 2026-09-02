@@ -197,11 +197,12 @@ class LegalCutSqlTests(unittest.TestCase):
         sql = citation_dump.copy_select("crawl_step", ["id", "frontier_key", "reason"],
                                         CitationMode.FULL_SKELETON)
         # frontier_key carries a document_id for seed/twin rows and a work
-        # key for the rest, and reason embeds either -- all three columns are
+        # key for the rest, candidate_key the record decided about, node_key
+        # the node it resolved to -- all three name-bearing columns are
         # checked against both vocabularies, in the cut CTEs' own alias.
-        for column in ("frontier_key", "candidate_key", "reason"):
+        for column in ("frontier_key", "candidate_key", "node_key"):
             self.assertIn(f"j.{column}", sql)
-        self.assertIn("strpos(", sql, "reason is matched as a substring, not with LIKE")
+        self.assertNotIn("strpos(", sql, "a name is matched as a name, not as a substring")
         self.assertNotIn("LIKE", sql, "'_' in a document id is a LIKE wildcard")
 
     def test_public_policy_is_not_cut(self):
@@ -261,11 +262,30 @@ class LiveLegalCutTests(unittest.TestCase):
     INSERT INTO citation.cites (citing, cited, source)
     SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
     WHERE x.key = 'test:cut:b' AND y.key = 'test:cut:c';
-    INSERT INTO citation.crawl_step (crawl_id, depth, frontier_key, candidate_key, action, reason)
-    VALUES ('test:cut', 0, 'test:cut:excluded', 'test:cut:a', 'seed', NULL),
-           ('test:cut', 1, 'test:cut:b', 'test:cut:a', 'keep', 'kept; node=test:cut:a'),
-           ('test:cut', 0, 'test:cut:b', 'test:cut:c', 'keep', 'twin-of=test:cut:shipped'),
-           ('test:cut', 2, 'test:cut:b', NULL, 'fetch', NULL);
+    INSERT INTO citation.crawl_step (crawl_id, depth, frontier_key, candidate_key,
+                                     node_key, action, reason)
+    VALUES ('test:cut', 0, 'test:cut:excluded', 'test:cut:a', NULL, 'seed', NULL),
+           ('test:cut', 1, 'test:cut:b', 'test:cut:a', 'test:cut:a', 'keep',
+            'kept; node=test:cut:a'),
+           ('test:cut', 0, 'test:cut:b', 'test:cut:c', NULL, 'keep',
+            'twin-of=test:cut:shipped'),
+           ('test:cut', 2, 'test:cut:b', NULL, NULL, 'fetch', NULL);
+    """
+
+    # A row written AFTER the columns existed: the only place the cut name
+    # appears is node_key, and reason is prose that names nothing.
+    NODE_KEY_ONLY_FIXTURE = """
+    INSERT INTO corpus.documents (id, filename, extraction_state, legal_class,
+                                  public_distribution, legal_note)
+    VALUES ('test:cut:excluded', 'x.pdf', 'clean', 'unknown', 'excluded', 'test fixture');
+    INSERT INTO citation.work (key, title, source, kind, document_id) VALUES
+      ('test:cut:a', 'A', 'manual', 'our-document', 'test:cut:excluded');
+    INSERT INTO citation.crawl_step (crawl_id, depth, frontier_key, candidate_key,
+                                     node_key, action, reason)
+    VALUES ('test:cut', 1, 'test:cut:b', 'test:cut:d', 'test:cut:a', 'keep',
+            'kept, relation=cites'),
+           ('test:cut', 1, 'test:cut:b', 'test:cut:e', NULL, 'keep',
+            'kept, relation=cites');
     """
 
     def test_work_row_of_an_excluded_document_does_not_ship(self):
@@ -283,9 +303,11 @@ class LiveLegalCutTests(unittest.TestCase):
 
     def test_the_cut_set_form_selects_exactly_what_the_per_row_form_did(self):
         """The predicate moved from "re-derive both cut sets for every
-        crawl_step row" to "is this row's name in either set", and the sets
-        are now materialised once per statement. Same rows, or it is not a
-        performance change but a policy change.
+        crawl_step row, matching the name as a substring of reason" to "is
+        this row's name in either set, by equality on three columns", and
+        the sets are now materialised once per statement. Same rows on the
+        backfilled journal, or it is not a performance change but a policy
+        change -- the reference below is the ORIGINAL substring form.
         """
         # No id: a BIGSERIAL advances even in a rolled-back transaction, so
         # the two runs' fixture rows carry different ones. The comparison is
@@ -309,6 +331,13 @@ class LiveLegalCutTests(unittest.TestCase):
         )
         self.assertEqual(self._rows("crawl_step", columns, self.FIXTURE),
                          self._run(per_row, self.FIXTURE))
+
+    def test_a_row_naming_the_cut_work_only_in_node_key_does_not_ship(self):
+        """What the substring form could not see: the name is in no prose."""
+        rows = self._rows("crawl_step", ["crawl_id", "candidate_key", "node_key"],
+                          self.NODE_KEY_ONLY_FIXTURE)
+        ours = [r for r in rows if r.split("\t")[0] == "test:cut"]
+        self.assertEqual([r.split("\t")[1] for r in ours], ["test:cut:e"], ours)
 
     def test_journal_rows_naming_the_cut_document_or_work_do_not_ship(self):
         rows = self._rows("crawl_step", ["crawl_id", "depth", "frontier_key",

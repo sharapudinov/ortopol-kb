@@ -81,25 +81,29 @@ def shipped_work_sql(alias: str = "w") -> str:
 # REFERENCES corpus.documents(id), so "names an unshipped document" is the
 # join below. One scan of corpus.documents for the whole statement.
 #
-# frontier_key carries a document id on seed/twin rows and a work key on the
-# rest, and reason embeds either ("twin-of=<document_id>", "node=<work key>",
-# see citations/journal.py) -- so all three columns are matched against both
-# vocabularies, which is why cut_names unions them. strpos(), not LIKE: a
-# document id contains '_', which LIKE reads as a wildcard, and an
-# over-matching pattern would silently drop journal rows that name nothing
-# sensitive.
+# A journal row names things in three columns, and each carries a name from
+# either vocabulary: frontier_key is a document id on seed/twin rows and a
+# work key on the rest, candidate_key is the record the decision was about,
+# node_key is the node it resolved to (a seed work on a twin promotion, see
+# citations/journal.py). So all three are matched against both vocabularies,
+# which is why cut_names unions them.
 #
 # The three mention tests are a UNION of three branches rather than one
-# three-way OR, and that is the whole point: an OR of two equalities and a
-# strpos() is one non-sargable join qualifier, so the equalities can never
-# reach an index. Split, each equality branch is a join the planner drives
-# from the tiny cut_names side -- EXPLAIN (ANALYZE) of the real COPY select
-# on the live instance: a nested loop over crawl_step_frontier_key_idx and
-# another over crawl_step_candidate_key_idx (10 cut names, 10 loops each),
-# both at today's 604 journal rows and on a 100k-row depth-2-sized probe
-# inserted inside a rolled-back transaction. The strpos branch stays the
-# full scan no index can serve, which is the whole reason the cut sets are
-# derived once instead of per row.
+# three-way OR, and that is the whole point: an OR of three equalities is one
+# non-sargable join qualifier, so none of them can reach an index. Split,
+# each branch is a join the planner drives from the tiny cut_names side --
+# EXPLAIN (ANALYZE) of the real COPY select on the live instance, over a
+# 100k-row depth-2-sized journal inserted inside a rolled-back transaction:
+# a nested loop over crawl_step_frontier_key_idx, another over
+# crawl_step_candidate_key_idx and a third over crawl_step_node_key_idx, 10
+# cut names and 10 loops each, 21 ms for the whole statement. At today's 604
+# rows the planner hashes the table instead, as it should at that size.
+#
+# The third branch used to be strpos() over `reason`, because the node key
+# lived inside that prose -- a full scan no index can serve. It is a column
+# now (pg_schema_citation.sql), and matching a name means matching a name,
+# not searching for its text inside a sentence: an over-matching substring
+# silently dropped journal rows that named nothing sensitive.
 _CUT_CTES = """WITH cut_documents AS MATERIALIZED (
     SELECT d.id AS ref FROM corpus.documents d WHERE NOT ({shipped})
 ), cut_keys AS MATERIALIZED (
@@ -112,8 +116,7 @@ _CUT_CTES = """WITH cut_documents AS MATERIALIZED (
     UNION
     SELECT j.id FROM citation.crawl_step j JOIN cut_names r ON j.candidate_key = r.ref
     UNION
-    SELECT j.id FROM citation.crawl_step j JOIN cut_names r
-        ON strpos(coalesce(j.reason, ''), r.ref) > 0
+    SELECT j.id FROM citation.crawl_step j JOIN cut_names r ON j.node_key = r.ref
 )
 """
 

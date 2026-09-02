@@ -43,7 +43,9 @@ CREATE INDEX IF NOT EXISTS citation_hub_expansion_relation
 
 # Узлы depth-1 берутся по журналу, а не «все external-skeleton»: журнал —
 # единственное место, где записана ГЛУБИНА, и замер обязан опираться на неё,
-# а не на предположение «сейчас в базе только depth-1».
+# а не на предположение «сейчас в базе только depth-1». Узел — это node_key,
+# отдельная колонка: кандидат и узел не одно и то же (два кандидата
+# сливаются в один узел), и разбор прозы reason этого не знал.
 POPULATE = """
 INSERT INTO measurements.citation_hub_expansion
     (run_id, work_key, relation, cited_by_count, n_references)
@@ -58,8 +60,9 @@ SELECT :run, w.key,
        (SELECT coalesce(sum((r->>'referenced_works_count')::bigint), 0)
           FROM jsonb_array_elements(w.evidence->'records') r)
 FROM citation.work w
-WHERE w.key IN (SELECT DISTINCT split_part(reason, 'node=', 2)
-                FROM citation.crawl_step WHERE action = 'keep' AND depth = 1)
+WHERE w.key IN (SELECT DISTINCT node_key
+                FROM citation.crawl_step
+                WHERE action = 'keep' AND depth = 1 AND node_key IS NOT NULL)
 ON CONFLICT (run_id, work_key) DO UPDATE SET
     relation       = EXCLUDED.relation,
     cited_by_count = EXCLUDED.cited_by_count,

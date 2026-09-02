@@ -224,6 +224,75 @@ class ProjectionShapeTests(unittest.TestCase):
         self.assertIn("ag_catalog._graphid($1, ci.cited)", self.SCHEMA)
 
 
+def _backfill_statement() -> str:
+    """The one-time journal backfill, taken from the schema file itself.
+
+    Read out of pg_schema_citation.sql rather than restated here: a copy
+    would let the test keep passing over a statement the schema no longer
+    applies.
+    """
+    schema = pg_graph_common.SCHEMA_PATH.read_text(encoding="utf-8")
+    start = schema.index("UPDATE citation.crawl_step SET")
+    return schema[start:schema.index(";", start) + 1]
+
+
+class JournalBackfillTests(unittest.TestCase):
+    """604 journal rows were written before node_key/score/tau existed, with
+    those three facts inside `reason`. The schema parses them back into the
+    columns -- once, only into NULLs, and inside a rolled-back transaction
+    here so the live journal is not touched by the test.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+
+    FIXTURE = """
+    INSERT INTO citation.crawl_step (crawl_id, depth, frontier_key, candidate_key,
+                                     action, reason)
+    VALUES ('test:backfill', 1, 'W_F', 'W_C', 'keep',
+            'kept; score=0.6123 tau=0.5000 relation=cites node=W_NODE'),
+           ('test:backfill', 1, 'W_F', 'W_D', 'drop',
+            'below-threshold; score=0.4001 tau=0.5000 relation=referenced'),
+           ('test:backfill', 0, '2019_rm9846', 'W_EN', 'keep',
+            'twin-of=2019_rm9846 seed=W_RU'),
+           ('test:backfill', 1, 'W_F', NULL, 'fetch', NULL);
+    """
+
+    def _backfilled(self, repeats: int = 1) -> list[str]:
+        out = run_sql(
+            self.env,
+            "BEGIN;\n" + self.FIXTURE + _backfill_statement() * repeats + "\n"
+            "SELECT action, coalesce(node_key, '-'), coalesce(score::text, '-'), "
+            "coalesce(tau::text, '-') FROM citation.crawl_step "
+            "WHERE crawl_id = 'test:backfill' ORDER BY id;\nROLLBACK;\n",
+            extra_args=["-t", "-A", "-F", FIELD_SEP],
+        ).stdout
+        return [line for line in out.splitlines() if line.strip()]
+
+    def test_prose_becomes_columns_row_by_row(self):
+        self.assertEqual(self._backfilled(), [
+            FIELD_SEP.join(["keep", "W_NODE", "0.6123", "0.5"]),
+            FIELD_SEP.join(["drop", "-", "0.4001", "0.5"]),
+            FIELD_SEP.join(["keep", "W_RU", "-", "-"]),
+            FIELD_SEP.join(["fetch", "-", "-", "-"]),
+        ])
+
+    def test_running_it_again_changes_nothing(self):
+        self.assertEqual(self._backfilled(repeats=2), self._backfilled())
+
+    def test_the_live_journal_has_no_unparsed_score_left(self):
+        """The columns are filled wherever the prose ever carried them --
+        the state the migration is supposed to leave the base in."""
+        left = run_sql(
+            self.env,
+            "SELECT count(*) FROM citation.crawl_step "
+            "WHERE reason ~ 'score=' AND score IS NULL;",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        self.assertEqual(left, "0")
+
+
 class CitationGraphLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

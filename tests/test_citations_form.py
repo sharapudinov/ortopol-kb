@@ -126,24 +126,39 @@ class HubCapTests(unittest.TestCase):
 
 
 class JournalFormatTests(unittest.TestCase):
-    """The reason strings are a contract with SQL written elsewhere."""
+    """Which column carries what is a contract with SQL written elsewhere:
+    the score distribution query, the hub report's depth-1 node set and the
+    public artifact's journal cut all read columns, never prose.
+    """
 
-    def test_keep_and_drop_carry_a_parseable_score(self):
-        import re
-        pattern = re.compile(r"score=(-?[0-9.]+)")
-        kept = journal.keep("c", 2, "W1", "W1", 0.6123, 0.5, "cites")
+    def test_keep_and_drop_carry_score_and_tau_as_values(self):
+        kept = journal.keep("c", 2, "W1", "W_NODE", 0.6123, 0.5, "cites")
         dropped = journal.drop("c", 2, "W2", 0.4001, 0.5, "referenced")
-        self.assertEqual(pattern.search(kept["reason"]).group(1), "0.6123")
-        self.assertEqual(pattern.search(dropped["reason"]).group(1), "0.4001")
-        self.assertIn("tau=0.5000", kept["reason"])
-        self.assertIn("node=W1", kept["reason"])
+        self.assertEqual((kept["score"], kept["tau"]), (0.6123, 0.5))
+        self.assertEqual((dropped["score"], dropped["tau"]), (0.4001, 0.5))
+        self.assertEqual(kept["node_key"], "W_NODE")
+        self.assertNotIn("node_key", dropped, "у отброшенного кандидата узла нет")
 
-    def test_hub_skip_and_twin_rows_name_their_action(self):
-        self.assertEqual(journal.hub_skip("c", 2, "W1", 5000, 1000)["action"], "hub-skip")
+    def test_no_step_hides_a_number_or_a_name_in_its_prose(self):
+        steps = [journal.keep("c", 2, "W1", "W_NODE", 0.6123, 0.5, "cites"),
+                 journal.drop("c", 2, "W2", 0.4001, 0.5, "referenced"),
+                 journal.twin("c", "W_EN", "2019_rm9846", "W_RU")]
+        for step in steps:
+            for marker in ("score=", "tau=", "node=", "twin-of=", "seed="):
+                self.assertNotIn(marker, step["reason"], step)
+
+    def test_hub_skip_names_the_node_it_declined_to_open(self):
+        row = journal.hub_skip("c", 2, "W1", 5000, 1000)
+        self.assertEqual(row["action"], "hub-skip")
+        self.assertEqual(row["node_key"], "W1")
+
+    def test_a_twin_row_names_the_document_the_record_and_the_seed(self):
         row = journal.twin("c", "W_EN", "2019_rm9846", "W_RU")
         self.assertEqual(row["action"], "keep")
         self.assertEqual(row["depth"], 0)
-        self.assertEqual(row["reason"], "twin-of=2019_rm9846 seed=W_RU")
+        self.assertEqual(row["frontier_key"], "2019_rm9846")
+        self.assertEqual(row["candidate_key"], "W_EN")
+        self.assertEqual(row["node_key"], "W_RU")
 
 
 class CorpusTwinTests(unittest.TestCase):

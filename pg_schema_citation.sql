@@ -104,6 +104,26 @@ CREATE TABLE IF NOT EXISTS citation.crawl_step (
     at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- The decision's machine-readable part, in columns of its own: which graph
+-- node the candidate resolved to, the score it was measured at, and the
+-- threshold it was measured against. Added separately, ADD COLUMN IF NOT
+-- EXISTS, for the same reason the action CHECK is applied separately -- the
+-- table already exists on this instance and on every artifact restored from
+-- an earlier dump.
+--
+-- These three used to live inside `reason` as "score=... tau=... node=...",
+-- and three consumers parsed them back out (the score distribution query in
+-- citations/crawl.py, the depth-1 node set in citations/hub_report.py, the
+-- public artifact's journal cut in deploy/citation_profile.py). A number the
+-- pipeline reads is not prose: `reason` keeps only what a human reads.
+--
+-- node_key is "the node this decision resolved to": for a kept candidate the
+-- registry node it was merged into (two OpenAlex records of one work share a
+-- node), for a twin promotion the seed work the candidate turned out to be.
+ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS node_key TEXT;
+ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION;
+ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS tau DOUBLE PRECISION;
+
 -- The action vocabulary lives in a NAMED constraint applied separately, not
 -- inline in CREATE TABLE: the crawl grows new kinds of decision (hub-skip
 -- arrived when depth-2 turned out to pull >51k citers through a handful of
@@ -124,19 +144,38 @@ CREATE INDEX IF NOT EXISTS crawl_step_crawl_depth_idx ON citation.crawl_step (cr
 -- The public artifact's journal cut asks which rows name a document or a
 -- work the package leaves behind (deploy/citation_profile.py's
 -- crawl_step_cut_ctes). It asks that as three separate branches, one per
--- column, precisely so these two equality branches can be index lookups
--- driven from the tiny set of cut names -- an OR of the three inside one
--- subquery is a single non-sargable qualifier and reaches no index at all.
--- The third column (reason) is a substring match no index can serve, which
--- is why the cut sets are materialised once per statement.
+-- column carrying a name, precisely so each can be an index lookup driven
+-- from the tiny set of cut names -- an OR of the three inside one subquery
+-- is a single non-sargable qualifier and reaches no index at all.
 --
--- Both verified in use, EXPLAIN (ANALYZE) of the real COPY select on the
--- live instance: one nested loop per index, driven from the cut names (10
--- names, 10 loops each) -- at today's 604 journal rows and again on a
--- 100k-row depth-2-sized probe inserted inside a rolled-back transaction.
--- The reason branch scans the table in both, as a substring match must.
+-- All three verified in use, EXPLAIN (ANALYZE) of the real COPY select on
+-- the live instance, over a 100k-row depth-2-sized journal inserted inside
+-- a rolled-back transaction: three nested loops, one per index, each driven
+-- from the tiny cut-names side (10 names, 10 loops each), 21 ms for the
+-- whole statement. At today's 604 rows the planner hashes the table instead
+-- and is right to -- the indexes are there for the size the crawl grows to.
+-- The third branch used to be strpos() over `reason` and could only ever
+-- scan; with node_key a column it is an index lookup like the other two.
 CREATE INDEX IF NOT EXISTS crawl_step_frontier_key_idx ON citation.crawl_step (frontier_key);
 CREATE INDEX IF NOT EXISTS crawl_step_candidate_key_idx ON citation.crawl_step (candidate_key);
+CREATE INDEX IF NOT EXISTS crawl_step_node_key_idx ON citation.crawl_step (node_key);
+
+-- One-time backfill of the three columns for journal rows written before
+-- they existed, parsed out of the prose that carried them. Idempotent in
+-- both directions: it only ever fills a NULL, and a row whose reason never
+-- carried the value keeps its NULL (a twin promotion has no score, a hub
+-- skip no node). Kept in the schema file rather than run by hand once,
+-- because every instance this schema is applied to -- this one, a restored
+-- artifact, a developer's fresh database -- meets the same old rows.
+UPDATE citation.crawl_step SET
+    node_key = coalesce(node_key,
+                        nullif(substring(reason from 'node=([^ ]+)'), ''),
+                        nullif(substring(reason from 'seed=([^ ]+)'), '')),
+    score = coalesce(score, substring(reason from 'score=(-?[0-9.]+)')::double precision),
+    tau = coalesce(tau, substring(reason from 'tau=(-?[0-9.]+)')::double precision)
+WHERE reason IS NOT NULL
+  AND (node_key IS NULL OR score IS NULL OR tau IS NULL)
+  AND reason ~ '(node=|seed=|score=|tau=)';
 
 -- Escapes a plain string for safe use inside a *Cypher* single-quoted string
 -- literal (backslash-style escaping, like Cypher/JSON -- NOT SQL's

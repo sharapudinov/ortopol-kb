@@ -30,8 +30,8 @@ WORK_COLUMNS = (
 )
 CITES_COLUMNS = ("citing_key", "cited_key", "source", "evidence")
 STEP_COLUMNS = (
-    "crawl_id", "depth", "frontier_key", "candidate_key", "action",
-    "n_found", "n_kept", "reason",
+    "crawl_id", "depth", "frontier_key", "candidate_key", "node_key", "action",
+    "n_found", "n_kept", "score", "tau", "reason",
 )
 
 _WORK_STAGE_DDL = """

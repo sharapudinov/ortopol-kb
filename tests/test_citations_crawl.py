@@ -72,10 +72,10 @@ class CrawlTests(unittest.TestCase):
         self.assertNotIn("W_FAR", {n.key for n in writer.works_seen})
         drops = [s for s in writer.steps_seen if s["action"] == "drop"]
         self.assertEqual([s["candidate_key"] for s in drops], ["W_FAR"])
-        self.assertIn("below-threshold; score=0.0000 tau=0.5000", drops[0]["reason"])
+        self.assertEqual((drops[0]["score"], drops[0]["tau"]), (0.0, 0.5))
         keeps = [s for s in writer.steps_seen if s["action"] == "keep"]
         self.assertEqual([s["candidate_key"] for s in keeps], ["W_NEAR"])
-        self.assertIn("kept; score=1.0000 tau=0.5000", keeps[0]["reason"])
+        self.assertEqual((keeps[0]["score"], keeps[0]["tau"]), (1.0, 0.5))
 
     def test_fetch_row_counts_what_a_frontier_node_yielded(self):
         writer = DryRunWriter()
@@ -159,7 +159,7 @@ class CrawlTests(unittest.TestCase):
         keeps = [s for s in writer.steps_seen if s["action"] == "keep"]
         self.assertEqual(sorted(s["candidate_key"] for s in keeps), ["W_EN", "W_RU"],
                          "слияние двойников спрятано от журнала")
-        self.assertTrue(all("node=W_RU" in s["reason"] for s in keeps))
+        self.assertTrue(all(s["node_key"] == "W_RU" for s in keeps))
 
     def test_titleless_candidate_scores_below_every_threshold(self):
         writer = DryRunWriter()
@@ -173,7 +173,7 @@ class CrawlTests(unittest.TestCase):
         snowball.expand(["W_SEED"], 1)
         drops = [s for s in writer.steps_seen if s["action"] == "drop"]
         self.assertEqual([s["candidate_key"] for s in drops], ["W_BLANK"])
-        self.assertIn("score=-1.0000 tau=0.0000", drops[0]["reason"])
+        self.assertEqual((drops[0]["score"], drops[0]["tau"]), (-1.0, 0.0))
 
 
 class ScoringMemoryTests(unittest.TestCase):
