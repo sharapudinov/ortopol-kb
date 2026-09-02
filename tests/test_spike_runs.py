@@ -93,6 +93,41 @@ class HubReportWriteOrderTests(unittest.TestCase):
         self.assertEqual(writer.calls, [])
 
 
+class CapIsTheRunsNotTheModulesTests(unittest.TestCase):
+    """--hub-cap is what the whole measurement is about, so it has to reach
+    the numbers and not only the prose. It reached report()'s closing
+    paragraph while the column above it, the table header and the stored
+    verify_query all said 1000 -- an artifact contradicting itself in the
+    one module whose product is the justification for the cap.
+    """
+
+    ROWS = [["cites", "384", "9000", "1200", "3", "15000"]]
+
+    def test_the_stored_verify_query_counts_by_the_runs_cap(self):
+        stored = hub_report.run_fields([51652], self.ROWS, 500)["verify_query"]
+        self.assertIn("cited_by_count > 500", stored)
+        self.assertNotIn("cited_by_count > 1000", stored)
+
+    def test_two_caps_do_not_record_the_same_contract(self):
+        self.assertNotEqual(hub_report.run_fields([51652], self.ROWS, 500)["verify_query"],
+                            hub_report.run_fields([51652], self.ROWS, 1000)["verify_query"])
+
+    def test_the_command_that_reproduces_it_names_the_cap_too(self):
+        self.assertIn("--hub-cap 500", hub_report.run_fields([51652], self.ROWS, 500)["reproduce"])
+
+    def test_the_table_header_names_the_cap_its_column_was_measured_at(self):
+        rendered = hub_report.report([51652], self.ROWS, [], 93, 500)
+        self.assertIn("за капом 500", rendered)
+        self.assertNotIn("за капом 1000", rendered)
+
+    def test_the_aggregation_asks_for_the_cap_as_a_variable(self):
+        with mock.patch.object(hub_report, "run_sql",
+                                return_value=mock.Mock(stdout="")) as run_sql_mock:
+            hub_report.stats(ENV, 93, 500)
+        self.assertIn(":cap", run_sql_mock.call_args[0][1])
+        self.assertEqual(run_sql_mock.call_args.kwargs["variables"]["cap"], "500")
+
+
 class RefusesAnEmptyMeasurementTests(unittest.TestCase):
     """batch_counts() answers [] for an empty or foreign cache instead of
     raising, and the two modes read DIFFERENT caches in practice, so "the
@@ -214,6 +249,22 @@ class RunRowUpdateLiveTests(unittest.TestCase):
         stamped = scalar(self.env, "SELECT verify_query FROM measurements.run WHERE spike = :'spike';",
                          variables={"spike": self.SPIKE})
         self.assertIn("ждать: 1 узел", stamped)
+
+    def test_the_aggregation_counts_over_the_callers_cap(self):
+        """The "over cap" column is the measurement, not a fixed threshold:
+        the same rows aggregate differently at two caps, and a literal in
+        the statement made the column disagree with the report around it.
+        """
+        run_sql(
+            self.env,
+            "INSERT INTO measurements.citation_hub_expansion "
+            "(run_id, work_key, relation, cited_by_count, n_references) "
+            "VALUES (:run, 'test:citations-cli:W2', 'cites', 700, 5);",
+            variables={"run": str(self.run_id)},
+        )
+        over = {cap: hub_report.stats(self.env, self.run_id, cap)[0][4]
+                for cap in (500, 1000)}
+        self.assertEqual(over, {500: "1", 1000: "0"})
 
     def test_a_second_upsert_would_have_taken_them(self):
         """Why the update exists at all -- the behaviour it replaces."""

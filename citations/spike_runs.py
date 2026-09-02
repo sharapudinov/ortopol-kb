@@ -162,16 +162,17 @@ def record_hub_report(env, cache, data_root: Path, writer, hub_cap: int) -> HubR
     if writer.dry:
         return HubRecord(counts, 0, [], None)
     writer.ddl(hub_report.DDL)
-    run_id = writer.upsert_run(hub_report.SPIKE, hub_report.run_fields(counts, []))
+    run_id = writer.upsert_run(hub_report.SPIKE,
+                               hub_report.run_fields(counts, [], hub_cap))
     writer.populate(hub_report.POPULATE, run_id)
-    rows = hub_report.stats(env, run_id)
+    rows = hub_report.stats(env, run_id, hub_cap)
     # verify_query называет ожидаемые числа, а они известны только после
     # заполнения таблицы. Правка НА МЕСТЕ: перезапись строки прогона унесла
     # бы каскадом только что записанные строки, и заполнять пришлось бы
     # второй раз (см. threshold_store.update_run_fields).
     writer.update_run_fields(
         hub_report.SPIKE,
-        {"verify_query": hub_report.run_fields(counts, rows)["verify_query"]})
+        {"verify_query": hub_report.run_fields(counts, rows, hub_cap)["verify_query"]})
     report = data_root / hub_report.REPORT_PATH
     writer.report(report, hub_report.report(counts, rows, hub_report.worst_nodes(env, run_id),
                                             run_id, hub_cap))

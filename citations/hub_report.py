@@ -104,25 +104,37 @@ ON CONFLICT (run_id, work_key) DO UPDATE SET
     n_references   = EXCLUDED.n_references;
 """
 
-VERIFY_QUERY = (
-    "SELECT relation, count(*) AS nodes, sum(cited_by_count) AS citers_total, "
-    "max(cited_by_count) AS worst, "
-    "count(*) FILTER (WHERE cited_by_count > 1000) AS over_cap, "
-    "sum(n_references) AS refs_total "
-    "FROM measurements.citation_hub_expansion "
-    "WHERE run_id = (SELECT id FROM measurements.run WHERE spike = "
-    f"'{SPIKE}') GROUP BY relation ORDER BY citers_total DESC;"
-)
+# Кап — величина ПРОГОНА (--hub-cap), а не константа замера: он входит в
+# счёт «за капом», и записанный запрос-контракт обязан считать по тому же
+# числу, что посчитал сам замер. Литерал в запросе означал бы отчёт, чей
+# заголовок называет одно число, колонка под ним измерена по другому, а
+# verify_query воспроизводит третье.
+def verify_query(cap: int) -> str:
+    """Запрос, которым проверяется вывод замера, при капе этого прогона."""
+    return (
+        "SELECT relation, count(*) AS nodes, sum(cited_by_count) AS citers_total, "
+        "max(cited_by_count) AS worst, "
+        f"count(*) FILTER (WHERE cited_by_count > {int(cap)}) AS over_cap, "
+        "sum(n_references) AS refs_total "
+        "FROM measurements.citation_hub_expansion "
+        "WHERE run_id = (SELECT id FROM measurements.run WHERE spike = "
+        f"'{SPIKE}') GROUP BY relation ORDER BY citers_total DESC;"
+    )
 
 
-def stats(env, run_id: int) -> list[list[str]]:
+def stats(env, run_id: int, cap: int) -> list[list[str]]:
+    """Агрегат замера: по одной строке на тип связи, «за капом» — по `cap`.
+
+    Кап приходит психал-переменной, а не подстановкой в строку: число здесь
+    из командной строки, и запрос собирается тем же способом, что и run_id.
+    """
     out = run_sql(
         env,
         "SELECT relation, count(*), sum(cited_by_count), max(cited_by_count), "
-        "count(*) FILTER (WHERE cited_by_count > 1000), sum(n_references) "
+        "count(*) FILTER (WHERE cited_by_count > :cap), sum(n_references) "
         "FROM measurements.citation_hub_expansion WHERE run_id = :run "
         "GROUP BY relation ORDER BY sum(cited_by_count) DESC;",
-        variables={"run": str(int(run_id))},
+        variables={"run": str(int(run_id)), "cap": str(int(cap))},
         extra_args=ROW_ARGS,
     ).stdout
     return [record.split(FIELD_SEP) for record in split_records(out)]
@@ -141,7 +153,7 @@ def worst_nodes(env, run_id: int, limit: int = 10) -> list[list[str]]:
     return [record.split(FIELD_SEP) for record in split_records(out)]
 
 
-def run_fields(counts: list[int], rows: list[list[str]]) -> dict:
+def run_fields(counts: list[int], rows: list[list[str]], cap: int) -> dict:
     total = sum(counts)
     return {
         "question": (
@@ -162,14 +174,14 @@ def run_fields(counts: list[int], rows: list[list[str]]) -> dict:
         ),
         "reproduce": (
             "cd kb && set -a; . ../corpus/.pgenv; set +a && "
-            "python3 pg_load_citations.py --hub-report   "
+            f"python3 pg_load_citations.py --hub-report --hub-cap {int(cap)}   "
             "# СЕТИ НЕ ТРЕБУЕТ: считает из citation.work (evidence) и из кэша "
             "corpus/cache/openalex, поэтому воспроизводится при исчерпанной квоте. "
             "Узлы depth-1 определяются по журналу citation.crawl_step "
             f"(action='{CrawlAction.KEEP}', depth=1), а не предположением "
             "«в базе только depth-1»"
         ),
-        "verify_query": VERIFY_QUERY + "  -- ждать: "
+        "verify_query": verify_query(cap) + "  -- ждать: "
         + "; ".join(f"{r[0]} {r[1]} узлов, Σ cited_by {r[2]}, макс {r[3]}, "
                     f"за капом {r[4]}" for r in rows),
         "rules_out": (
@@ -213,7 +225,7 @@ def report(counts: list[int], rows: list[list[str]], worst: list[list[str]],
         "",
         "## Цитируемость узлов depth-1 по типу входящей связи",
         "",
-        "| связь | узлов | Σ cited_by | максимум | за капом 1000 | Σ ссылок |",
+        f"| связь | узлов | Σ cited_by | максимум | за капом {cap} | Σ ссылок |",
         "|---|---|---|---|---|---|",
     ]
     for row in rows:
