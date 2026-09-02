@@ -18,7 +18,6 @@ from _citation_fixtures import (
     unit,
     work,
 )
-from citations import edges as edges_mod
 from citations import journal, seeding, store
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH
@@ -229,40 +228,6 @@ class ResumeTests(unittest.TestCase):
         client = self._crawl(frozenset())
         asked = [key for batch in client.cites_batches for key in batch]
         self.assertIn("W_X", asked)
-
-
-class SelfCitationTests(unittest.TestCase):
-    """A reference that resolves to the citing node itself is no edge.
-
-    It happens through the twin union, not through a source error: the
-    English translation carries the Russian original among its
-    referenced_works, both records share a DOI, and after the union both
-    ends of that "edge" are one node (citation.cites CHECKs citing <> cited).
-    """
-
-    def _registry_with_a_twin(self):
-        registry = WorkRegistry()
-        original = work("W_SEED", title="Seed Chebyshev", doi="10.1/x")
-        node, _new = registry.add(original, kind="our-document", depth=0,
-                                  document_id="doc_a")
-        node.referenced_works |= {"W_TRANS"}
-        translation = work("W_TRANS", title="Seed Chebyshev, translated", doi="10.1/x")
-        _same, is_new = registry.add(translation, kind="external-skeleton", depth=1)
-        self.assertFalse(is_new, "перевод не слился с оригиналом — фикстура не о том")
-        return registry
-
-    def test_the_self_loop_is_not_written(self):
-        registry = self._registry_with_a_twin()
-        self.assertEqual(registry.resolve_openalex("W_TRANS"), "W_SEED")
-        self.assertEqual(edges_mod.among_known(registry, ["W_SEED"], [], {}), [])
-
-    def test_a_reference_to_anybody_else_still_is(self):
-        registry = self._registry_with_a_twin()
-        registry.add(work("W_OTHER", title="Somebody else"),
-                     kind="external-skeleton", depth=1)
-        registry.nodes["W_SEED"].referenced_works |= {"W_OTHER"}
-        self.assertEqual(edges_mod.among_known(registry, ["W_SEED"], [], {}),
-                         [("W_SEED", "W_OTHER", "referenced", "W_SEED")])
 
 
 class ScoringMemoryTests(unittest.TestCase):

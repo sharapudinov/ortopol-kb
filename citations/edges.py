@@ -24,6 +24,13 @@ def among_known(registry, frontier_keys, candidates,
     and which the caller has already pruned to the ones that became nodes.
     A candidate absent from it points at nothing we know, which is the same
     answer an empty list gives.
+
+    So the second pass walks THAT dict, not the candidate list: a dropped
+    candidate has no entry there, and asking the registry to resolve it
+    rebuilds its whole namespaced id set (a normalised DOI and a short_id
+    per identifier) only to be told None. `candidates` is read once, for the
+    provenance of each kept id -- how it reached this level and from which
+    node -- which is the one thing the pruned dict does not carry.
     """
     edges: set[tuple[str, str, str, str]] = set()
 
@@ -35,8 +42,13 @@ def among_known(registry, frontier_keys, candidates,
 
     for key in frontier_keys:
         emit(key, sorted(registry.nodes[key].referenced_works), "referenced", key)
+    provenance: dict[str, tuple[str, str]] = {}
     for record, relation, source_key in candidates:
-        key = registry.find(record)
-        if key is not None:
-            emit(key, references.get(short_id(record.get("id"))), relation, source_key)
+        provenance.setdefault(short_id(record.get("id")), (relation, source_key))
+    for openalex_id, reference_ids in references.items():
+        key = registry.resolve_openalex(openalex_id)
+        if key is None:
+            continue
+        relation, source_key = provenance.get(openalex_id, ("", key))
+        emit(key, reference_ids, relation, source_key)
     return sorted(edges)
