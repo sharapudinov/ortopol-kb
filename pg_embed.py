@@ -20,6 +20,9 @@ pg_search.resolve_model(), которым её читают все осталь�
 pg_search.embed_batch, где живут адрес, размер партии и обе проверки ответа
 (размерность и КОЛИЧЕСТВО векторов).
 
+Реестр целей и учёт остатка — рядом, в pg_embed_targets.py (kb/CLAUDE.md
+FILE_SIZE): здесь — ОДИН проход по цели, там — какие цели вообще бывают.
+
 Никаких зависимостей: Postgres через psql — драйвера Postgres в системе нет,
 и ради одного скрипта он не заводится. Ровно один путь к базе: pg_common
 (run_sql/scalar/copy_csv_rows) с ЯВНЫМ env, и `--pgenv`, как у
@@ -41,13 +44,13 @@ from pg_common import (
     ROW_ARGS,
     load_pgenv,
     run_sql,
-    scalar,
     split_records,
     sql_literal,
     vector_literal,
 )
 from pg_copy import copy_csv_rows
-from pg_embedding_text import MAX_CHARS, WORKS_TEXT_SQL
+from pg_embedding_text import MAX_CHARS
+from pg_embed_targets import TARGETS, missing_semantic_key, pending
 from pg_search import EMBED_BATCH, embed_batch, resolve_model
 
 # Объявляются, только если corpus.embedding_model пуста — см. resolve_target().
@@ -112,62 +115,6 @@ def embed(texts: list[str], model: str, dims: int) -> list[list[float]]:
     короткому). Обе проверки, адрес и размер партии живут в pg_search.
     """
     return embed_batch(model, dims, texts)
-
-
-# Каждый вид записи, который может стать результатом, обязан нести семантический
-# ключ — иначе он находится только тем, кто уже знает нужное слово. Добавление
-# нового вида записи означает добавление строки СЮДА, а не отдельного скрипта.
-TARGETS = {
-    # имя: (таблица, выражение текста для вектора, предикат «есть содержание»)
-    # Предикат нужен, потому что пустая страница семантического содержания не несёт
-    # и ключ ей не положен, а у measurements.run колонки body нет вовсе.
-    "pages": ("corpus.pages",
-              "replace(replace(body, E'\\n', ' '), E'\\r', ' ')",
-              "btrim(body) <> ''"),
-    "runs": (
-        "measurements.run",
-        # Смысл прогона — в вопросе, вердикте и в том, что он ИСКЛЮЧАЕТ.
-        # Переводы строк внутри полей вычищаются, как у pages: парсер ниже
-        # построчный, и многострочный вердикт иначе рвёт разбор id|text.
-        "replace(replace(coalesce(question,'')||' '||coalesce(verdict,'')||' '"
-        "||coalesce(rules_out,'')||' '||coalesce(arbiter,''), E'\n', ' '), E'\r', ' ')",
-        "true",
-    ),
-    "works": (
-        "citation.work",
-        # Скелет из внешнего источника несёт заголовок и аннотацию — вместе
-        # они и есть смысл записи для фильтра фронтира (косинус к центроиду
-        # семян). Выражение НЕ пишется здесь: у этой колонки два писателя, и
-        # правило текста одно на обоих (pg_embedding_text.WORKS_TEXT_SQL и
-        # его питоновский двойник works_text). Предикат ниже — как у pages:
-        # запись без непустого заголовка семантического содержания не несёт.
-        WORKS_TEXT_SQL,
-        "btrim(coalesce(title,'')) <> ''",
-    ),
-}
-
-
-def pending(env: dict[str, str], table: str, content_pred: str = "true") -> int:
-    return int(scalar(env, f"select count(*) from {table} "
-                           f"where embedding is null and ({content_pred});"))
-
-
-def missing_semantic_key(env: dict[str, str],
-                         known: dict[str, int] | None = None) -> list[tuple[str, int]]:
-    """Записи-результаты без семантического ключа. Пустой список — инвариант держится.
-
-    `known` — остатки, уже посчитанные обсчётом этого прогона (embed_target
-    возвращает свой): цель, только что прошедшая обсчёт, знает свой остаток
-    арифметикой, а отдельный count(*) по ней — второй полный агрегатный
-    проход с предикатом содержания за уже известным числом.
-    """
-    known = known or {}
-    out = []
-    for name, (table, _, pred) in TARGETS.items():
-        n = known[name] if name in known else pending(env, table, pred)
-        if n > 0:
-            out.append((name, n))
-    return out
 
 
 def fetch_page(env: dict[str, str], table: str, text_expr: str,
@@ -286,7 +233,7 @@ def main(argv=None) -> int:
     model, dims = resolve_target(env)
     remaining = {name: embed_target(env, name, model, dims) for name in which}
 
-    gaps = missing_semantic_key(env, remaining)
+    gaps = missing_semantic_key(env, which, remaining)
     if gaps:
         # Не падаем: пустой текст встречается легитимно. Но молчать нельзя —
         # запись без ключа находится только тем, кто знает точное слово.

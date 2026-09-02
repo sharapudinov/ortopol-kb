@@ -20,6 +20,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 
 import pg_embed
+import pg_embed_targets
 from pg_common import FIELD_SEP, RECORD_SEP
 
 
@@ -70,7 +71,7 @@ class RoundTripsPerPageTests(unittest.TestCase):
                 chunks.append(len(texts[start:start + pg_embed.EMBED_BATCH]))
             return [[0.0] * dims for _ in texts]
 
-        with mock.patch.object(pg_embed, "scalar", side_effect=database.scalar), \
+        with mock.patch.object(pg_embed_targets, "scalar", side_effect=database.scalar), \
              mock.patch.object(pg_embed, "run_sql", side_effect=database.run_sql), \
              mock.patch.object(pg_embed, "copy_csv_rows", side_effect=database.copy_csv_rows), \
              mock.patch.object(pg_embed, "embed", side_effect=embed), \
@@ -127,7 +128,7 @@ class RoundTripsPerPageTests(unittest.TestCase):
         processes for three numbers.
         """
         database = FakeDatabase(pg_embed.FETCH_BATCH)
-        with mock.patch.object(pg_embed, "scalar", side_effect=database.scalar), \
+        with mock.patch.object(pg_embed_targets, "scalar", side_effect=database.scalar), \
              mock.patch.object(pg_embed, "run_sql", side_effect=database.run_sql), \
              mock.patch.object(pg_embed, "copy_csv_rows",
                                side_effect=database.copy_csv_rows), \
@@ -136,10 +137,37 @@ class RoundTripsPerPageTests(unittest.TestCase):
                                [[0.0] * dims for _ in texts]), \
              mock.patch("builtins.print"):
             left = pg_embed.embed_target(self.ENV, "works", "bge-m3", 4)
-            gaps = pg_embed.missing_semantic_key(self.ENV, {"works": left})
-        self.assertEqual(len(database.counts), len(pg_embed.TARGETS),
+            gaps = pg_embed.missing_semantic_key(self.ENV, ["works"], {"works": left})
+        self.assertEqual(len(database.counts), 1,
                          "цель посчитана дважды за прогон")
         self.assertNotIn("works", dict(gaps))
+
+    def test_a_single_target_run_counts_no_other_targets_table(self):
+        """`pg_embed.py works` -- the repair citation_checks.py prints -- used
+        to end with a count(*) over corpus.pages and measurements.run: a
+        seq scan with btrim() on every page body for a number the run
+        cannot have changed.
+        """
+        database = FakeDatabase(0)
+        with mock.patch.object(pg_embed_targets, "scalar", side_effect=database.scalar), \
+             mock.patch.object(pg_embed, "load_pgenv", return_value=self.ENV), \
+             mock.patch.object(pg_embed, "resolve_target", return_value=("bge-m3", 4)), \
+             mock.patch("builtins.print"):
+            self.assertEqual(pg_embed.main(["works"]), 0)
+        self.assertEqual(len(database.counts), 1,
+                         "добор одной цели считает чужие таблицы")
+        self.assertIn("citation.work", database.counts[0])
+        for sql in database.counts:
+            self.assertNotIn("corpus.pages", sql)
+
+    def test_the_default_run_still_audits_every_target(self):
+        database = FakeDatabase(0)
+        with mock.patch.object(pg_embed_targets, "scalar", side_effect=database.scalar), \
+             mock.patch.object(pg_embed, "load_pgenv", return_value=self.ENV), \
+             mock.patch.object(pg_embed, "resolve_target", return_value=("bge-m3", 4)), \
+             mock.patch("builtins.print"):
+            self.assertEqual(pg_embed.main([]), 0)
+        self.assertEqual(len(database.counts), len(pg_embed_targets.TARGETS))
 
     def test_the_page_is_staged_and_consumed_in_one_script(self):
         """The same seam citations/store.py writes through: a TEMP table,
@@ -172,7 +200,7 @@ class OnePostgresPathTests(unittest.TestCase):
 
     def test_every_read_takes_the_env_it_is_given(self):
         env = {"PGDATABASE": "elsewhere"}
-        with mock.patch.object(pg_embed, "scalar", return_value="0") as scalar_mock:
+        with mock.patch.object(pg_embed_targets, "scalar", return_value="0") as scalar_mock:
             pg_embed.pending(env, "citation.work", "true")
         self.assertIs(scalar_mock.call_args[0][0], env)
 
@@ -275,7 +303,7 @@ class BlankRowsAreExcludedBySqlTests(unittest.TestCase):
         vector is exactly what the closing "БЕЗ СЕМАНТИЧЕСКОГО КЛЮЧА" line
         reports, and hiding it from the count would hide the report.
         """
-        with mock.patch.object(pg_embed, "scalar", return_value="3") as scalar:
+        with mock.patch.object(pg_embed_targets, "scalar", return_value="3") as scalar:
             pg_embed.pending({}, "measurements.run", "true")
         self.assertNotIn("btrim", scalar.call_args[0][1])
 
