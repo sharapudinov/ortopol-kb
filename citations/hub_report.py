@@ -55,24 +55,52 @@ CREATE INDEX IF NOT EXISTS citation_hub_expansion_relation
 # обход, и его ответ лежит в журнале. DISTINCT ON (node_key) по возрастанию
 # id берёт первую строку keep для узла: реестр присваивает relation при
 # СОЗДАНИИ узла (registry.add), последующие записи его не меняют.
+#
+# Отдельного индекса под этот срез НЕТ, и это измерено, а не забыто.
+# EXPLAIN (ANALYZE, BUFFERS) на живой базе, журнал наращён до depth-2-
+# размера внутри откатываемой транзакции (100 тыс. и 400 тыс. строк),
+# сравнение с CREATE INDEX ... (depth, node_key) WHERE action = 'keep':
+#
+#   ~100k строк: чтение журнала 1558 буферов -> 287 с индексом,
+#                весь POPULATE 9.9 мс -> 8.3 мс;
+#   ~400k строк: 548 -> 287, 9.3 мс -> 9.0 мс.
+#
+# Выигрыш не растёт с журналом, а СЖИМАЕТСЯ: последовательного скана здесь
+# нет и без нового индекса — планировщик берёт node_key IS NOT NULL
+# bitmap-скном по crawl_step_node_key_idx, а на 400 тыс. переключает план
+# сам. Основная цена статична и лежит не в журнале: 382 поиска по
+# citation.work (1146 буферов) и разворот evidence (730). Индекс — это
+# запись на КАЖДУЮ строку keep всякого обхода ради 0.3 мс у замера,
+# который запускают вручную; не добавлен.
+#
+# evidence — самая объёмная колонка схемы, и две скалярных подзапроса по
+# одному и тому же массиву разворачивали его ДВАЖДЫ на каждую работу. Один
+# LEFT JOIN LATERAL разворачивает его один раз и отдаёт обе суммы. LEFT и
+# LATERAL, а не подзапрос в SELECT: у работы без evidence
+# jsonb_array_elements не даёт ни строки, агрегат по пустому множеству —
+# одна строка с NULL, и coalesce снаружи делает из неё 0 (раньше это же
+# делал coalesce внутри каждого подзапроса).
 POPULATE = """
 INSERT INTO measurements.citation_hub_expansion
     (run_id, work_key, relation, cited_by_count, n_references)
 SELECT :run, w.key, j.relation,
-       (SELECT coalesce(sum((r->>'cited_by_count')::bigint), 0)
-          FROM jsonb_array_elements(w.evidence->'records') r),
+       coalesce(agg.cited_by, 0),
        -- referenced_works_count, не length(referenced_works): сам список
        -- в evidence не хранится (registry.Node.absorb), а счётчик OpenAlex
        -- присылает рядом. Сверено на живой базе: 438 работ, 15634 ссылки
        -- обоими способами, ноль расхождений.
-       (SELECT coalesce(sum((r->>'referenced_works_count')::bigint), 0)
-          FROM jsonb_array_elements(w.evidence->'records') r)
+       coalesce(agg.refs, 0)
 FROM citation.work w
 JOIN (SELECT DISTINCT ON (node_key) node_key, relation
         FROM citation.crawl_step
        WHERE action = 'keep' AND depth = 1
          AND node_key IS NOT NULL AND relation IS NOT NULL
        ORDER BY node_key, id) j ON j.node_key = w.key
+LEFT JOIN LATERAL (
+    SELECT sum((r->>'cited_by_count')::bigint)          AS cited_by,
+           sum((r->>'referenced_works_count')::bigint)  AS refs
+    FROM jsonb_array_elements(w.evidence->'records') r
+) agg ON true
 ON CONFLICT (run_id, work_key) DO UPDATE SET
     relation       = EXCLUDED.relation,
     cited_by_count = EXCLUDED.cited_by_count,

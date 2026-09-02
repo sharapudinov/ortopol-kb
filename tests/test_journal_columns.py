@@ -159,6 +159,67 @@ class JournalBackfillTests(unittest.TestCase):
         self.assertEqual(left, "0")
 
 
+class HubReportPopulateTests(unittest.TestCase):
+    """The one consumer that reads the journal's depth-1 slice back.
+
+    The aggregation is checked against the run it already produced: the
+    statement runs against the SAME run id inside a rolled-back
+    transaction, so "did the rewrite change any number" is answered by the
+    data rather than by reading the SQL. Run 93 itself is never rewritten.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+        cls.run_id = run_sql(
+            cls.env,
+            "SELECT id FROM measurements.run WHERE spike = "
+            f"'{hub_report.SPIKE}';",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        if not cls.run_id:
+            raise unittest.SkipTest(f"no measurements.run for {hub_report.SPIKE}")
+
+    def test_the_evidence_array_is_expanded_once_per_row(self):
+        """Two scalar subqueries deserialised the bulkiest column in the
+        schema twice for every matched work; one LATERAL does it once.
+        """
+        self.assertEqual(hub_report.POPULATE.count("jsonb_array_elements"), 1)
+        self.assertIn("LEFT JOIN LATERAL", hub_report.POPULATE)
+
+    def test_it_reproduces_the_recorded_measurement_row_for_row(self):
+        columns = "work_key, relation, cited_by_count, n_references"
+        script = (
+            "BEGIN;\n"
+            f"CREATE TEMP TABLE recorded AS SELECT {columns} "
+            f"FROM measurements.citation_hub_expansion WHERE run_id = {self.run_id};\n"
+            + hub_report.POPULATE.replace(":run", self.run_id) + "\n"
+            f"WITH fresh AS (SELECT {columns} FROM measurements.citation_hub_expansion "
+            f"               WHERE run_id = {self.run_id})\n"
+            "SELECT (SELECT count(*) FROM recorded), (SELECT count(*) FROM fresh),\n"
+            "       (SELECT count(*) FROM (SELECT * FROM fresh EXCEPT "
+            "                              SELECT * FROM recorded) a),\n"
+            "       (SELECT count(*) FROM (SELECT * FROM recorded EXCEPT "
+            "                              SELECT * FROM fresh) b);\n"
+            "ROLLBACK;\n"
+        )
+        out = run_sql(self.env, script, extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
+        row = [line for line in out.splitlines() if line.strip()][-1]
+        recorded, fresh, added, lost = row.split(FIELD_SEP)
+        self.assertEqual(fresh, recorded)
+        self.assertEqual((added, lost), ("0", "0"),
+                         "перезапись POPULATE изменила записанный замер")
+
+    def test_the_recorded_run_is_untouched_afterwards(self):
+        out = run_sql(
+            self.env,
+            "SELECT count(*) FROM measurements.citation_hub_expansion "
+            f"WHERE run_id = {self.run_id};",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        self.assertEqual(out, "382")
+
+
 class BackfillRegistryTests(unittest.TestCase):
     """The parse runs once per database, and citation.schema_backfill is how
     the schema knows it already did.
