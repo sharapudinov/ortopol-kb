@@ -16,6 +16,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 
 import citation_checks
+import pg_graph_common
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv
 
@@ -82,14 +83,16 @@ class ProjectionStaleTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("PROJECTION STALE", problems[0])
 
-    def test_matching_counts_are_no_problem(self):
+    FAITHFUL = pg_graph_common.Projection(5, 3, 5, 3, "w", "w", "c", "c")
+
+    def test_matching_counts_and_content_are_no_problem(self):
         with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
-                               return_value=(5, 3, 5, 3)):
+                               return_value=self.FAITHFUL):
             self.assertEqual(citation_checks._projection_stale({}), [])
 
     def test_mismatched_counts_are_one_problem_naming_the_diff(self):
         with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
-                               return_value=(5, 3, 4, 3)):
+                               return_value=self.FAITHFUL._replace(vertex_n=4)):
             problems = citation_checks._projection_stale({})
         self.assertEqual(len(problems), 1)
         self.assertIn("work=5", problems[0])

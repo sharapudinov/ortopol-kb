@@ -87,17 +87,22 @@ class CitationProjectionTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("02_project_graph.sql", detail)
 
+    @staticmethod
+    def _seen(work_n, cites_n, vertex_n, edge_n):
+        return smoke_checks.pg_graph_common.Projection(
+            work_n, cites_n, vertex_n, edge_n, "w", "w", "c", "c")
+
     def test_matching_counts_pass(self):
         manifest = {"citation": {"mode": "topology-only", "work_count": 438, "cites_count": 2425}}
         with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff",
-                               return_value=(438, 2425, 438, 2425)):
+                               return_value=self._seen(438, 2425, 438, 2425)):
             ok, detail = smoke_checks.check_citation_projection({}, manifest)
         self.assertTrue(ok, detail)
 
     def test_mismatched_counts_fail(self):
         manifest = {"citation": {"mode": "full-skeleton", "work_count": 438, "cites_count": 2425}}
         with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff",
-                               return_value=(438, 2425, 437, 2425)):
+                               return_value=self._seen(438, 2425, 437, 2425)):
             ok, detail = smoke_checks.check_citation_projection({}, manifest)
         self.assertFalse(ok)
         self.assertIn("diff -1", detail)
@@ -109,7 +114,7 @@ class CitationProjectionTests(unittest.TestCase):
         """
         manifest = {"citation": {"mode": "full-skeleton", "work_count": 438, "cites_count": 2425}}
         with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff",
-                               return_value=(430, 2425, 430, 2425)):
+                               return_value=self._seen(430, 2425, 430, 2425)):
             ok, detail = smoke_checks.check_citation_projection({}, manifest)
         self.assertFalse(ok)
         self.assertIn("манифест: work 438", detail)
