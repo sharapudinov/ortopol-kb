@@ -57,6 +57,38 @@ class CompareCountsTests(unittest.TestCase):
         self.assertEqual(pg_graph.compare_counts(3, 2, 3, 5), (0, 3))
 
 
+class ProjectionShapeTests(unittest.TestCase):
+    """The projection's COST is a property of its shape, and the shape is
+    readable without a database: two bulk INSERT ... SELECT statements into
+    the AGE label tables, not one Cypher command per row. The row-by-row
+    form this replaced re-planned a command per row AND resolved each edge's
+    endpoints with `MATCH (a:Work {key: ...})`, a sequential scan of the
+    whole vertex label per edge (AGE indexes no property by itself).
+    """
+
+    SCHEMA = pg_graph.SCHEMA_PATH.read_text(encoding="utf-8")
+
+    def test_labels_are_filled_by_bulk_insert(self):
+        self.assertIn('INSERT INTO citation_graph."Work" (id, properties)', self.SCHEMA)
+        self.assertIn(
+            'INSERT INTO citation_graph."CITES" (id, start_id, end_id, properties)',
+            self.SCHEMA,
+        )
+
+    def test_no_per_row_cypher_command_is_assembled(self):
+        body = self.SCHEMA[self.SCHEMA.index("CREATE OR REPLACE FUNCTION citation.project_graph()"):]
+        self.assertNotIn("FOR w IN", body)
+        self.assertNotIn("FOR c IN", body)
+        self.assertNotIn("MATCH (a:Work", body)
+        self.assertNotIn("CREATE (:Work", body)
+
+    def test_edge_endpoints_are_computed_from_the_relational_id(self):
+        # _graphid(<Work label>, citation.work.id) -- so an edge's endpoints
+        # are arithmetic, not a lookup by key.
+        self.assertIn("ag_catalog._graphid($1, ci.citing)", self.SCHEMA)
+        self.assertIn("ag_catalog._graphid($1, ci.cited)", self.SCHEMA)
+
+
 class CitationGraphLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -132,6 +164,65 @@ class CitationGraphLiveTests(unittest.TestCase):
         second = pg_graph.project(self.env)
         self.assertEqual(first, second, "повторная проекция дала другие |V|/|E|")
         self.assertEqual(pg_graph.check(self.env), 0)
+
+    def test_projection_carries_properties_through_agtype_unmangled(self):
+        """A third-party title can hold quotes, backslashes and newlines.
+        The projection writes properties as jsonb cast to agtype (Postgres's
+        own JSON writer does the escaping); the consumers read them back
+        through Cypher with citation.cypher_literal(). Both halves must agree
+        on the same string.
+        """
+        prefix = "test:pg_graph:props:"
+        raw_key = prefix + "a'b\\c\"d"
+        raw_title = "Ряд \"Фурье\"\\Чебышёва, o'зна\nчение"
+        self.addCleanup(self._delete_and_reproject, prefix)
+        run_sql(
+            self.env,
+            "INSERT INTO citation.work (key, title, year, source, kind) "
+            "VALUES (:'key', :'title', 1997, 'manual', 'external-skeleton');",
+            variables={"key": raw_key, "title": raw_title},
+        )
+        pg_graph.project(self.env)
+        escaped = self._scalar("SELECT citation.cypher_literal(:'raw');", variables={"raw": raw_key})
+        row = run_sql(
+            self.env,
+            pg_graph._AGE_PREAMBLE
+            + "SELECT t::text, y::text, k::text FROM ag_catalog.cypher('citation_graph', "
+            + f"$CYPHERQ$MATCH (w:Work {{key: '{escaped}'}}) RETURN w.title, w.year, w.kind$CYPHERQ$) "
+            + "AS (t agtype, y agtype, k agtype);",
+            extra_args=["-t", "-A", "-F", FIELD_SEP],
+        ).stdout.strip()
+        self.assertTrue(row, "спроецированный узел не найден по своему же ключу")
+        # agtype's ::text cast strips the JSON-style quoting a bare agtype
+        # column prints (the same cast pg_graph_queries relies on), so these
+        # are the plain strings, newline and all.
+        title, year, kind = row.split(FIELD_SEP)
+        self.assertEqual(title, raw_title)
+        self.assertEqual(year, "1997")
+        self.assertEqual(kind, "external-skeleton")
+
+    def test_projection_omits_absent_year_and_title(self):
+        """jsonb_strip_nulls, matching what the Cypher form emitted: a node
+        with no year carries no `year` property at all, rather than a null
+        one -- `MATCH (w:Work) WHERE w.year IS NULL` and property-count
+        answers differ between the two.
+        """
+        prefix = "test:pg_graph:sparse:"
+        self.addCleanup(self._delete_and_reproject, prefix)
+        run_sql(
+            self.env,
+            f"INSERT INTO citation.work (key, source, kind) "
+            f"VALUES ('{prefix}a', 'manual', 'external-skeleton');",
+        )
+        pg_graph.project(self.env)
+        sparse = self._scalar(
+            'SELECT count(*) FROM citation_graph."Work" '
+            "WHERE (properties::text)::jsonb->>'key' = :'key' "
+            "AND NOT ((properties::text)::jsonb ? 'year') "
+            "AND NOT ((properties::text)::jsonb ? 'title');",
+            variables={"key": f"{prefix}a"},
+        )
+        self.assertEqual(sparse, "1", "у узла без года/названия появились лишние свойства")
 
 
 if __name__ == "__main__":

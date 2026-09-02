@@ -149,10 +149,9 @@ $$ LANGUAGE sql IMMUTABLE;
 --
 -- Full reprojection, not an incremental MERGE: drop_graph()+create_graph()
 -- guarantees no orphaned vertex/edge label data survives a row that
--- disappeared from citation.work/cites between two runs, at a cost that is
--- negligible at the graph's actual size (~10k nodes). An incremental MERGE
--- would need to diff two representations to find deletions and is simply
--- more code for the same result at this scale.
+-- disappeared from citation.work/cites between two runs. An incremental
+-- MERGE would need to diff two representations to find deletions and is
+-- simply more code for the same result.
 --
 -- create_vlabel/create_elabel run unconditionally, even when work/cites are
 -- empty, so the label tables citation_graph."Work"/"CITES" always exist for
@@ -160,25 +159,55 @@ $$ LANGUAGE sql IMMUTABLE;
 -- use inside a CREATE clause, and an empty citation.work would otherwise
 -- leave "Work" missing rather than merely empty.
 --
--- ag_catalog.cypher()'s second argument MUST be a dollar-quoted string
--- constant, not merely a text-valued expression: AGE rewrites the query at
--- parse-analysis time by locating a dollar-quoted literal in the parse
--- tree, and a plain quoted (or E'') literal -- what format('%L', ...) would
--- produce -- fails with "a dollar-quoted string constant is expected"
--- (confirmed against 1.7.0 on this instance). EXECUTE still works: it
--- reparses the assembled SQL text fresh each time, so a dynamically built
--- string that happens to use $CYPHERQ$...$CYPHERQ$ delimiters is, by the
--- time AGE's hook sees it, indistinguishable from one written by hand in a
--- static query. CYPHERQ is checked against the command text first because
--- nothing stops a title/key from containing that exact tag; if it ever did,
--- silently using it as a delimiter would truncate the command instead of
--- raising.
+-- BULK LOAD, not one Cypher command per row. A label table is an ordinary
+-- table (vertex: id graphid, properties agtype; edge: + start_id, end_id),
+-- and AGE's Cypher reads whatever is in it, so two INSERT ... SELECT
+-- statements fill the whole graph in one pass each. The row-by-row Cypher
+-- form this replaced cost O(V*E): AGE indexes no vertex property by
+-- itself, so every edge's `MATCH (a:Work {key: ...}), (b:Work {key: ...})`
+-- sequentially scanned the entire vertex label twice, on top of a fresh
+-- parse+plan per row. Measured on this instance (AGE 1.7.0, PostgreSQL
+-- 17.11), same data, identical resulting graph both ways:
+--
+--     438 works / 2 425 edges (live)      row-by-row 0.70 s   bulk 0.08 s
+--   10 000 works / 50 235 edges (synth)   row-by-row  221 s   bulk 0.26 s
+--
+-- A btree index on the key property
+-- (agtype_access_operator(properties, '"key"')) does NOT rescue the
+-- row-by-row form -- measured 254 s on the same 10k/50k data, i.e. slower
+-- than no index at all: AGE 1.7.0 does not plan a property MATCH through
+-- such an index, so the scan stays and the index maintenance is added to
+-- it. The cost is in the shape, not in a missing index.
+--
+-- The vertex graphid's entry id IS citation.work.id, so an edge's endpoints
+-- are arithmetic (_graphid(<Work label>, ci.citing)) rather than a lookup
+-- by key -- the per-edge join disappears with the per-edge command. Both
+-- label sequences are then advanced past the ids just used, so a Cypher
+-- CREATE issued against the projection afterwards cannot collide with one.
+--
+-- Properties are built as jsonb and cast to agtype: Postgres's own JSON
+-- writer escapes quotes, backslashes and newlines in a third-party title,
+-- and no command text is assembled here at all -- with it goes the
+-- $CYPHERQ$ delimiter hazard the string-building form had to guard
+-- against. citation.cypher_literal() above stays: the READ side
+-- (pg_graph_queries.py) still splices a key into a Cypher command.
+-- jsonb_strip_nulls keeps a missing year/title out of the property map
+-- entirely rather than storing a null one, exactly as the Cypher form did.
+--
+-- The INSERTs go through EXECUTE, not as static statements: drop_graph()
+-- destroys and create_vlabel() recreates citation_graph."Work"/"CITES" on
+-- every call, and a plpgsql statement referencing them by name would carry
+-- a cached plan for a relation this very function has already dropped.
 CREATE OR REPLACE FUNCTION citation.project_graph()
 RETURNS TABLE(vertices BIGINT, edges BIGINT) AS $$
 DECLARE
-    w RECORD;
-    c RECORD;
-    cyp TEXT;
+    graph_oid   OID;
+    work_label  INTEGER;
+    cites_label INTEGER;
+    work_seq    TEXT;
+    cites_seq   TEXT;
+    max_work_id BIGINT;
+    n_cites     BIGINT;
 BEGIN
     IF EXISTS (SELECT 1 FROM ag_catalog.ag_graph WHERE name = 'citation_graph') THEN
         PERFORM ag_catalog.drop_graph('citation_graph', true);
@@ -187,37 +216,36 @@ BEGIN
     PERFORM ag_catalog.create_vlabel('citation_graph', 'Work');
     PERFORM ag_catalog.create_elabel('citation_graph', 'CITES');
 
-    FOR w IN SELECT key, kind, year, title FROM citation.work LOOP
-        cyp := format(
-            'CREATE (:Work {key: ''%s'', kind: ''%s''%s%s})',
-            citation.cypher_literal(w.key),
-            citation.cypher_literal(w.kind),
-            CASE WHEN w.year IS NULL THEN '' ELSE format(', year: %s', w.year) END,
-            CASE WHEN w.title IS NULL THEN '' ELSE format(', title: ''%s''', citation.cypher_literal(w.title)) END
-        );
-        IF cyp LIKE '%$CYPHERQ$%' THEN
-            RAISE EXCEPTION 'citation.work.key=%: command text collides with the $CYPHERQ$ delimiter', w.key;
-        END IF;
-        EXECUTE format('SELECT * FROM ag_catalog.cypher(''citation_graph'', $CYPHERQ$%s$CYPHERQ$) AS (v ag_catalog.agtype)', cyp);
-    END LOOP;
+    SELECT g.graphid INTO graph_oid
+      FROM ag_catalog.ag_graph g WHERE g.name = 'citation_graph';
+    SELECT l.id, format('citation_graph.%I', l.seq_name) INTO work_label, work_seq
+      FROM ag_catalog.ag_label l WHERE l.graph = graph_oid AND l.name = 'Work';
+    SELECT l.id, format('citation_graph.%I', l.seq_name) INTO cites_label, cites_seq
+      FROM ag_catalog.ag_label l WHERE l.graph = graph_oid AND l.name = 'CITES';
 
-    FOR c IN
-        SELECT wa.key AS citing_key, wb.key AS cited_key, ci.source AS src
-        FROM citation.cites ci
-        JOIN citation.work wa ON wa.id = ci.citing
-        JOIN citation.work wb ON wb.id = ci.cited
-    LOOP
-        cyp := format(
-            'MATCH (a:Work {key: ''%s''}), (b:Work {key: ''%s''}) CREATE (a)-[:CITES {source: ''%s''}]->(b)',
-            citation.cypher_literal(c.citing_key),
-            citation.cypher_literal(c.cited_key),
-            citation.cypher_literal(c.src)
-        );
-        IF cyp LIKE '%$CYPHERQ$%' THEN
-            RAISE EXCEPTION 'citation.cites %->% (%): command text collides with the $CYPHERQ$ delimiter', c.citing_key, c.cited_key, c.src;
-        END IF;
-        EXECUTE format('SELECT * FROM ag_catalog.cypher(''citation_graph'', $CYPHERQ$%s$CYPHERQ$) AS (v ag_catalog.agtype)', cyp);
-    END LOOP;
+    EXECUTE '
+        INSERT INTO citation_graph."Work" (id, properties)
+        SELECT ag_catalog._graphid($1, w.id),
+               jsonb_strip_nulls(jsonb_build_object(
+                   ''key'', w.key, ''kind'', w.kind,
+                   ''year'', w.year, ''title'', w.title))::text::ag_catalog.agtype
+        FROM citation.work w'
+    USING work_label;
+
+    EXECUTE '
+        INSERT INTO citation_graph."CITES" (id, start_id, end_id, properties)
+        SELECT ag_catalog._graphid(
+                   $2, row_number() OVER (ORDER BY ci.citing, ci.cited, ci.source)),
+               ag_catalog._graphid($1, ci.citing),
+               ag_catalog._graphid($1, ci.cited),
+               jsonb_build_object(''source'', ci.source)::text::ag_catalog.agtype
+        FROM citation.cites ci'
+    USING work_label, cites_label;
+
+    SELECT coalesce(max(w.id), 0) INTO max_work_id FROM citation.work w;
+    SELECT count(*) INTO n_cites FROM citation.cites;
+    PERFORM setval(work_seq::regclass, GREATEST(max_work_id, 1), max_work_id > 0);
+    PERFORM setval(cites_seq::regclass, GREATEST(n_cites, 1), n_cites > 0);
 
     EXECUTE 'SELECT count(*) FROM citation_graph."Work"' INTO vertices;
     EXECUTE 'SELECT count(*) FROM citation_graph."CITES"' INTO edges;
