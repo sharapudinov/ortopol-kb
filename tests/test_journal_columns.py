@@ -179,6 +179,7 @@ class HubReportPopulateTests(unittest.TestCase):
         ).stdout.strip()
         if not cls.run_id:
             raise unittest.SkipTest(f"no measurements.run for {hub_report.SPIKE}")
+        cls.n_rows = cls._rows_of_the_run()
 
     def test_the_evidence_array_is_expanded_once_per_row(self):
         """Two scalar subqueries deserialised the bulkiest column in the
@@ -210,14 +211,24 @@ class HubReportPopulateTests(unittest.TestCase):
         self.assertEqual((added, lost), ("0", "0"),
                          "перезапись POPULATE изменила записанный замер")
 
-    def test_the_recorded_run_is_untouched_afterwards(self):
-        out = run_sql(
-            self.env,
+    @classmethod
+    def _rows_of_the_run(cls) -> str:
+        return run_sql(
+            cls.env,
             "SELECT count(*) FROM measurements.citation_hub_expansion "
-            f"WHERE run_id = {self.run_id};",
+            f"WHERE run_id = {cls.run_id};",
             extra_args=["-t", "-A"],
         ).stdout.strip()
-        self.assertEqual(out, "382")
+
+    def test_the_recorded_run_is_untouched_afterwards(self):
+        """Against the count taken before the probe ran, never a literal.
+
+        How many rows the recorded run has is data: the documented workflow
+        rewrites it, and a number frozen here turns that into a red suite
+        with no defect behind it. What the probe owes is that it changed
+        nothing -- which is a comparison, not a constant.
+        """
+        self.assertEqual(self._rows_of_the_run(), self.n_rows)
 
 
 class ActionVocabularyGuardTests(unittest.TestCase):
