@@ -8,7 +8,15 @@ is what makes "--dry-run writes nothing" a property of construction.
 Same two mechanisms as the rest of the repository (pg_common.py): script
 variables for parameters, `\\copy` from a csv module-built temp file for
 bulk -- no string interpolation of source-controlled text anywhere near
-SQL, because titles and abstracts here come from a third party.
+SQL, because titles and abstracts here come from a third party. The
+statements themselves are next door in store_sql.py: this module is who
+writes, that one is what is written.
+
+Every bulk write is ONE psql script -- staging DDL, the `\\copy`, the upsert
+that consumes it -- and the staging relation is a TEMP table, so a writer
+running at the same time cannot see it and neither can drop the other's
+rows between two invocations. Each method returns what the database
+ACCEPTED, which the statements themselves count.
 
 Upserts, never truncate-and-reload. The rule LOADERS_PRESERVE was paid for
 twice in this project, and it has two specific consequences below:
@@ -21,112 +29,24 @@ twice in this project, and it has two specific consequences below:
 """
 from __future__ import annotations
 
-import csv
-import io
-import json
 from typing import Protocol, runtime_checkable
 
-from pg_common import copy_csv_into, run_sql
+from pg_copy import copy_csv_rows
 
-WORK_COLUMNS = (
-    "key", "doi", "title", "abstract", "year", "authors", "external_ids",
-    "source", "kind", "document_id", "evidence", "embedding",
+from .store_sql import (
+    CITES_COLUMNS,
+    PROMOTE_COLUMNS,
+    STEP_COLUMNS,
+    WORK_COLUMNS,
+    CITES_STAGE_DDL,
+    CITES_UPSERT,
+    PROMOTE_STAGE_DDL,
+    PROMOTE_UPDATE,
+    WORK_STAGE_DDL,
+    WORK_UPSERT,
+    json_or_null,
+    vector_literal,
 )
-CITES_COLUMNS = ("citing_key", "cited_key", "source", "evidence")
-STEP_COLUMNS = (
-    "crawl_id", "depth", "frontier_key", "candidate_key", "node_key", "action",
-    "n_found", "n_kept", "score", "tau", "relation", "cited_by_count", "reason",
-)
-
-_WORK_STAGE_DDL = """
-DROP TABLE IF EXISTS citation.stage_work;
-CREATE UNLOGGED TABLE citation.stage_work (
-    key TEXT, doi TEXT, title TEXT, abstract TEXT, year INTEGER,
-    authors JSONB, external_ids JSONB, source TEXT, kind TEXT,
-    document_id TEXT, evidence JSONB, embedding vector(1024));
-"""
-
-_WORK_UPSERT = """
-INSERT INTO citation.work
-    (key, doi, title, abstract, year, authors, external_ids, source, kind,
-     document_id, evidence, embedding, fetched_at)
-SELECT key, doi, title, abstract, year, authors, external_ids, source, kind,
-       document_id, evidence, embedding, now()
-FROM citation.stage_work
-ON CONFLICT (key) DO UPDATE SET
-    doi          = COALESCE(EXCLUDED.doi, citation.work.doi),
-    title        = COALESCE(EXCLUDED.title, citation.work.title),
-    abstract     = COALESCE(EXCLUDED.abstract, citation.work.abstract),
-    year         = COALESCE(EXCLUDED.year, citation.work.year),
-    authors      = COALESCE(EXCLUDED.authors, citation.work.authors),
-    external_ids = COALESCE(EXCLUDED.external_ids, citation.work.external_ids),
-    source       = EXCLUDED.source,
-    kind         = CASE WHEN citation.work.kind IN ('our-document', 'indexed')
-                         AND EXCLUDED.kind = 'external-skeleton'
-                        THEN citation.work.kind ELSE EXCLUDED.kind END,
-    document_id  = COALESCE(EXCLUDED.document_id, citation.work.document_id),
-    evidence     = EXCLUDED.evidence,
-    embedding    = COALESCE(EXCLUDED.embedding, citation.work.embedding),
-    fetched_at   = now();
-DROP TABLE citation.stage_work;
-"""
-
-_CITES_STAGE_DDL = """
-DROP TABLE IF EXISTS citation.stage_cites;
-CREATE UNLOGGED TABLE citation.stage_cites (
-    citing_key TEXT, cited_key TEXT, source TEXT, evidence JSONB);
-"""
-
-# a.id <> b.id, not a.key <> b.key: after the twin union two OpenAlex
-# records of one work share a node, and a "translation cites original" edge
-# would otherwise violate the CHECK (citing <> cited) and abort the batch.
-_CITES_UPSERT = """
-INSERT INTO citation.cites (citing, cited, source, evidence)
-SELECT a.id, b.id, s.source, s.evidence
-FROM citation.stage_cites s
-JOIN citation.work a ON a.key = s.citing_key
-JOIN citation.work b ON b.key = s.cited_key
-WHERE a.id <> b.id
-ON CONFLICT (citing, cited, source) DO NOTHING;
-DROP TABLE citation.stage_cites;
-"""
-
-
-PROMOTE_COLUMNS = ("key", "document_id", "seed_key", "rule")
-
-_PROMOTE_STAGE_DDL = """
-DROP TABLE IF EXISTS citation.stage_twin;
-CREATE UNLOGGED TABLE citation.stage_twin (
-    key TEXT, document_id TEXT, seed_key TEXT, rule TEXT);
-"""
-
-_PROMOTE_UPDATE = """
-UPDATE citation.work w
-SET kind = 'our-document',
-    document_id = s.document_id,
-    evidence = coalesce(w.evidence, '{}'::jsonb)
-               || jsonb_build_object('twin_of', s.seed_key, 'twin_rule', s.rule)
-FROM citation.stage_twin s
-WHERE w.key = s.key;
-DROP TABLE citation.stage_twin;
-"""
-
-
-def csv_rows(rows: list[list]) -> str:
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, lineterminator="\n")
-    for row in rows:
-        writer.writerow(row)
-    return buffer.getvalue()
-
-
-def _json_or_null(value):
-    return None if value is None else json.dumps(value, ensure_ascii=False)
-
-
-def vector_literal(vector) -> str | None:
-    return None if vector is None else "[" + ",".join(repr(float(v)) for v in vector) + "]"
-
 
 # -- writes --------------------------------------------------------------
 @runtime_checkable
@@ -135,11 +55,21 @@ class Writer(Protocol):
     implementations follow.
 
     Every method takes the rows produced by ONE step of the crawl and
-    returns how many of them IT accepted -- not the running total. counts
-    accumulates those same per-call numbers under 'work' / 'cites' /
-    'step' / 'twin'. Spelled out here because the two implementations had drifted
-    into three conventions between them, and the dry run's numbers are what
-    the decision to spend a real quota window is made on.
+    returns how many of them IT accepted -- not the running total, and not
+    the number submitted. counts accumulates those same per-call numbers
+    under 'work' / 'cites' / 'step' / 'twin'. Spelled out here because the
+    two implementations had drifted into three conventions between them, and
+    the dry run's numbers are what the decision to spend a real quota window
+    is made on.
+
+    "Accepted" is the database's own count for PostgresWriter: the upserts
+    refuse rows on purpose (a self-edge left by the twin union, an edge the
+    graph already carries, a promote key with no work row), so each
+    statement ends by counting what it wrote and that is what comes back.
+    DryRunWriter has no database to refuse anything, so its number is the
+    ceiling the same batch would reach against an empty graph -- which is
+    what an estimate of a crawl is, and why the two agree on new ground and
+    diverge over ground already covered.
 
     A Protocol rather than a base class: neither writer inherits anything,
     and the point is to pin the contract the crawl depends on, not to share
@@ -166,29 +96,33 @@ class PostgresWriter:
         self.counts = {"work": 0, "cites": 0, "step": 0, "twin": 0}
 
     def works(self, nodes) -> int:
-        rows = []
-        for node in nodes:
-            rows.append([
-                node.key,
-                node.doi,
-                node.title,
-                node.abstract,
-                node.year,
-                _json_or_null(node.authors or None),
-                _json_or_null(node.external_ids()),
-                self.source,
-                node.kind,
-                node.document_id,
-                _json_or_null(self.evidence_of(node)),
-                vector_literal(getattr(node, "embedding", None)),
-            ])
-        if not rows:
+        if not nodes:
             return 0
-        run_sql(self.env, _WORK_STAGE_DDL)
-        copy_csv_into(self.env, f"citation.stage_work ({', '.join(WORK_COLUMNS)})", csv_rows(rows))
-        run_sql(self.env, _WORK_UPSERT)
-        self.counts["work"] += len(rows)
-        return len(rows)
+        accepted = copy_csv_rows(
+            self.env,
+            f"stage_work ({', '.join(WORK_COLUMNS)})",
+            (self._work_row(node) for node in nodes),
+            preamble=WORK_STAGE_DDL,
+            epilogue=WORK_UPSERT,
+        ).accepted()
+        self.counts["work"] += accepted
+        return accepted
+
+    def _work_row(self, node) -> list:
+        return [
+            node.key,
+            node.doi,
+            node.title,
+            node.abstract,
+            node.year,
+            json_or_null(node.authors or None),
+            json_or_null(node.external_ids()),
+            self.source,
+            node.kind,
+            node.document_id,
+            json_or_null(self.evidence_of(node)),
+            vector_literal(getattr(node, "embedding", None)),
+        ]
 
     @staticmethod
     def evidence_of(node) -> dict:
@@ -209,26 +143,39 @@ class PostgresWriter:
         return evidence
 
     def edges(self, edges) -> int:
-        rows = [
-            [citing, cited, self.source,
-             _json_or_null({"relation": relation, "fetched_from": fetched_from})]
-            for citing, cited, relation, fetched_from in edges
-        ]
-        if not rows:
+        """Accepted is what the INSERT took: a self-edge (two OpenAlex
+        records of one work after the twin union) is filtered out by the
+        statement, and an edge the graph already carries is skipped by ON
+        CONFLICT. Reporting the submitted count instead made a re-crawl of
+        known ground look like a level of new edges.
+        """
+        if not edges:
             return 0
-        run_sql(self.env, _CITES_STAGE_DDL)
-        copy_csv_into(self.env, f"citation.stage_cites ({', '.join(CITES_COLUMNS)})", csv_rows(rows))
-        run_sql(self.env, _CITES_UPSERT)
-        self.counts["cites"] += len(rows)
-        return len(rows)
+        accepted = copy_csv_rows(
+            self.env,
+            f"stage_cites ({', '.join(CITES_COLUMNS)})",
+            ([citing, cited, self.source,
+              json_or_null({"relation": relation, "fetched_from": fetched_from})]
+             for citing, cited, relation, fetched_from in edges),
+            preamble=CITES_STAGE_DDL,
+            epilogue=CITES_UPSERT,
+        ).accepted()
+        self.counts["cites"] += accepted
+        return accepted
 
     def journal(self, steps) -> int:
-        rows = [[s.get(c) for c in STEP_COLUMNS] for s in steps]
-        if not rows:
+        """The journal has no upsert to refuse a row: COPY takes every step
+        or the whole batch fails, so accepted is what was streamed.
+        """
+        if not steps:
             return 0
-        copy_csv_into(self.env, f"citation.crawl_step ({', '.join(STEP_COLUMNS)})", csv_rows(rows))
-        self.counts["step"] += len(rows)
-        return len(rows)
+        written = copy_csv_rows(
+            self.env,
+            f"citation.crawl_step ({', '.join(STEP_COLUMNS)})",
+            ([step.get(column) for column in STEP_COLUMNS] for step in steps),
+        ).rows
+        self.counts["step"] += written
+        return written
 
     def promote(self, merged) -> int:
         """Promotes the whole batch in ONE statement, staged the way every
@@ -240,15 +187,17 @@ class PostgresWriter:
         Idempotent, as the per-row form was: rerunning over already-promoted
         nodes writes the same values again.
         """
-        rows = [[m["key"], m["document_id"], m["seed_key"], m["rule"]] for m in merged]
-        if not rows:
+        if not merged:
             return 0
-        run_sql(self.env, _PROMOTE_STAGE_DDL)
-        copy_csv_into(self.env, f"citation.stage_twin ({', '.join(PROMOTE_COLUMNS)})",
-                      csv_rows(rows))
-        run_sql(self.env, _PROMOTE_UPDATE)
-        self.counts["twin"] += len(rows)
-        return len(rows)
+        accepted = copy_csv_rows(
+            self.env,
+            f"stage_twin ({', '.join(PROMOTE_COLUMNS)})",
+            ([m["key"], m["document_id"], m["seed_key"], m["rule"]] for m in merged),
+            preamble=PROMOTE_STAGE_DDL,
+            epilogue=PROMOTE_UPDATE,
+        ).accepted()
+        self.counts["twin"] += accepted
+        return accepted
 
 
 class DryRunWriter:
@@ -256,7 +205,10 @@ class DryRunWriter:
 
     Same Writer contract as PostgresWriter, per-call counts included: this
     is the estimate a crawl is authorised against, so its numbers have to
-    be the numbers the real writer would report.
+    be the numbers the real writer would report over ground it has not
+    covered yet. Nothing here can refuse a row, so these are upper bounds:
+    against a graph that already carries an edge, the live writer reports
+    fewer (see the Writer contract above).
     """
 
     def __init__(self, source: str = "openalex"):

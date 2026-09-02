@@ -10,6 +10,7 @@ fallback, cache included, in test_zbmath_fallback.py.
 """
 from __future__ import annotations
 
+import pathlib
 import random
 import unittest
 from unittest import mock
@@ -30,9 +31,9 @@ from citations.openalex_client import (
     restore_abstract,
     short_id,
 )
-from citations.store import csv_rows, vector_literal
-from pg_common import sql_literal
-from pg_common import FIELD_SEP, RECORD_SEP
+from citations.store import vector_literal
+import pg_copy
+from pg_common import FIELD_SEP, RECORD_SEP, sql_literal
 
 # Verbatim from research/citation-sources/data/openalex_works_A5066843289_p1.json
 # (W2074536792). Kept whole rather than trimmed: a truncated index would let a
@@ -389,10 +390,25 @@ class EvidenceWeightTests(unittest.TestCase):
 
 
 class CsvEncodingTests(unittest.TestCase):
+    """The bulk seam quotes what a third-party title can contain. The rows
+    are streamed straight into the file copy_csv_rows() hands to \\copy, so
+    the file itself is what this reads.
+    """
+
     def test_none_and_embedded_separators_survive(self):
-        text = csv_rows([["a,b", None, 'quote"inside', "line\nbreak"]])
-        self.assertIn('"a,b"', text)
-        self.assertIn('"line\nbreak"', text)
+        seen = {}
+
+        def capture(env, sql, **kwargs):
+            path = sql.split("FROM '", 1)[1].split("'", 1)[0]
+            seen["text"] = pathlib.Path(path).read_text(encoding="utf-8")
+            return mock.Mock(stdout="1\n", returncode=0)
+
+        with mock.patch.object(pg_copy, "run_sql", side_effect=capture):
+            pg_copy.copy_csv_rows(
+                {}, "citation.stage (a, b, c, d)",
+                [["a,b", None, 'quote"inside', "line\nbreak"]])
+        self.assertIn('"a,b"', seen["text"])
+        self.assertIn('"line\nbreak"', seen["text"])
 
     def test_vector_literal_is_pgvector_shaped(self):
         self.assertEqual(vector_literal([1.0, 0.5]), "[1.0,0.5]")

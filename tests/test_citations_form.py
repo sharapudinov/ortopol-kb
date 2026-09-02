@@ -25,6 +25,7 @@ from citations import hub_cache, hub_report, http_cache, journal, twin_pass, twi
 from citations.crawl import HUB_CAP, Snowball
 from citations import store
 from citations.store import DryRunWriter
+from pg_copy import CopyResult
 
 
 def snowball_over(records, citers, *, tau=0.5, hub_cap=HUB_CAP, seed_key="W_SEED"):
@@ -389,29 +390,39 @@ class TwinPromotionBatchTests(unittest.TestCase):
             return twin_pass.merge_twins({}, "crawl-1", writer)
 
     def test_one_staged_update_for_the_whole_batch(self):
-        sql_calls, copy_calls = [], []
-        with mock.patch.object(store, "run_sql",
-                                side_effect=lambda env, sql, **kw: sql_calls.append(sql)), \
-             mock.patch.object(store, "copy_csv_into",
-                                side_effect=lambda env, target, csv: copy_calls.append((target, csv))):
+        calls = []
+
+        def capture(env, target, rows, **kwargs):
+            calls.append((target, list(rows), kwargs))
+            return CopyResult(2, "2\n")
+
+        with mock.patch.object(store, "copy_csv_rows", side_effect=capture):
             promoted = store.PostgresWriter({}).promote(self.MERGED)
         self.assertEqual(promoted, 2)
-        self.assertEqual(len(copy_calls), 1, "по одному COPY на строку")
-        self.assertEqual(len(sql_calls), 2, "staging DDL + один UPDATE")
-        self.assertIn("citation.stage_twin", copy_calls[0][0])
-        self.assertIn("W_EN", copy_calls[0][1])
-        self.assertIn("W_FR", copy_calls[0][1])
-        update = sql_calls[1]
+        self.assertEqual(len(calls), 1, "staging DDL, COPY и UPDATE — один скрипт")
+        target, rows, kwargs = calls[0]
+        self.assertTrue(target.startswith("stage_twin ("), target)
+        self.assertEqual([row[0] for row in rows], ["W_EN", "W_FR"])
+        self.assertIn("CREATE TEMP TABLE stage_twin", kwargs["preamble"])
+        update = kwargs["epilogue"]
         self.assertIn("UPDATE citation.work w", update)
-        self.assertIn("FROM citation.stage_twin s", update)
+        self.assertIn("FROM stage_twin s", update)
         self.assertIn("WHERE w.key = s.key", update)
         self.assertIn("'twin_of', s.seed_key", update)
 
+    def test_the_promoted_count_is_the_one_the_update_reported(self):
+        """A key the pass merged but citation.work has no row for updates
+        nothing, and the twin count must not claim it.
+        """
+        with mock.patch.object(store, "copy_csv_rows",
+                                return_value=CopyResult(2, "1\n")):
+            writer = store.PostgresWriter({})
+            self.assertEqual(writer.promote(self.MERGED), 1)
+        self.assertEqual(writer.counts["twin"], 1)
+
     def test_empty_batch_touches_the_database_at_all_never(self):
-        with mock.patch.object(store, "run_sql") as sql_mock, \
-             mock.patch.object(store, "copy_csv_into") as copy_mock:
+        with mock.patch.object(store, "copy_csv_rows") as copy_mock:
             self.assertEqual(store.PostgresWriter({}).promote([]), 0)
-        sql_mock.assert_not_called()
         copy_mock.assert_not_called()
 
     def test_merge_twins_promotes_and_journals_every_match(self):
@@ -428,11 +439,9 @@ class TwinPromotionBatchTests(unittest.TestCase):
         object that can write, which is the DRY_RUN_WRITES_NOTHING form the
         other three modes already have.
         """
-        with mock.patch.object(store, "run_sql") as sql_mock, \
-             mock.patch.object(store, "copy_csv_into") as copy_mock:
+        with mock.patch.object(store, "copy_csv_rows") as copy_mock:
             merged = self._found(DryRunWriter())
         self.assertEqual(len(merged), 1)
-        sql_mock.assert_not_called()
         copy_mock.assert_not_called()
 
     def test_merge_twins_has_no_dry_run_flag_left_to_get_wrong(self):

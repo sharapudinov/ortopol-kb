@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 from paths import default_corpus_dir, default_pdf_dir
-from pg_common import PostgresUnavailable, copy_csv_into, load_pgenv, run_sql
+from pg_common import PostgresUnavailable, load_pgenv, run_sql
+from pg_copy import copy_csv_into
 
 STATE = "ocr"
 NOTE = (

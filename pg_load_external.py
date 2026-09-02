@@ -45,12 +45,12 @@ from pdf_extract import extract_document
 from pg_common import (
     PostgresUnavailable,
     check_postgres_available,
-    copy_csv_into,
     load_pgenv,
     run_sql,
     run_sql_file,
     scalar,
 )
+from pg_copy import copy_csv_into
 from report import extraction_state
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "pg_schema.sql"

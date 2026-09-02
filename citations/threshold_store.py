@@ -24,9 +24,8 @@ predates the columns converge on the same shape.
 """
 from __future__ import annotations
 
-from pg_common import copy_csv_into, run_sql, scalar
-
-from .store import csv_rows
+from pg_common import run_sql, scalar
+from pg_copy import copy_csv_rows
 
 THRESHOLD_DDL = """
 CREATE TABLE IF NOT EXISTS measurements.citation_frontier_threshold (
@@ -126,16 +125,14 @@ def update_run_fields(env, spike: str, fields: dict) -> None:
 
 def insert_threshold_rows(env, run_id: int, rows) -> int:
     run_sql(env, THRESHOLD_DDL)
-    payload = [[run_id, r["candidate_key"], r["depth"], r["relation"],
-                r["score"], r.get("title"), r.get("year"),
-                r.get("has_abstract"), r.get("n_references")] for r in rows]
-    if not payload:
+    if not rows:
         return 0
-    copy_csv_into(
+    return copy_csv_rows(
         env,
         "measurements.citation_frontier_threshold "
         "(run_id, candidate_key, depth, relation, score, title, year, "
         "has_abstract, n_references)",
-        csv_rows(payload),
-    )
-    return len(payload)
+        ([run_id, r["candidate_key"], r["depth"], r["relation"],
+          r["score"], r.get("title"), r.get("year"),
+          r.get("has_abstract"), r.get("n_references")] for r in rows),
+    ).rows

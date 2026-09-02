@@ -14,7 +14,9 @@ Three mechanisms, all avoiding shell string interpolation of untrusted data:
   the SQL to a temp file first.
 - Bulk loads go through `\\copy ... FROM 'tempfile' WITH (FORMAT csv)`,
   with the CSV built by Python's csv module (correct quoting of embedded
-  commas/quotes/newlines) and written to its own temp file.
+  commas/quotes/newlines) and written to its own temp file. That direction
+  has its own module, pg_copy.py, and runs through run_sql() like
+  everything else.
 - Where neither fits -- a LIST of values inside one statement, for which
   psql has no binding form at all -- sql_literal() builds the quoted
   literal. One implementation, so no call site invents an f-string.
@@ -131,18 +133,6 @@ def sql_literal(value) -> str:
     if "\x00" in text:
         raise ValueError("NUL byte cannot appear in a SQL string literal")
     return "E'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-
-def copy_csv_into(env: dict[str, str], table_columns: str, csv_text: str) -> subprocess.CompletedProcess:
-    """COPY CSV text into `table_columns`, e.g. "documents (id, filename)"."""
-    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
-        f.write(csv_text)
-        csv_path = Path(f.name)
-    try:
-        escaped_path = str(csv_path).replace("'", "''")
-        return _run(env, ["-c", f"\\copy {table_columns} FROM '{escaped_path}' WITH (FORMAT csv)"])
-    finally:
-        csv_path.unlink(missing_ok=True)
 
 
 def scalar(

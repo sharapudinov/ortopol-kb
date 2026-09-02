@@ -9,10 +9,12 @@ under 'test:citations:' / 'test:%' and deletes it again.
 """
 from __future__ import annotations
 
+import threading
 import unittest
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
+from citations import registry
 from citations.crawl import Snowball
 from citations.store import PostgresWriter
 from paths import default_corpus_dir
@@ -121,6 +123,114 @@ class IdempotencyLiveTests(unittest.TestCase):
             scalar(self.env, "SELECT count(*) FROM citation.crawl_step "
                              f"WHERE candidate_key = '{PREFIX}D' AND action = 'drop';"),
             "1")
+
+
+class WriterAcceptanceLiveTests(unittest.TestCase):
+    """What the writer REPORTS, against a database that refuses rows.
+
+    The unit half (test_citations_crawl.py) drives both writers through the
+    same sequence with nothing to conflict against; the numbers only part
+    company here, where citation.work already carries the keys and
+    citation.cites already carries the edge. Everything written is keyed
+    under the same 'test:citations:' prefix and deleted again.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+        import pg_graph_common
+        pg_graph_common.init_schema(cls.env)
+        # citation.work.document_id is a foreign key, so the promote pass
+        # needs a document that exists rather than an invented id.
+        document = run_sql(
+            cls.env,
+            "SELECT id FROM corpus.documents WHERE source_dir = 'theory/iis' "
+            "AND extraction_state <> 'metadata' ORDER BY id LIMIT 1;",
+            extra_args=["-t", "-A"],
+        ).stdout.split()
+        if not document:
+            raise unittest.SkipTest("в базе нет документа ИИШ для промоушена")
+        cls.document = document[0]
+
+    def setUp(self):
+        self.writer = PostgresWriter(self.env)
+        self.addCleanup(self._cleanup)
+        self._cleanup()
+
+    def _cleanup(self):
+        run_sql(self.env, f"DELETE FROM citation.work WHERE key LIKE '{PREFIX}%';")
+
+    def _nodes(self, *keys):
+        made = []
+        for key in keys:
+            node = registry.Node(key=key, kind="external-skeleton", depth=1)
+            node.absorb(work(key, title=f"Title {key}"))
+            made.append(node)
+        return made
+
+    def test_a_second_write_of_the_same_edges_accepts_none_of_them(self):
+        self.writer.works(self._nodes(f"{PREFIX}A", f"{PREFIX}B"))
+        edges = [(f"{PREFIX}A", f"{PREFIX}B", "cites", f"{PREFIX}A")]
+        self.assertEqual(self.writer.edges(edges), 1)
+        self.assertEqual(self.writer.edges(edges), 0,
+                         "рёбра уже в графе — принято ноль, а не «столько же»")
+        self.assertEqual(self.writer.counts["cites"], 1)
+
+    def test_a_self_edge_is_not_counted_as_accepted(self):
+        """Two OpenAlex records of one work share a node after the twin
+        union, so the batch can carry an edge from a node to itself; the
+        statement filters it and the count must not claim it.
+        """
+        self.writer.works(self._nodes(f"{PREFIX}A", f"{PREFIX}B"))
+        accepted = self.writer.edges([
+            (f"{PREFIX}A", f"{PREFIX}A", "cites", f"{PREFIX}A"),
+            (f"{PREFIX}A", f"{PREFIX}B", "cites", f"{PREFIX}A"),
+        ])
+        self.assertEqual(accepted, 1)
+
+    def test_a_promote_key_with_no_work_row_is_not_counted(self):
+        self.writer.works(self._nodes(f"{PREFIX}A"))
+        accepted = self.writer.promote([
+            {"key": f"{PREFIX}A", "document_id": self.document,
+             "seed_key": "S", "rule": "title"},
+            {"key": f"{PREFIX}ABSENT", "document_id": self.document,
+             "seed_key": "S", "rule": "title"},
+        ])
+        self.assertEqual(accepted, 1)
+
+    def test_staging_leaves_no_relation_behind_in_the_shared_schema(self):
+        self.writer.works(self._nodes(f"{PREFIX}A"))
+        for name in ("stage_work", "stage_cites", "stage_twin"):
+            self.assertEqual(
+                scalar(self.env, f"SELECT to_regclass('citation.{name}') IS NULL;"),
+                "t", f"citation.{name} должна быть TEMP и приватной для сессии")
+
+    def test_two_writers_at_once_do_not_share_a_staging_table(self):
+        """The property the TEMP staging exists for: two crawls writing at
+        the same moment. With one globally named staging relation each
+        DROPped the other's rows mid-flight; each batch has to land whole.
+        """
+        batches = {
+            "one": self._nodes(*[f"{PREFIX}one:{n}" for n in range(20)]),
+            "two": self._nodes(*[f"{PREFIX}two:{n}" for n in range(20)]),
+        }
+        accepted: dict[str, int] = {}
+
+        def write(name):
+            accepted[name] = PostgresWriter(self.env).works(batches[name])
+
+        threads = [threading.Thread(target=write, args=(name,)) for name in batches]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(accepted, {"one": 20, "two": 20})
+        for name in batches:
+            self.assertEqual(
+                scalar(self.env, "SELECT count(*) FROM citation.work "
+                                 f"WHERE key LIKE '{PREFIX}{name}:%';"),
+                "20", f"партия {name} доехала не целиком")
 
 
 if __name__ == "__main__":

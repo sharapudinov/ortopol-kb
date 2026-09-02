@@ -7,6 +7,7 @@ does on conflict -- lives next door in test_citations_crawl_live.py.
 """
 from __future__ import annotations
 
+import pathlib
 import unittest
 from unittest import mock
 
@@ -18,11 +19,13 @@ from _citation_fixtures import (
     unit,
     work,
 )
-from citations import journal, seeding, store
+from citations import journal, seeding, store, store_sql
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH
 from citations.registry import Node, WorkRegistry, scoring_fields
 from citations.store import DryRunWriter, PostgresWriter, Writer
+from pg_copy import CopyResult
+
 
 class CrawlTests(unittest.TestCase):
     def test_seed_without_match_is_journaled(self):
@@ -436,10 +439,55 @@ class WriterConformanceTests(unittest.TestCase):
         self.assertIsInstance(PostgresWriter({}), Writer)
 
     def test_the_same_call_sequence_produces_the_same_counts(self):
-        with mock.patch.object(store, "run_sql"), \
-             mock.patch.object(store, "copy_csv_into"):
+        """With nothing in the database to refuse a row, the live writer
+        reports what the dry run predicts -- the counts diverge only where
+        the upsert actually refuses (an edge already known, a promote key
+        with no work row), which is the live half of this pair.
+        """
+        def accept_everything(env, table_columns, rows, **kwargs):
+            written = sum(1 for _ in rows)
+            return CopyResult(written, f"{written}\n" if kwargs.get("epilogue") else "")
+
+        with mock.patch.object(store, "copy_csv_rows", side_effect=accept_everything):
             live = self._drive(PostgresWriter({}))
         self.assertEqual(self._drive(DryRunWriter()), live)
+
+    def test_a_write_is_one_script_over_a_temp_staging_table(self):
+        """Staging DDL, the \\copy and the upsert in one psql invocation:
+        a shared, globally named staging table between three invocations was
+        observable -- and droppable -- by any writer running at the time.
+        """
+        calls = []
+        with mock.patch.object(store, "copy_csv_rows",
+                                side_effect=lambda env, target, rows, **kw: (
+                                    calls.append((target, list(rows), kw)),
+                                    CopyResult(2, "2\n"))[1]):
+            PostgresWriter({}).works(self._nodes("W1", "W2"))
+        self.assertEqual(len(calls), 1)
+        target, rows, kwargs = calls[0]
+        self.assertTrue(target.startswith("stage_work ("), target)
+        self.assertEqual(len(rows), 2)
+        self.assertIn("CREATE TEMP TABLE stage_work", kwargs["preamble"])
+        self.assertIn("ON COMMIT DROP", kwargs["preamble"])
+        self.assertIn("INSERT INTO citation.work", kwargs["epilogue"])
+
+    def test_the_number_reported_is_the_one_the_database_counted(self):
+        """Not the number submitted: the cites upsert drops self-edges and
+        skips edges the graph already has.
+        """
+        with mock.patch.object(store, "copy_csv_rows",
+                                return_value=CopyResult(3, "1\n")):
+            writer = PostgresWriter({})
+            accepted = writer.edges([("W1", "W2", "cites", "W1"),
+                                     ("W1", "W3", "cites", "W1"),
+                                     ("W1", "W4", "cites", "W1")])
+        self.assertEqual(accepted, 1)
+        self.assertEqual(writer.counts["cites"], 1)
+
+    def test_no_staging_relation_is_named_in_the_shared_schema(self):
+        text = pathlib.Path(store_sql.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("citation.stage_", text,
+                         "staging is TEMP and session-private")
 
     def test_counts_are_rows_accepted_by_this_call_not_the_running_total(self):
         writer = DryRunWriter()
