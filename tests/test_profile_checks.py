@@ -294,12 +294,17 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
         """The hole the defensive reads used to swallow: no block, no mode,
         nothing shipped, "nothing to check" -- and a clean certification
         with no statement about who decided the citation policy.
+
+        Refused by the shape gate now, which runs in front of the dump pass
+        (a `citation` field that is not a mapping would otherwise raise
+        through _visit before any result exists) and carries the same
+        verdict one row earlier.
         """
         with tempfile.TemporaryDirectory() as tmp:
             builder = ArtifactBuilder(Path(tmp))
             builder.citation_block = False
             results = _results(builder)
-        ok, detail = results["citation: режим — решение владельца, не --policy-override"]
+        ok, detail = results["манифест несёт блок citation словарём"]
         self.assertFalse(ok, detail)
 
     def test_full_skeleton_with_matching_counts_passes(self):

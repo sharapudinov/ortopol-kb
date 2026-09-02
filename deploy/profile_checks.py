@@ -9,44 +9,42 @@ paper it may not ship" must be answerable before the artifact is restored
 anywhere, by anyone who has only the file, and it must be answered from the
 shipped bytes rather than from the packager's intentions.
 
-Checks:
+This module owns the single streaming pass over the dump and the ORDER the
+checks run in; the checks themselves live one module per subject, each
+contributing row visitors to that same pass:
 
-  profile/manifest agreement   the declared profile's schemas are the ones
-                               the dump actually contains (public: no
+  profile/manifest agreement   here: the declared profile's schemas are the
+                               ones the dump actually contains (public: no
                                measurements schema at all, not merely no
                                measurements rows)
-  classification is complete   manifest.legal.unclassified_documents == 0
-                               and every document row in the dump appears in
-                               exactly one of the class lists the manifest
-                               declares this artifact to carry
-  excluded left no trace       a document classified outside
-                               legal.shipped_distributions has no documents
-                               row and no page row -- an omission asserted
-                               from the shipped bytes, not from the
-                               packager's WHERE clause
-  metadata-only is stripped    no source_blob and no page body for ANY
-                               metadata-only document
-  full-text is intact          a source blob and a non-empty body for EVERY
-                               full-content document
-  vectors survive both classes every page row carries an embedding
-  no tsv anywhere              tsv is GENERATED from body; a dump that
-                               declared it would restore stale text content
-  manifest version matches     manifest.schema_version is the version this
-                               reader knows; anything else stops the pass
-                               instead of reading missing fields as
+  manifest version matches     here: manifest.schema_version is the version
+                               this reader knows; anything else stops the
+                               pass instead of reading missing fields as
                                satisfied checks
-  profile is in the vocabulary every check below picks its strictness off
+  profile is in the vocabulary manifest_classes.check_profile_is_known --
+                               every check below picks its strictness off
                                it, so an unknown one stops the pass
+  citation block is a block    citation_policy_check.
+                               check_citation_block_is_shaped -- the pass
+                               reads manifest.citation.mode before any
+                               check runs, so a field that is not a mapping
+                               has to stop the pass rather than raise
+                               through it
+  corpus content holds         corpus_content_checks.py (module size):
+                               classification complete, excluded left no
+                               trace, metadata-only stripped, full-text
+                               intact, every page embedded, no generated
+                               column in the dump
+  legal vocabulary             which ids the manifest says are carried, and
+                               in which shape, is manifest_classes.py
+                               (module size): a manifest-only reading, with
+                               no dump byte in it
   citation policy is owner's   manifest.citation.policy_source == "owner":
                                an artifact whose citation mode was forced
                                with --policy-override fails here rather
                                than being certified as publishable, and one
                                whose manifest names no policy at all fails
                                too (citation_policy_check.py)
-  legal vocabulary             which ids the manifest says are carried, and
-                               in which shape, is manifest_classes.py
-                               (module size): a manifest-only reading, with
-                               no dump byte in it
   citation slice holds         the citation-schema checks live in
                                citation_content_checks.py (module size) and
                                run in this same pass -- including the two
@@ -70,25 +68,10 @@ from pathlib import Path
 
 import citation_content_checks
 import citation_policy_check
+import corpus_content_checks
 import dump_scan
-from manifest_classes import (
-    check_profile_is_known,
-    classes,
-    content_expectation,
-    expected_ids,
-)
+from manifest_classes import check_profile_is_known
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
-
-# Column names the checks reason about, from corpus.documents/corpus.pages.
-BLOB_COLUMN = "source_blob"
-BODY_COLUMN = "body"
-EMBEDDING_COLUMN = "embedding"
-DOCUMENT_ID_COLUMN = "document_id"
-ID_COLUMN = "id"
-TSV_COLUMN = "tsv"
-
-DOCUMENTS_TABLE = "corpus.documents"
-PAGES_TABLE = "corpus.pages"
 
 
 def check_schemas(dump_path: Path, manifest: dict) -> tuple[bool, str]:
@@ -98,124 +81,18 @@ def check_schemas(dump_path: Path, manifest: dict) -> tuple[bool, str]:
     return ok, f"dump carries {sorted(present)}, manifest declares {sorted(declared)}"
 
 
-def check_classification_complete(manifest: dict, scans: dict) -> tuple[bool, str]:
-    legal = manifest.get(Key.LEGAL, {})
-    if Key.SHIPPED_DISTRIBUTIONS not in legal:
-        return False, (
-            f"manifest.legal declares no {Key.SHIPPED_DISTRIBUTIONS} -- which classes this "
-            "artifact carries cannot be inferred; rebuild it with the current packager"
-        )
-    unclassified = legal.get(Key.UNCLASSIFIED_DOCUMENTS)
-    by_distribution, _full_content, _shipped = classes(manifest)
-    all_listed = [doc_id for ids in by_distribution.values() for doc_id in ids]
-    duplicated = sorted({i for i in all_listed if all_listed.count(i) > 1})
-    expected, _absent = expected_ids(manifest)
-    documents = scans.get(DOCUMENTS_TABLE)
-    dumped = documents.rows if documents else 0
-    ok = unclassified == 0 and not duplicated and dumped == len(expected)
-    return ok, (
-        f"unclassified={unclassified}, {len(all_listed)} id(s) across "
-        f"{len(by_distribution)} class(es), {len(expected)} of them shipped by this profile, "
-        f"vs {dumped} document row(s) in the dump"
-        + (f", listed twice: {duplicated}" if duplicated else "")
-    )
-
-
-def check_excluded_absent(manifest: dict, facts: dict) -> tuple[bool, str]:
-    """A document the manifest classifies outside shipped_distributions must
-    have no documents row and no page row. Asserted against the dump's own
-    bytes: "the SELECT filtered it out" is a claim about the packager, this
-    is a claim about the file.
-    """
-    _expected, absent = expected_ids(manifest)
-    leaked_documents = sorted(absent & facts["documents"])
-    leaked_pages = sorted(absent & facts["page_documents"])
-    ok = not leaked_documents and not leaked_pages
-    return ok, (
-        f"{len(absent)} excluded document(s); rows present for "
-        f"{leaked_documents or 'none'}, pages present for {leaked_pages or 'none'}"
-    )
-
-
 def _visit(dump_path: Path, manifest: dict) -> tuple[dict, dict]:
-    """One streaming pass over the dump, collecting per-document facts the
-    content checks need: which ids carry a blob, which carry page text, and
-    whether every page row has an embedding.
+    """One streaming pass over the dump, with every subject's visitors on it.
+
+    Called only after run_checks() has gated the fields the wiring itself
+    reads: manifest.citation must be a mapping before its mode can be
+    handed to the citation visitors.
     """
-    documents: set[str] = set()
-    page_documents: set[str] = set()
-    with_blob: set[str] = set()
-    with_body: set[str] = set()
-    pages_seen = {"rows": 0, "no_embedding": 0}
-
-    def on_document(row: dict) -> None:
-        documents.add(row[ID_COLUMN])
-        if row.get(BLOB_COLUMN, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
-            with_blob.add(row[ID_COLUMN])
-
-    def on_page(row: dict) -> None:
-        pages_seen["rows"] += 1
-        page_documents.add(row[DOCUMENT_ID_COLUMN])
-        if row.get(EMBEDDING_COLUMN, dump_scan.NULL_FIELD) in (dump_scan.NULL_FIELD, ""):
-            pages_seen["no_embedding"] += 1
-        if row.get(BODY_COLUMN, "") not in ("", dump_scan.NULL_FIELD):
-            with_body.add(row[DOCUMENT_ID_COLUMN])
-
-    row_visitors = {DOCUMENTS_TABLE: on_document, PAGES_TABLE: on_page}
-    citation_facts = citation_content_checks.attach_visitors(
-        row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE))
-
-    scans = dump_scan.scan(dump_path, row_visitors)
-    facts = {
-        "documents": documents, "page_documents": page_documents,
-        "with_blob": with_blob, "with_body": with_body, "pages": pages_seen,
-        **citation_facts,
-    }
-    return scans, facts
-
-
-def check_metadata_only_stripped(manifest: dict, facts: dict) -> tuple[bool, str]:
-    _full_ids, stripped = content_expectation(manifest)
-    leaked_blob = sorted(stripped & facts["with_blob"])
-    leaked_body = sorted(stripped & facts["with_body"])
-    ok = not leaked_blob and not leaked_body
-    return ok, (
-        f"{len(stripped)} metadata-only document(s); "
-        f"blobs present for {leaked_blob or 'none'}, page text present for {leaked_body or 'none'}"
-    )
-
-
-def check_full_content_intact(manifest: dict, facts: dict) -> tuple[bool, str]:
-    full_ids, _stripped = content_expectation(manifest)
-    missing_blob = sorted(full_ids - facts["with_blob"])
-    missing_body = sorted(full_ids - facts["with_body"])
-    ok = not missing_blob and not missing_body
-    return ok, (
-        f"{len(full_ids)} full-content document(s); "
-        f"missing blob: {missing_blob or 'none'}, missing page text: {missing_body or 'none'}"
-    )
-
-
-def check_pages_embedded(manifest: dict, scans: dict, facts: dict) -> tuple[bool, str]:
-    pages = facts["pages"]
-    want = manifest.get(Key.PAGES_COUNT)
-    ok = pages["rows"] == want and pages["no_embedding"] == 0
-    return ok, (
-        f"{pages['rows']} page row(s) (manifest {want}), "
-        f"{pages['no_embedding']} without an embedding"
-    )
-
-
-def check_no_generated_columns(scans: dict) -> tuple[bool, str]:
-    """tsv (and source_path) are GENERATED: a dump that declared them in a
-    COPY column list would either fail to restore or, worse, carry text
-    content that no longer matches body -- the exact leak the public profile
-    exists to prevent.
-    """
-    pages = scans.get(PAGES_TABLE)
-    columns = pages.columns if pages else []
-    ok = TSV_COLUMN not in columns
-    return ok, f"corpus.pages COPY columns: {columns}"
+    row_visitors: dict = {}
+    facts = corpus_content_checks.attach_visitors(row_visitors)
+    facts.update(citation_content_checks.attach_visitors(
+        row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE)))
+    return dump_scan.scan(dump_path, row_visitors), facts
 
 
 def check_manifest_version(manifest: dict) -> tuple[bool, str]:
@@ -252,19 +129,37 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         # at once, and a column of passes underneath is a certification of
         # nothing.
         return [version, known]
+    shaped = ("манифест несёт блок citation словарём",
+              *citation_policy_check.check_citation_block_is_shaped(manifest))
+    if not shaped[1]:
+        # The same polarity one field further in, and this one is not merely
+        # about strictness: _visit() reads manifest.citation.mode to wire the
+        # citation visitors, so a field that is not a mapping raises out of
+        # run_checks() before a single result exists. A caller that extends
+        # its own list with ours (smoke_test.py) then aborts with a traceback
+        # and no results at all -- the failure mode the profile gate above
+        # exists to prevent, one key over.
+        return [version, known, shaped]
     dump_path = artifact_dir / manifest[Key.DUMP][Key.FILE]
     scans, facts = _visit(dump_path, manifest)
     profile = manifest.get(Key.PROFILE)
     return [
         version,
         known,
+        shaped,
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(dump_path, manifest)),
-        ("правовая классификация полна", *check_classification_complete(manifest, scans)),
-        ("excluded: ни строки документа, ни страниц", *check_excluded_absent(manifest, facts)),
-        ("metadata-only: ни блоба, ни текста", *check_metadata_only_stripped(manifest, facts)),
-        ("full-text: блоб и текст на месте", *check_full_content_intact(manifest, facts)),
-        ("векторы у всех страниц", *check_pages_embedded(manifest, scans, facts)),
-        ("нет generated-колонок в дампе", *check_no_generated_columns(scans)),
+        ("правовая классификация полна",
+         *corpus_content_checks.check_classification_complete(manifest, scans)),
+        ("excluded: ни строки документа, ни страниц",
+         *corpus_content_checks.check_excluded_absent(manifest, facts)),
+        ("metadata-only: ни блоба, ни текста",
+         *corpus_content_checks.check_metadata_only_stripped(manifest, facts)),
+        ("full-text: блоб и текст на месте",
+         *corpus_content_checks.check_full_content_intact(manifest, facts)),
+        ("векторы у всех страниц",
+         *corpus_content_checks.check_pages_embedded(manifest, scans, facts)),
+        ("нет generated-колонок в дампе",
+         *corpus_content_checks.check_no_generated_columns(scans)),
         ("citation: режим — решение владельца, не --policy-override",
          *citation_policy_check.check_policy_is_the_owners(manifest)),
         ("citation: схема/счётчики совпадают с манифестом",

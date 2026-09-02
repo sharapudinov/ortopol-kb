@@ -55,6 +55,11 @@ DEPLOY_FILES = [
     # corpus, which is the builder's job, not the recipient's.
     "profile_checks.py",
     "dump_scan.py",
+    # ... and the corpus half of what it checks: the document/page visitors
+    # and the six checks that hold the dump to the legal classification.
+    # Split off for module size, like the citation half below -- without it
+    # profile_checks.py does not import at all on the recipient's side.
+    "corpus_content_checks.py",
     # ... and the manifest-only legal vocabulary its checks reason over,
     # split off for module size: without it profile_checks.py does not
     # import at all on the recipient's side.

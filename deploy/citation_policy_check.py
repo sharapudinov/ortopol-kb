@@ -11,8 +11,9 @@ filename is not part of the package. manifest.citation.policy_source is the
 only field that answers it, so it is read here strictly, with no default
 anywhere in the path.
 
-Strictly means: the block must be there, and both its mode and its source
-must be values this reader knows. Written defensively (`manifest.get(...,
+Strictly means: the block must be there (check_citation_block_is_shaped,
+the gate profile_checks.py runs before its dump pass wires anything off the
+block), and both its mode and its source must be values this reader knows. Written defensively (`manifest.get(...,
 {}).get(...)`), the whole citation half of the certification degraded to
 "nothing to check" the moment the block was missing -- a manifest that says
 nothing about the citation policy would then certify clean, which is
@@ -26,6 +27,42 @@ from __future__ import annotations
 
 from manifest_keys import Key
 from manifest_contract import CitationMode, PolicySource, Profile
+
+
+def check_citation_block_is_shaped(manifest: dict) -> tuple[bool, str]:
+    """manifest.citation is a mapping -- asked before anything reads a field
+    off it.
+
+    ARTIFACT_SIDE_FAILS_CLOSED one key further in than
+    manifest_classes.check_profile_is_known, and for a sharper reason than
+    strictness: profile_checks._visit() reads manifest.citation.mode to wire
+    the citation visitors onto the dump scan, so a `citation` field that is
+    a string, a list or a number raises AttributeError out of run_checks()
+    before a single result exists. A caller that extends its own list with
+    ours -- smoke_test.py does, with no try/except -- then aborts the whole
+    run with a traceback and no results at all, which is strictly worse than
+    a red row: nothing was checked and nothing says so.
+
+    A block that is absent altogether fails here too, and says the same
+    thing it used to say one check later: an artifact that names no citation
+    policy does not disclose whose decision was applied to the citation
+    graph, and that is a refusal (PUBLIC_APPROVED_BY_OWNER,
+    CITATION_POLICY_IS_DATA), not a shape this reader can work around.
+
+    Only the SHAPE here. Whether the mode and the provenance inside the
+    block are values this reader knows is check_policy_is_the_owners()
+    below, which runs among the checks rather than as a gate in front of
+    them, because reading those two fields cannot crash the pass.
+    """
+    citation = manifest.get(Key.CITATION)
+    ok = isinstance(citation, dict)
+    return ok, (
+        f"manifest {Key.CITATION} — {type(citation).__name__}"
+        + ("" if ok else f" ({citation!r}), а читается как словарь: чьё решение "
+                         "применено к графу цитирований, из такого манифеста не "
+                         "узнать; пересоберите артефакт текущим сборщиком "
+                         "(остальные проверки не запускались)")
+    )
 
 
 def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:
