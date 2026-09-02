@@ -152,18 +152,28 @@ def pending(env: dict[str, str], table: str, content_pred: str = "true") -> int:
                            f"where embedding is null and ({content_pred});"))
 
 
-def missing_semantic_key(env: dict[str, str]) -> list[tuple[str, int]]:
-    """Записи-результаты без семантического ключа. Пустой список — инвариант держится."""
-    return [
-        (name, n)
-        for name, (table, _, pred) in TARGETS.items()
-        if (n := pending(env, table, pred)) > 0
-    ]
+def missing_semantic_key(env: dict[str, str],
+                         known: dict[str, int] | None = None) -> list[tuple[str, int]]:
+    """Записи-результаты без семантического ключа. Пустой список — инвариант держится.
+
+    `known` — остатки, уже посчитанные обсчётом этого прогона (embed_target
+    возвращает свой): цель, только что прошедшая обсчёт, знает свой остаток
+    арифметикой, а отдельный count(*) по ней — второй полный агрегатный
+    проход с предикатом содержания за уже известным числом.
+    """
+    known = known or {}
+    out = []
+    for name, (table, _, pred) in TARGETS.items():
+        n = known[name] if name in known else pending(env, table, pred)
+        if n > 0:
+            out.append((name, n))
+    return out
 
 
 def fetch_page(env: dict[str, str], table: str, text_expr: str,
-               content_pred: str) -> list[tuple[int, str]]:
-    """Страница ожидающих строк как (id, текст), обрезанный до MAX_CHARS.
+               content_pred: str, after: int = 0) -> list[tuple[int, str]]:
+    """Страница ожидающих строк как (id, текст), обрезанный до MAX_CHARS,
+    начиная сразу ЗА строкой `after`.
 
     Разбор общий (ROW_ARGS/split_records), а не построчный по '|': текст
     здесь — чужой (тело страницы, заголовок работы), а str.splitlines()
@@ -171,32 +181,35 @@ def fetch_page(env: dict[str, str], table: str, text_expr: str,
     FIELD_SEP/RECORD_SEP). Разделитель в тексте больше не рвёт строку на
     две записи.
 
-    Пустой текст отсекает САМ запрос, а не разбор после него. Такую строку
-    цикл не обновляет никогда, она остаётся в голове `order by id` и
-    перечитывается на каждой итерации; а когда таких строк набирается на
-    целую страницу, цикл принимает её пустоту за «работы больше нет» и
-    останавливается, оставив всё, что ниже, без вектора. Предикат
-    содержания (TARGETS) для этого не годится: у цели `runs` он «true» —
-    у measurements.run нет колонки body, и пустой прогон отличим только по
+    Пустой текст отсекает САМ запрос, а не разбор после него: такую строку
+    цикл не обновляет никогда, и раньше она оставалась в голове выборки и
+    перечитывалась на каждой итерации, а страница, целиком из таких строк
+    состоящая, читалась как «работы больше нет». Предикат содержания
+    (TARGETS) для этого не годится: у цели `runs` он «true» — у
+    measurements.run нет колонки body, и пустой прогон отличим только по
     самому выражению текста.
 
+    Курсор `after` — по первичному ключу, а не OFFSET: страница берётся
+    `r.id > after`, поэтому выражение текста вычисляется ТОЛЬКО для строк
+    после курсора. Без курсора каждая итерация пересчитывала ожидающих
+    сначала, а отсечение пустого текста в WHERE сделало выражение
+    квалификатором, считаемым до LIMIT: у цели `pages` это склейка целого
+    тела страницы, индекса под `embedding is null` у corpus.pages нет, и
+    цена прогона росла квадратично. Фильтр и порядок — по r.id, колонке
+    таблицы, чтобы упорядоченный обход индекса остался доступен планировщику.
+
     Выражение текста подставляется ОДИН раз, в LATERAL, и фильтр читает уже
-    вычисленное значение. Две подстановки (в проекцию и в фильтр) означали,
-    что каждая просмотренная строка склеивает и чистит своё тело дважды:
-    целиком ради фильтра и обрезанным ради проекции. Индекса под
-    `embedding is null` у corpus.pages нет, и цикл перечитывает хвост
-    ожидающих на каждой из N/FETCH_BATCH итераций, так что это удвоение — и
-    есть основная цена цели `pages` на стороне базы. Фильтр по
-    ОБРЕЗАННОМУ тексту, а не по полному: вектор считается именно с него,
-    и разбор ниже отбрасывал ровно этот случай.
+    вычисленное значение: две подстановки склеивали тело каждой строки
+    дважды. Фильтр по ОБРЕЗАННОМУ тексту: вектор считается именно с него, и
+    разбор ниже отбрасывал ровно этот случай.
     """
     out = run_sql(
         env,
         f"select t.id, t.txt from {table} r "
         f"cross join lateral (select r.id, left({text_expr}, {MAX_CHARS}) as txt) t "
-        f"where r.embedding is null and ({content_pred}) "
+        f"where r.embedding is null and ({content_pred}) and r.id > {int(after)} "
         f"and btrim(t.txt) <> '' "
-        f"order by t.id limit {FETCH_BATCH};",
+        f"order by r.id limit {FETCH_BATCH};",
         extra_args=ROW_ARGS,
     ).stdout
     pairs = []
@@ -208,6 +221,13 @@ def fetch_page(env: dict[str, str], table: str, text_expr: str,
 
 
 def embed_target(env: dict[str, str], name: str, model: str, dims: int) -> int:
+    """Обсчитывает цель и возвращает ОСТАТОК: сколько записей так и осталось
+    без ключа.
+
+    Остаток — арифметика, а не второй count(*): ожидало total, посчитано
+    done, разница — строки с пустым после обрезки текстом, вектора у них не
+    будет. Это же число печатает закрывающая строка прогона.
+    """
     table, text_expr, content_pred = TARGETS[name]
     total = pending(env, table, content_pred)
     if total == 0:
@@ -216,14 +236,15 @@ def embed_target(env: dict[str, str], name: str, model: str, dims: int) -> int:
     print(f"{name}: к обсчёту {total}, модель {model}, страницами по {FETCH_BATCH}, "
           f"партиями к ollama по {EMBED_BATCH}")
 
-    done, started = 0, time.monotonic()
+    done, after, started = 0, 0, time.monotonic()
     while True:
-        pairs = fetch_page(env, table, text_expr, content_pred)
+        pairs = fetch_page(env, table, text_expr, content_pred, after)
         if not pairs:
-            # Строк с непустым текстом и без вектора не осталось. Пустые
-            # запрос уже не возвращает (fetch_page), поэтому пустая страница
-            # означает именно конец работы, а не «эта страница вся пустая».
+            # Строк с непустым текстом и без вектора за курсором нет.
+            # Пустые запрос уже не возвращает (fetch_page), а курсор идёт
+            # только вперёд, поэтому пустая страница — конец работы.
             break
+        after = pairs[-1][0]
 
         # Вся страница — один \copy плюс один UPDATE: embed() уже разбивает
         # тексты на партии по EMBED_BATCH внутри себя (pg_search.embed_batch).
@@ -239,7 +260,7 @@ def embed_target(env: dict[str, str], name: str, model: str, dims: int) -> int:
         done += len(pairs)
         rate = done / max(time.monotonic() - started, 1e-9)
         print(f"  {name}: {done}/{total}  ({rate:.1f} зап/с)", flush=True)
-    return done
+    return total - done
 
 
 def main(argv=None) -> int:
@@ -263,10 +284,9 @@ def main(argv=None) -> int:
     # Один раз на прогон: таблица несёт ровно одну строку (CHECK (id = 1)),
     # и модель не может смениться посреди обсчёта.
     model, dims = resolve_target(env)
-    for name in which:
-        embed_target(env, name, model, dims)
+    remaining = {name: embed_target(env, name, model, dims) for name in which}
 
-    gaps = missing_semantic_key(env)
+    gaps = missing_semantic_key(env, remaining)
     if gaps:
         # Не падаем: пустой текст встречается легитимно. Но молчать нельзя —
         # запись без ключа находится только тем, кто знает точное слово.

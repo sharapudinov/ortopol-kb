@@ -25,7 +25,12 @@ from pg_common import FIELD_SEP, RECORD_SEP
 
 class FakeDatabase:
     """A table of `total` pending rows, answering pg_embed's two reads and
-    consuming its staged page."""
+    consuming its staged page.
+
+    The cursor is honoured, not ignored: the loop pages by `r.id > after`,
+    and a stub that answers from the head of the pending list whatever the
+    query said would let a lost cursor pass unnoticed.
+    """
 
     def __init__(self, total: int):
         self.pending = list(range(1, total + 1))
@@ -40,7 +45,8 @@ class FakeDatabase:
     def run_sql(self, env, sql, **kwargs):
         self.selects.append(sql)
         limit = int(sql.rsplit("limit", 1)[1].strip(" ;\n"))
-        page = self.pending[:limit]
+        after = int(sql.split("r.id > ", 1)[1].split(" ", 1)[0])
+        page = [row_id for row_id in self.pending if row_id > after][:limit]
         return mock.Mock(stdout="".join(
             f"{row_id}{FIELD_SEP}text {row_id}{RECORD_SEP}" for row_id in page))
 
@@ -69,8 +75,9 @@ class RoundTripsPerPageTests(unittest.TestCase):
              mock.patch.object(pg_embed, "copy_csv_rows", side_effect=database.copy_csv_rows), \
              mock.patch.object(pg_embed, "embed", side_effect=embed), \
              mock.patch("builtins.print"):
-            done = pg_embed.embed_target(self.ENV, "works", "bge-m3", 4)
-        self.assertEqual(done, total)
+            left = pg_embed.embed_target(self.ENV, "works", "bge-m3", 4)
+        self.assertEqual(left, 0, "остаток посчитан не арифметикой")
+        self.assertEqual(database.pending, [])
         return database, chunks
 
     def test_a_full_page_costs_one_select_and_one_copy(self):
@@ -95,6 +102,44 @@ class RoundTripsPerPageTests(unittest.TestCase):
         database, _ = self._run(pg_embed.FETCH_BATCH + 5)
         self.assertEqual(len(database.copies), 2)
         self.assertEqual(len(database.selects), 3)
+
+    def test_three_pages_walk_forward_without_reading_a_row_twice(self):
+        """Each page starts past the last id of the one before, so no row
+        is offered to ollama twice and the text expression is never
+        evaluated again for ground already covered.
+        """
+        database, _ = self._run(2 * pg_embed.FETCH_BATCH + 7)
+        seen = [row_id for _table, _pre, _epi, staged in database.copies
+                for row_id, _vector in staged]
+        self.assertEqual(len(database.copies), 3)
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(len(seen), len(set(seen)))
+        cursors = [int(sql.split("r.id > ", 1)[1].split(" ", 1)[0])
+                   for sql in database.selects]
+        self.assertEqual(cursors, [0, pg_embed.FETCH_BATCH,
+                                   2 * pg_embed.FETCH_BATCH,
+                                   2 * pg_embed.FETCH_BATCH + 7])
+
+    def test_the_target_is_counted_once_and_the_remainder_is_arithmetic(self):
+        """embed_target() counts what is pending; the closing report reads
+        that count's remainder instead of asking for it again. Three
+        targets asked twice each was six full aggregate scans and six psql
+        processes for three numbers.
+        """
+        database = FakeDatabase(pg_embed.FETCH_BATCH)
+        with mock.patch.object(pg_embed, "scalar", side_effect=database.scalar), \
+             mock.patch.object(pg_embed, "run_sql", side_effect=database.run_sql), \
+             mock.patch.object(pg_embed, "copy_csv_rows",
+                               side_effect=database.copy_csv_rows), \
+             mock.patch.object(pg_embed, "embed",
+                               side_effect=lambda texts, model, dims:
+                               [[0.0] * dims for _ in texts]), \
+             mock.patch("builtins.print"):
+            left = pg_embed.embed_target(self.ENV, "works", "bge-m3", 4)
+            gaps = pg_embed.missing_semantic_key(self.ENV, {"works": left})
+        self.assertEqual(len(database.counts), len(pg_embed.TARGETS),
+                         "цель посчитана дважды за прогон")
+        self.assertNotIn("works", dict(gaps))
 
     def test_the_page_is_staged_and_consumed_in_one_script(self):
         """The same seam citations/store.py writes through: a TEMP table,
@@ -164,6 +209,14 @@ class FetchPageTests(unittest.TestCase):
         with mock.patch.object(pg_embed, "run_sql",
                                 return_value=mock.Mock(stdout=stdout)):
             return pg_embed.fetch_page({}, "corpus.pages", "body", "true")
+
+    def test_the_page_starts_past_the_cursor_it_is_given(self):
+        with mock.patch.object(pg_embed, "run_sql",
+                                return_value=mock.Mock(stdout="")) as run_sql:
+            pg_embed.fetch_page({}, "corpus.pages", "body", "true", 412)
+        sql = run_sql.call_args[0][1]
+        self.assertIn("r.id > 412", sql)
+        self.assertIn("order by r.id", sql)
 
     def test_a_row_is_id_and_text(self):
         self.assertEqual(self._page([("7", "Чебышёв")]), [(7, "Чебышёв")])
