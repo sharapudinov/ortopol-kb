@@ -20,8 +20,10 @@ the same external fact by different routes, and pg_dump tolerates a
 produced a manifest describing a schema set its own dump lacks, which is
 what MANIFEST_DESCRIBES_ARTIFACT exists to forbid.
 
-Beyond that one function this module holds no logic and imports nothing
-else, so every importer can depend on it without pulling anything along.
+Beyond schemas_for() and strips_content() -- each of them a question two
+sides of the build would otherwise answer independently -- this module holds
+no logic and imports nothing else, so every importer can depend on it
+without pulling anything along.
 """
 from __future__ import annotations
 
@@ -198,8 +200,24 @@ class CitationMode:
     ALL = (FULL_SKELETON, TOPOLOGY_ONLY, NONE)
     # Modes whose dump carries the citation schema at all.
     SHIPPED = (FULL_SKELETON, TOPOLOGY_ONLY)
-    # Modes whose citation.work/cites rows carry abstract/evidence.
+    # Modes whose citation.work/cites rows carry abstract/evidence. The
+    # dump and the artifact-side hunt both read it through strips_content()
+    # below rather than testing a mode by name.
     FULL_CONTENT = (FULL_SKELETON,)
+
+
+def strips_content(mode: str | None) -> bool:
+    """Whether a dump built under `mode` must blank the content columns.
+
+    Asked as "is this mode declared full-content", never as "is it
+    topology-only". A mode added to CitationMode and forgotten at one of
+    the two call sites -- citation_dump._select_expression (what the COPY
+    projects) and citation_content_checks.attach_visitors (whether the
+    artifact-side hunt runs at all) -- would otherwise ship abstracts AND
+    be exempt from the check that would catch it. Anti-default per mode,
+    as citation_columns.blanked_cast() is per column.
+    """
+    return mode not in CitationMode.FULL_CONTENT
 
 
 # Schemas each profile's dump carries BEFORE the citation mode is applied.

@@ -99,15 +99,15 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
             sample.add(item)
         return {"citation_leaked": sample}
 
-    def test_non_topology_only_mode_is_a_trivial_pass(self):
-        ok, detail = citation_content_checks.check_topology_only_strips_content(
+    def test_a_declared_full_content_mode_is_a_trivial_pass(self):
+        ok, detail = citation_content_checks.check_content_is_stripped(
             {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}},
             self._sample(["x"]),
         )
         self.assertTrue(ok, detail)
 
     def test_topology_only_passes_when_nothing_leaked(self):
-        ok, detail = citation_content_checks.check_topology_only_strips_content(
+        ok, detail = citation_content_checks.check_content_is_stripped(
             {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}},
             self._sample([]),
         )
@@ -119,7 +119,7 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
         interpolated into one message. The verdict needs the SIZE of the
         breach and enough of it to find the rest.
         """
-        ok, detail = citation_content_checks.check_topology_only_strips_content(
+        ok, detail = citation_content_checks.check_content_is_stripped(
             {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}},
             self._sample([f"citation.crawl_step.reason:{i}" for i in range(100)]),
         )
@@ -135,7 +135,7 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
                             [["1", "k1", "an abstract", "\\N"]])
         scans, facts = _scan(dump)
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-        ok, detail = citation_content_checks.check_topology_only_strips_content(
+        ok, detail = citation_content_checks.check_content_is_stripped(
             manifest, facts,
         )
         self.assertFalse(ok)
@@ -146,7 +146,7 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
                             [["1", "2", '{"src": "openalex"}']])
         _scans, facts = _scan(dump)
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-        ok, detail = citation_content_checks.check_topology_only_strips_content(
+        ok, detail = citation_content_checks.check_content_is_stripped(
             manifest, facts,
         )
         self.assertFalse(ok)
@@ -162,7 +162,7 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
                             [["1", "keep", "kept"]])
         _scans, facts = _scan(dump)
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-        ok, detail = citation_content_checks.check_topology_only_strips_content(
+        ok, detail = citation_content_checks.check_content_is_stripped(
             manifest, facts,
         )
         self.assertFalse(ok)
@@ -185,7 +185,7 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
                             [["1", "k1", "\\N", "\\N"]])
         _scans, facts = _scan(dump)
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-        ok, detail = citation_content_checks.check_topology_only_strips_content(
+        ok, detail = citation_content_checks.check_content_is_stripped(
             manifest, facts,
         )
         self.assertTrue(ok, detail)

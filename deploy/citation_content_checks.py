@@ -18,16 +18,16 @@ Checks:
                            carries NEITHER of) citation.work/citation.cites,
                            and their row counts equal
                            manifest.citation.work_count/cites_count
-  topology-only stripped  no row of any dumped table carries a non-empty
+  content is stripped     no row of any dumped table carries a non-empty
                            value in a column citation_columns classifies as
-                           content, whenever manifest.citation.mode is
-                           topology-only (a no-op check, trivially true,
-                           under the other two modes). The column list is
-                           IMPORTED from citation_columns, never restated
-                           here: a second copy of the classification could
-                           only agree with the producer by accident, and
-                           the one column it forgot was the whole finding
-                           that put this module and the dump on one map
+                           content, under every mode outside
+                           CitationMode.FULL_CONTENT, an unrecognised one
+                           included. The column list is IMPORTED from
+                           citation_columns, never restated here: a second
+                           copy of the classification could only agree with
+                           the producer by accident, and the one column it
+                           forgot was the whole finding that put this module
+                           and the dump on one map
   work -> document holds  every citation.work.document_id in the dump names
                            a corpus.documents row the SAME dump carries.
                            citation.work.document_id is a foreign key across
@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
-from manifest_contract import CitationMode, Key, PolicySource, Profile
+from manifest_contract import CitationMode, Key, PolicySource, Profile, strips_content
 
 # How many offending rows the verdict quotes. The count is exact; the list
 # is a sample, because the scan that fills it runs over citation.crawl_step
@@ -70,9 +70,9 @@ class LeakSample:
     """How many content values leaked, and the first few of them by name.
 
     An unbounded list was a fact about the dump held entirely in memory and
-    then rendered entirely into one line: a topology-only artifact that
-    failed to strip crawl_step.reason would report the breach as a
-    hundred-thousand-element string nobody can read.
+    then rendered entirely into one line: an artifact that failed to strip
+    crawl_step.reason would report the breach as a hundred-thousand-element
+    string nobody can read.
     """
 
     def __init__(self, limit: int = LEAK_SAMPLE):
@@ -92,14 +92,17 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
     dump_scan.scan() has actually run. profile_checks.py merges the returned
     dict into its own facts, so the keys are namespaced.
 
-    `mode` is the manifest's citation mode, and it decides how much gets
-    registered. The content hunt only means anything under topology-only --
-    check_topology_only_strips_content() returns "nothing to strip" for
-    every other mode -- and registering a visitor is not free: dump_scan
-    builds a dict(zip(columns, fields)) per row ONLY for tables that have
-    one, and citation.crawl_step grows by ~100k rows per depth-2 crawl. So
-    under any other mode the extra tables get no visitor at all and
-    `leaked` stays the empty sample it would have ended as anyway.
+    `mode` is the manifest's citation mode, and how much gets registered is
+    manifest_contract.strips_content(mode) -- the predicate the dump itself
+    projects by (citation_dump._select_expression), so no mode is exempt
+    from the hunt for content that same mode was allowed to ship. The hunt
+    is skipped only under a mode DECLARED full-content.
+
+    Skipping is worth doing because a visitor is not free: dump_scan builds
+    a dict(zip(columns, fields)) per row ONLY for tables that have one, and
+    citation.crawl_step grows by ~100k rows per depth-2 crawl. Under a
+    full-content mode those tables get no visitor at all; a dump carrying no
+    citation table pays for the registration and finds nothing to visit.
 
     work and cites keep their visitors either way: work_documents /
     work_ids / edge_endpoints feed the two checks that hold the citation
@@ -127,7 +130,7 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
     def no_content_hunt(_row: dict) -> None:
         return None
 
-    stripping = mode == CitationMode.TOPOLOGY_ONLY
+    stripping = strips_content(mode)
     leaked_work = content_visitor(
         WORK_TABLE, lambda row: row.get("key", "?")) if stripping else no_content_hunt
     leaked_cites = content_visitor(
@@ -282,10 +285,14 @@ def check_citation_schema_matches_mode(manifest: dict, scans: dict) -> tuple[boo
                 f"cites rows={cites_rows} (manifest {want_cites})")
 
 
-def check_topology_only_strips_content(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_content_is_stripped(manifest: dict, facts: dict) -> tuple[bool, str]:
+    """No content column survives a mode outside CitationMode.FULL_CONTENT
+    -- an unrecognised one included, which is why the question is
+    strips_content(mode) rather than `== topology-only`."""
     citation = manifest.get(Key.CITATION, {})
-    if citation.get(Key.CITATION_MODE) != CitationMode.TOPOLOGY_ONLY:
-        return True, "mode is not topology-only -- nothing to strip"
+    mode = citation.get(Key.CITATION_MODE)
+    if not strips_content(mode):
+        return True, f"mode={mode!r} carries content by declaration -- nothing to strip"
     leaked = facts.get("citation_leaked") or LeakSample()
     if not leaked.total:
         return True, "leaked 0 row(s)"

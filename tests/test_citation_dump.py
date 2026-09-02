@@ -78,6 +78,27 @@ class CopySelectTests(unittest.TestCase):
                 else:
                     self.assertIn(f"{alias}.{column}", sql, f"{table}.{column}")
 
+    def test_a_mode_nobody_declared_full_content_still_blanks_content(self):
+        """The polarity is the classification's, not topology-only's.
+
+        A mode added to the vocabulary and forgotten here must strip rather
+        than ship: CitationMode.FULL_CONTENT names the modes whose rows
+        carry abstract/evidence, and everything outside it -- including a
+        value this build has never heard of -- is stripped, the same
+        refusal-by-default citation_columns.blanked_cast() applies per
+        column.
+        """
+        modes = [m for m in CitationMode.ALL if m not in CitationMode.FULL_CONTENT]
+        modes.append("skeleton-with-notes")
+        for mode in modes:
+            for table, columns in citation_columns.CITATION_COLUMN_CLASS.items():
+                sql = citation_dump.copy_select(table, list(columns), mode)
+                alias = citation_dump.TABLE_ALIASES[table]
+                for column, kind in columns.items():
+                    if kind == citation_columns.CONTENT:
+                        self.assertIn(f"AS {column}", sql, f"{mode}: {table}.{column}")
+                        self.assertNotIn(f"{alias}.{column},", sql, f"{mode}: {table}.{column}")
+
     def test_an_unclassified_column_stops_the_build(self):
         with self.assertRaises(citation_columns.ColumnUnclassified) as raised:
             citation_dump.copy_select("work", ["id", "brand_new"], CitationMode.FULL_SKELETON)

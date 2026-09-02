@@ -339,7 +339,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             results = _results(ArtifactBuilder(Path(tmp)))
         self.assertTrue(results["citation: схема/счётчики совпадают с манифестом"][0])
-        self.assertTrue(results["citation topology-only: content-колонки вырезаны"][0])
+        self.assertTrue(results["citation: content-колонки вырезаны вне full-skeleton"][0])
 
     def test_full_skeleton_with_matching_counts_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -351,7 +351,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
             results = _results(builder)
         ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
         self.assertTrue(ok, detail)
-        ok, detail = results["citation topology-only: content-колонки вырезаны"]
+        ok, detail = results["citation: content-колонки вырезаны вне full-skeleton"]
         self.assertTrue(ok, detail)  # not topology-only -- nothing to strip
 
     def test_topology_only_with_a_leaked_abstract_fails(self):
@@ -362,7 +362,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
                 cites_rows=[],
             )
             results = _results(builder)
-        ok, detail = results["citation topology-only: content-колонки вырезаны"]
+        ok, detail = results["citation: content-колонки вырезаны вне full-skeleton"]
         self.assertFalse(ok)
         self.assertIn("abstract", detail)
 
@@ -376,7 +376,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
             results = _results(builder)
         ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
         self.assertTrue(ok, detail)
-        ok, detail = results["citation topology-only: content-колонки вырезаны"]
+        ok, detail = results["citation: content-колонки вырезаны вне full-skeleton"]
         self.assertTrue(ok, detail)
 
     def test_none_mode_with_a_leaked_table_fails(self):

@@ -52,7 +52,7 @@ from citation_catalog import (
 )
 from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
-from manifest_contract import CitationMode
+from manifest_contract import CitationMode, strips_content
 from pg_stream import stream_stdout
 
 # One alias per dumped table (the same discipline public_dump.TABLE_ALIASES
@@ -127,9 +127,15 @@ def _select_expression(table: str, column: str, mode: str) -> str:
     default. The catalog is what says a column exists (schema_columns), the
     classification is what says whether it may leave; both are consulted
     for every column, which is the point.
+
+    The MODE is read with the same polarity: content survives only under a
+    mode manifest_contract declares full-content (strips_content), so a
+    mode this build has never heard of blanks rather than ships. Keyed on
+    `== TOPOLOGY_ONLY` it was the other way round, and the declared
+    authority was never consulted at all.
     """
     cast = blanked_cast(table, column)
-    if cast and mode == CitationMode.TOPOLOGY_ONLY:
+    if cast and strips_content(mode):
         return f"NULL::{cast} AS {column}"
     return f"{TABLE_ALIASES[table]}.{column}"
 
