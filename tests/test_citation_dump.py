@@ -183,8 +183,8 @@ class LegalCutSqlTests(unittest.TestCase):
 
     def test_crawl_step_select_carries_the_cut_sets_as_ctes(self):
         sql = citation_dump.copy_select("crawl_step", ["id"], CitationMode.FULL_SKELETON)
-        self.assertTrue(sql.startswith("COPY (WITH cut_documents AS ("), sql[:60])
-        self.assertIn("cut_keys AS (", sql)
+        self.assertTrue(sql.startswith("COPY (WITH cut_documents AS MATERIALIZED ("), sql[:70])
+        self.assertIn("cut_keys AS MATERIALIZED (", sql)
         # The predicate is membership in them, once per statement.
         self.assertEqual(sql.count("FROM corpus.documents d"), 1)
 
@@ -198,9 +198,9 @@ class LegalCutSqlTests(unittest.TestCase):
                                         CitationMode.FULL_SKELETON)
         # frontier_key carries a document_id for seed/twin rows and a work
         # key for the rest, and reason embeds either -- all three columns are
-        # checked against both vocabularies.
+        # checked against both vocabularies, in the cut CTEs' own alias.
         for column in ("frontier_key", "candidate_key", "reason"):
-            self.assertIn(f"s.{column}", sql)
+            self.assertIn(f"j.{column}", sql)
         self.assertIn("strpos(", sql, "reason is matched as a substring, not with LIKE")
         self.assertNotIn("LIKE", sql, "'_' in a document id is a LIKE wildcard")
 
@@ -292,14 +292,19 @@ class LiveLegalCutTests(unittest.TestCase):
         # about WHICH rows the predicate lets through.
         columns = ["crawl_id", "depth", "frontier_key", "candidate_key", "reason"]
         projection = ",\n       ".join(f"s.{c}" for c in columns)
+        # The naive predicate spelled out here rather than imported: it is
+        # the independent reference the fast form is compared against, and
+        # an imported one would drift with the thing under test.
+        mentions = ("s.frontier_key = {ref} OR s.candidate_key = {ref} "
+                    "OR strpos(coalesce(s.reason, ''), {ref}) > 0")
         per_row = (
             "COPY (SELECT " + projection + "\nFROM citation.crawl_step s WHERE "
             "(NOT EXISTS (SELECT 1 FROM corpus.documents d "
             f"WHERE NOT ({SHIPPED_SQL}) AND ("
-            + citation_profile._STEP_MENTIONS.format(alias="s", ref="d.id") + ")) "
+            + mentions.format(ref="d.id") + ")) "
             "AND NOT EXISTS (SELECT 1 FROM citation.work w "
             f"WHERE NOT {citation_profile.shipped_work_sql('w')} AND ("
-            + citation_profile._STEP_MENTIONS.format(alias="s", ref="w.key") + ")))"
+            + mentions.format(ref="w.key") + ")))"
             " ORDER BY s.id) TO STDOUT"
         )
         self.assertEqual(self._rows("crawl_step", columns, self.FIXTURE),

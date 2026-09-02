@@ -60,18 +60,6 @@ from pg_graph_common import citation_schema_exists, kind_counts  # noqa: E402
 # document_id instead of dropping the row is not available:
 # CHECK (kind <> 'our-document' OR document_id IS NOT NULL).
 
-# frontier_key carries a document id on seed/twin rows and a work key on the
-# rest, and reason embeds either ("twin-of=<document_id>", "node=<work key>",
-# see citations/journal.py) -- so all three columns are matched against both
-# vocabularies. strpos(), not LIKE: a document id contains '_', which LIKE
-# reads as a wildcard, and an over-matching pattern would silently drop
-# journal rows that name nothing sensitive.
-_STEP_MENTIONS = (
-    "{alias}.frontier_key = {ref} OR {alias}.candidate_key = {ref} "
-    "OR strpos(coalesce({alias}.reason, ''), {ref}) > 0"
-)
-
-
 def shipped_work_sql(alias: str = "w") -> str:
     """SQL boolean: this citation.work row may leave in a public artifact."""
     return (
@@ -81,24 +69,51 @@ def shipped_work_sql(alias: str = "w") -> str:
     )
 
 
-# The two names the cut removes, each derived ONCE per statement instead of
-# per journal row. The earlier form inlined the derivations into the
-# predicate, so every crawl_step row re-scanned corpus.documents AND the
-# whole of citation.work (the strpos() disjunct is not sargable, so no index
-# could rescue it) -- quadratic on the largest table in the schema, and
-# crawl_step is where a depth-2 crawl's growth lands. Both sets are tiny by
-# construction: they hold only what the artifact leaves behind.
+# The names the cut removes, and the journal rows that mention them: four
+# sets, each derived ONCE per statement. AS MATERIALIZED is not decoration
+# -- a single-reference, side-effect-free CTE is INLINED by default since
+# PostgreSQL 12 (the artifact image is 17), which would put each derivation
+# back inside the correlated subquery it feeds.
 #
 # cut_keys is the works cut BECAUSE of those documents, i.e. exactly the
 # rows shipped_work_sql() rejects: it rejects a row iff document_id is
 # non-NULL and names an unshipped document, and citation.work.document_id
 # REFERENCES corpus.documents(id), so "names an unshipped document" is the
 # join below. One scan of corpus.documents for the whole statement.
-_CUT_CTES = """WITH cut_documents AS (
+#
+# frontier_key carries a document id on seed/twin rows and a work key on the
+# rest, and reason embeds either ("twin-of=<document_id>", "node=<work key>",
+# see citations/journal.py) -- so all three columns are matched against both
+# vocabularies, which is why cut_names unions them. strpos(), not LIKE: a
+# document id contains '_', which LIKE reads as a wildcard, and an
+# over-matching pattern would silently drop journal rows that name nothing
+# sensitive.
+#
+# The three mention tests are a UNION of three branches rather than one
+# three-way OR, and that is the whole point: an OR of two equalities and a
+# strpos() is one non-sargable join qualifier, so the equalities can never
+# reach an index. Split, each equality branch is a join the planner drives
+# from the tiny cut_names side -- EXPLAIN (ANALYZE) of the real COPY select
+# on the live instance: a nested loop over crawl_step_frontier_key_idx and
+# another over crawl_step_candidate_key_idx (10 cut names, 10 loops each),
+# both at today's 604 journal rows and on a 100k-row depth-2-sized probe
+# inserted inside a rolled-back transaction. The strpos branch stays the
+# full scan no index can serve, which is the whole reason the cut sets are
+# derived once instead of per row.
+_CUT_CTES = """WITH cut_documents AS MATERIALIZED (
     SELECT d.id AS ref FROM corpus.documents d WHERE NOT ({shipped})
-), cut_keys AS (
+), cut_keys AS MATERIALIZED (
     SELECT w.key AS ref
     FROM citation.work w JOIN cut_documents ON cut_documents.ref = w.document_id
+), cut_names AS MATERIALIZED (
+    SELECT ref FROM cut_documents UNION SELECT ref FROM cut_keys
+), cut_steps AS MATERIALIZED (
+    SELECT j.id FROM citation.crawl_step j JOIN cut_names r ON j.frontier_key = r.ref
+    UNION
+    SELECT j.id FROM citation.crawl_step j JOIN cut_names r ON j.candidate_key = r.ref
+    UNION
+    SELECT j.id FROM citation.crawl_step j JOIN cut_names r
+        ON strpos(coalesce(j.reason, ''), r.ref) > 0
 )
 """
 
@@ -118,15 +133,10 @@ def shipped_crawl_step_sql(alias: str = "s") -> str:
     """SQL boolean: this journal row names nothing the cut removed.
 
     Valid ONLY inside a statement prefixed with crawl_step_cut_ctes() --
-    the predicate is membership in those two CTEs, not a re-derivation of
-    them.
+    the predicate is non-membership in cut_steps, which the CTEs above
+    derive once, not a re-derivation of the cut per row.
     """
-    return (
-        "(NOT EXISTS (SELECT 1 FROM cut_documents r "
-        f"WHERE {_STEP_MENTIONS.format(alias=alias, ref='r.ref')}) "
-        "AND NOT EXISTS (SELECT 1 FROM cut_keys r "
-        f"WHERE {_STEP_MENTIONS.format(alias=alias, ref='r.ref')}))"
-    )
+    return f"(NOT EXISTS (SELECT 1 FROM cut_steps x WHERE x.id = {alias}.id))"
 
 _POLICY_SQL = "SELECT mode FROM citation.public_policy WHERE id = 1;"
 _CITES_COUNT_SQL = """

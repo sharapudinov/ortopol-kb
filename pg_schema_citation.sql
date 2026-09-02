@@ -121,13 +121,20 @@ ALTER TABLE citation.crawl_step ADD CONSTRAINT crawl_step_action_check
 
 CREATE INDEX IF NOT EXISTS crawl_step_crawl_depth_idx ON citation.crawl_step (crawl_id, depth);
 
--- The public artifact's journal cut asks, for every row, whether it names a
--- document or a work the package leaves behind (deploy/citation_profile.py's
--- shipped_crawl_step_sql). Two of the three columns it matches are equality
--- lookups against a small set of cut names, so they are worth an index on
--- the largest table in this schema; the third (reason) is a substring match
--- no index can serve, which is why the cut sets are materialised once per
--- statement rather than re-derived per row.
+-- The public artifact's journal cut asks which rows name a document or a
+-- work the package leaves behind (deploy/citation_profile.py's
+-- crawl_step_cut_ctes). It asks that as three separate branches, one per
+-- column, precisely so these two equality branches can be index lookups
+-- driven from the tiny set of cut names -- an OR of the three inside one
+-- subquery is a single non-sargable qualifier and reaches no index at all.
+-- The third column (reason) is a substring match no index can serve, which
+-- is why the cut sets are materialised once per statement.
+--
+-- Both verified in use, EXPLAIN (ANALYZE) of the real COPY select on the
+-- live instance: one nested loop per index, driven from the cut names (10
+-- names, 10 loops each) -- at today's 604 journal rows and again on a
+-- 100k-row depth-2-sized probe inserted inside a rolled-back transaction.
+-- The reason branch scans the table in both, as a substring match must.
 CREATE INDEX IF NOT EXISTS crawl_step_frontier_key_idx ON citation.crawl_step (frontier_key);
 CREATE INDEX IF NOT EXISTS crawl_step_candidate_key_idx ON citation.crawl_step (candidate_key);
 

@@ -139,30 +139,54 @@ class ShippedRowPredicateTests(unittest.TestCase):
         self.assertIn("'metadata-only'", sql, "библиография metadata-only уезжает")
         self.assertNotIn("'excluded'", sql)
 
-    def test_crawl_step_predicate_checks_both_vocabularies_in_three_columns(self):
-        sql = citation_profile.shipped_crawl_step_sql("s")
-        self.assertEqual(sql.count("s.frontier_key"), 2)
-        self.assertEqual(sql.count("s.candidate_key"), 2)
-        self.assertEqual(sql.count("strpos(coalesce(s.reason, '')"), 2)
-        self.assertIn("cut_documents", sql)
-        self.assertIn("cut_keys", sql)
+    def test_crawl_step_ctes_check_both_vocabularies_in_three_columns(self):
+        ctes = citation_profile.crawl_step_cut_ctes()
+        self.assertEqual(ctes.count("j.frontier_key = r.ref"), 1)
+        self.assertEqual(ctes.count("j.candidate_key = r.ref"), 1)
+        self.assertEqual(ctes.count("strpos(coalesce(j.reason, ''), r.ref)"), 1)
+        # Both vocabularies reach all three columns through one union.
+        self.assertIn("SELECT ref FROM cut_documents UNION SELECT ref FROM cut_keys", ctes)
+
+    def test_the_equality_branches_are_separate_from_the_substring_one(self):
+        """An OR of two equalities and a strpos() is ONE non-sargable join
+        qualifier: the equalities can then never reach
+        crawl_step_frontier_key_idx / crawl_step_candidate_key_idx. Split
+        into UNION branches, each equality is an ordinary indexable join.
+        """
+        ctes = citation_profile.crawl_step_cut_ctes()
+        branches = ctes[ctes.index("cut_steps AS MATERIALIZED"):].split("UNION")
+        self.assertEqual(len(branches), 3, ctes)
+        for branch in branches:
+            self.assertLessEqual(branch.count("ON "), 1, "two match tests in one branch")
+        self.assertNotIn(" OR ", ctes, "an OR-ed qualifier reaches no index")
 
     def test_crawl_step_predicate_is_membership_not_a_per_row_derivation(self):
         # Every crawl_step row used to re-scan corpus.documents and the whole
         # of citation.work; the derivation belongs to the statement, once.
         sql = citation_profile.shipped_crawl_step_sql("s")
+        self.assertEqual(sql, "(NOT EXISTS (SELECT 1 FROM cut_steps x WHERE x.id = s.id))")
         self.assertNotIn("corpus.documents", sql)
         self.assertNotIn("citation.work", sql)
         self.assertNotIn("public_distribution", sql)
 
     def test_the_cut_sets_are_derived_once_in_the_ctes(self):
         ctes = citation_profile.crawl_step_cut_ctes()
-        self.assertTrue(ctes.startswith("WITH cut_documents AS ("), ctes[:40])
+        self.assertTrue(ctes.startswith("WITH cut_documents AS MATERIALIZED ("), ctes[:60])
         self.assertEqual(ctes.count("FROM corpus.documents d"), 1)
-        self.assertEqual(ctes.count("cut_keys AS ("), 1)
+        self.assertEqual(ctes.count("cut_keys AS MATERIALIZED ("), 1)
         self.assertIn("FROM citation.work w", ctes)
         # LEGAL_IS_DATA: still the column, never a list of ids.
         self.assertIn("public_distribution IN (", ctes)
+
+    def test_every_cut_set_is_materialised(self):
+        """A single-reference CTE is inlined by default on PostgreSQL 12+,
+        which would put each derivation back inside the subquery it feeds --
+        "derived once per statement" would then be the planner's choice
+        rather than the statement's.
+        """
+        ctes = citation_profile.crawl_step_cut_ctes()
+        for name in ("cut_documents", "cut_keys", "cut_names", "cut_steps"):
+            self.assertIn(f"{name} AS MATERIALIZED (", ctes)
 
 
 class ShippedOnlyCountsTests(unittest.TestCase):
