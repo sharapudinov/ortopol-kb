@@ -23,120 +23,18 @@ import _pathfix_deploy  # noqa: F401
 
 import dump_scan
 import profile_checks
-
-DOCUMENT_COLUMNS = ["id", "filename", "legal_class", "public_distribution",
-                    "legal_note", "source_blob", "source_sha256"]
-PAGE_COLUMNS = ["document_id", "page_number", "body", "embedding"]
-
-FULL_DOC = "2009_isu34"
-META_DOC = "1997_sm280"
-INTERNAL_DOC = "INDEX"
-EXCLUDED_DOC = "2016_vmj598"
-
-
-def _document_row(doc_id, distribution, blob):
-    return [doc_id, f"{doc_id}.pdf", "cc-by-4.0", distribution, "основание",
-            blob, "a" * 64]
-
-
-def _page_row(doc_id, page, body, embedding="[0.1,0.2]"):
-    return [doc_id, str(page), body, embedding]
-
-
-def _copy_block(table, columns, rows):
-    lines = [f"COPY corpus.{table} ({', '.join(columns)}) FROM stdin;"]
-    lines += ["\t".join(row) for row in rows]
-    lines += ["\\.", ""]
-    return "\n".join(lines)
-
-
-def _citation_copy_block(table, columns, rows):
-    lines = [f"COPY citation.{table} ({', '.join(columns)}) FROM stdin;"]
-    lines += ["\t".join(row) for row in rows]
-    lines += ["\\.", ""]
-    return "\n".join(lines)
-
-
-class ArtifactBuilder:
-    """Writes a manifest + gzipped dump pair into a directory, defaulting to
-    a well-formed public artifact: one full-text document with content, one
-    metadata-only document stripped, one internal document shipped whole,
-    and one excluded document the manifest names but the dump does not
-    contain in any form.
-    """
-
-    def __init__(self, directory: Path):
-        self.directory = directory
-        self.profile = "public"
-        self.schemas = ["corpus"]
-        self.documents = [
-            _document_row(FULL_DOC, "full-text", "\\x2550"),
-            _document_row(META_DOC, "metadata-only", "\\N"),
-            _document_row(INTERNAL_DOC, "internal", "\\x2551"),
-        ]
-        self.pages = [
-            _page_row(FULL_DOC, 1, "текст статьи"),
-            _page_row(META_DOC, 1, ""),
-            _page_row(META_DOC, 2, ""),
-            _page_row(INTERNAL_DOC, 1, "наш индекс"),
-        ]
-        self.page_columns = list(PAGE_COLUMNS)
-        self.by_distribution = {
-            "full-text": [FULL_DOC], "metadata-only": [META_DOC], "internal": [INTERNAL_DOC],
-            "excluded": [EXCLUDED_DOC],
-        }
-        self.shipped = ["full-text", "metadata-only", "internal"]
-        self.unclassified = 0
-        self.extra_sql = ""
-        # None = no citation{} key at all (an older manifest / a build that
-        # never touched the citation schema) -- the two content checks must
-        # then be a trivial pass, which is what most tests here exercise.
-        self.citation: dict | None = None
-
-    def write(self) -> Path:
-        dump_text = (
-            "CREATE SCHEMA corpus;\n"
-            "CREATE TABLE corpus.documents (id text);\n"
-            + self.extra_sql
-            + _copy_block("documents", DOCUMENT_COLUMNS, self.documents)
-            + _copy_block("pages", self.page_columns, self.pages)
-        )
-        if self.citation is not None and self.citation["mode"] != "none":
-            dump_text += _citation_copy_block(
-                "work", self.citation.get("work_columns", []), self.citation.get("work", []))
-            dump_text += _citation_copy_block(
-                "cites", self.citation.get("cites_columns", []), self.citation.get("cites", []))
-        dump_path = self.directory / "01_dump.sql.gz"
-        with gzip.open(dump_path, "wt", encoding="utf-8") as f:
-            f.write(dump_text)
-        legal = {
-            "verify_query": "SELECT count(*) ...",
-            "unclassified_documents": self.unclassified,
-            "class_counts": [],
-            "documents_by_distribution": self.by_distribution,
-            "full_content_distributions": ["full-text", "internal"],
-        }
-        if self.shipped is not None:
-            legal["shipped_distributions"] = self.shipped
-        manifest = {
-            "schema_version": 5,
-            "profile": self.profile,
-            "schemas": self.schemas,
-            "pages_count": len(self.pages),
-            "dump": {"file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"},
-            "legal": legal,
-        }
-        if self.citation is not None:
-            manifest["citation"] = {
-                "mode": self.citation["mode"],
-                "policy_source": self.citation.get("policy_source", "owner"),
-                "work_count": self.citation["work_count"],
-                "cites_count": self.citation["cites_count"],
-                "work_by_kind": self.citation.get("work_by_kind", {}),
-            }
-        (self.directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False))
-        return self.directory
-
+from _artifact_fixtures import (
+    ArtifactBuilder,
+    DOCUMENT_COLUMNS,
+    EXCLUDED_DOC,
+    FULL_DOC,
+    INTERNAL_DOC,
+    META_DOC,
+    PAGE_COLUMNS,
+    _citation_copy_block,
+    _document_row,
+    _page_row,
+)
 
 def _results(builder: ArtifactBuilder) -> dict[str, tuple[bool, str]]:
     directory = builder.write()
@@ -335,11 +233,24 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
         }
         return builder
 
-    def test_no_citation_block_is_a_trivial_pass(self):
+    def test_a_build_that_ships_no_graph_still_certifies_the_decision(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = _results(ArtifactBuilder(Path(tmp)))
         self.assertTrue(results["citation: схема/счётчики совпадают с манифестом"][0])
         self.assertTrue(results["citation: content-колонки вырезаны вне full-skeleton"][0])
+        self.assertTrue(results["citation: режим — решение владельца, не --policy-override"][0])
+
+    def test_a_manifest_with_no_citation_block_is_refused(self):
+        """The hole the defensive reads used to swallow: no block, no mode,
+        nothing shipped, "nothing to check" -- and a clean certification
+        with no statement about who decided the citation policy.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.citation_block = False
+            results = _results(builder)
+        ok, detail = results["citation: режим — решение владельца, не --policy-override"]
+        self.assertFalse(ok, detail)
 
     def test_full_skeleton_with_matching_counts_passes(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -31,10 +31,16 @@ Checks:
   vectors survive both classes every page row carries an embedding
   no tsv anywhere              tsv is GENERATED from body; a dump that
                                declared it would restore stale text content
+  manifest version matches     manifest.schema_version is the version this
+                               reader knows; anything else stops the pass
+                               instead of reading missing fields as
+                               satisfied checks
   citation policy is owner's   manifest.citation.policy_source == "owner":
                                an artifact whose citation mode was forced
                                with --policy-override fails here rather
-                               than being certified as publishable
+                               than being certified as publishable, and one
+                               whose manifest names no policy at all fails
+                               too (citation_policy_check.py)
   legal vocabulary             which ids the manifest says are carried, and
                                in which shape, is manifest_classes.py
                                (module size): a manifest-only reading, with
@@ -61,9 +67,10 @@ import sys
 from pathlib import Path
 
 import citation_content_checks
+import citation_policy_check
 import dump_scan
 from manifest_classes import classes, content_expectation, expected_ids
-from manifest_contract import Key
+from manifest_contract import MANIFEST_SCHEMA_VERSION, Key
 
 # Column names the checks reason about, from corpus.documents/corpus.pages.
 BLOB_COLUMN = "source_blob"
@@ -204,12 +211,38 @@ def check_no_generated_columns(scans: dict) -> tuple[bool, str]:
     return ok, f"corpus.pages COPY columns: {columns}"
 
 
+def check_manifest_version(manifest: dict) -> tuple[bool, str]:
+    """The manifest is the one this reader knows how to read.
+
+    Every check below asks the manifest for a key, and a manifest of
+    another version answers by omission: a field that moved is read as
+    absent, and an absent field is what turns a certification into a row of
+    trivially satisfied checks. The recipient runs this module standalone
+    (AGENT_GUIDE.md) and build_package.py names it as what an override
+    build cannot be certified by, so the gate cannot live only in the
+    Docker path (smoke_checks.py had the only one).
+    """
+    declared = manifest.get(Key.SCHEMA_VERSION)
+    ok = declared == MANIFEST_SCHEMA_VERSION
+    return ok, (f"manifest {Key.SCHEMA_VERSION}={declared!r}, "
+                f"этот проверяльщик читает {MANIFEST_SCHEMA_VERSION}"
+                + ("" if ok else " — пакет и проверка из разных версий, "
+                                 "остальные проверки не запускались"))
+
+
 def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
     manifest = json.loads((artifact_dir / "manifest.json").read_text())
+    version = ("версия манифеста = версия проверяльщика", *check_manifest_version(manifest))
+    if not version[1]:
+        # Nothing below is meaningful against a manifest this reader cannot
+        # read, and a list of passes underneath a failed gate reads as a
+        # certification. The gate is the whole answer.
+        return [version]
     dump_path = artifact_dir / manifest[Key.DUMP][Key.FILE]
     scans, facts = _visit(dump_path, manifest)
     profile = manifest.get(Key.PROFILE)
     return [
+        version,
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(dump_path, manifest)),
         ("правовая классификация полна", *check_classification_complete(manifest, scans)),
         ("excluded: ни строки документа, ни страниц", *check_excluded_absent(manifest, facts)),
@@ -218,7 +251,7 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         ("векторы у всех страниц", *check_pages_embedded(manifest, scans, facts)),
         ("нет generated-колонок в дампе", *check_no_generated_columns(scans)),
         ("citation: режим — решение владельца, не --policy-override",
-         *citation_content_checks.check_policy_is_the_owners(manifest)),
+         *citation_policy_check.check_policy_is_the_owners(manifest)),
         ("citation: схема/счётчики совпадают с манифестом",
          *citation_content_checks.check_citation_schema_matches_mode(manifest, scans)),
         ("citation: content-колонки вырезаны вне full-skeleton",

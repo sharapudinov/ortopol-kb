@@ -7,13 +7,6 @@ that claim.
 
 Checks:
 
-  policy is the owner's  manifest.citation.policy_source says the mode came
-                           from citation.public_policy and not from
-                           --policy-override. The one check here that reads
-                           no dump byte: it is about the PROVENANCE of the
-                           cut, not about what the cut produced, and an
-                           override artifact is otherwise indistinguishable
-                           from a classified one
   schema/counts agree     the dump carries (or, under CitationMode.NONE,
                            carries NEITHER of) citation.work/citation.cites,
                            and their row counts equal
@@ -44,12 +37,15 @@ Checks:
 profile_checks.py owns the single streaming pass over the dump (dump_scan.
 scan reads the whole file once); attach_visitors() only adds this module's
 row callbacks to that same pass instead of asking for a second one.
+
+The provenance question -- WHOSE decision the mode was -- reads no dump
+byte and lives in citation_policy_check.py.
 """
 from __future__ import annotations
 
 import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
-from manifest_contract import CitationMode, Key, PolicySource, Profile, strips_content
+from manifest_contract import CitationMode, Key, strips_content
 
 # How many offending rows the verdict quotes. The count is exact; the list
 # is a sample, because the scan that fills it runs over citation.crawl_step
@@ -177,61 +173,6 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
 def _ships_citation(manifest: dict) -> bool:
     mode = manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE)
     return mode is not None and mode != CitationMode.NONE
-
-
-def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:
-    """The citation mode this artifact applied must be the owner's decision.
-
-    --policy-override forces a mode without reading citation.public_policy,
-    which is legitimate for exercising the pipeline and never legitimate for
-    an artifact anybody publishes (CITATION_POLICY_IS_DATA,
-    PUBLIC_APPROVED_BY_OWNER). The build records which it was; this refuses
-    the one it must.
-
-    An override is refused BEFORE the mode is looked at: `--policy-override
-    none` produces an artifact carrying no citation schema at all, and the
-    refusal is about the provenance of the decision, not about how much it
-    let through.
-
-    WHICH source is required depends on the profile, because only the
-    public one applies a policy: public must name the owner, and anything
-    else must say "not-applicable" -- a full artifact claiming an owner
-    decision names one nobody made, since the packager never reads
-    citation.public_policy for that profile. The two are refused in each
-    other's place, not merely accepted loosely.
-
-    A shipping artifact whose manifest names no source is refused too --
-    that is a manifest written before the field existed, and reading it
-    with a default is exactly how an override build would come to be
-    certified as owner-classified. (The version gate in smoke_checks names
-    that case more precisely; this is the static backstop, which runs
-    without a database.) An artifact that ships no citation schema has no
-    policy to source and nothing to certify, so it passes.
-    """
-    citation = manifest.get(Key.CITATION, {})
-    mode = citation.get(Key.CITATION_MODE)
-    source = citation.get(Key.CITATION_POLICY_SOURCE)
-    public = manifest.get(Key.PROFILE) == Profile.PUBLIC
-    if source == PolicySource.OVERRIDE:
-        return False, (
-            "артефакт собран с --policy-override, не по решению владельца; "
-            f"публиковать нельзя (mode={mode!r} задан командной строкой, а не "
-            "citation.public_policy)"
-        )
-    if not _ships_citation(manifest):
-        return True, f"mode={mode!r} — граф не уезжает, политике неоткуда взяться"
-    wanted = PolicySource.OWNER if public else PolicySource.NOT_APPLICABLE
-    if source != wanted:
-        return False, (
-            f"citation.policy_source={source!r} при профиле "
-            f"{manifest.get(Key.PROFILE)!r} — ожидалось {wanted!r} "
-            f"(значения: {PolicySource.ALL}); пересоберите артефакт "
-            "текущим сборщиком"
-        )
-    if not public:
-        return True, (f"policy_source={source!r}, mode={mode!r} — профиль "
-                      "политики не применяет, решать было нечего")
-    return True, f"policy_source={source!r}, mode={mode!r} — решение владельца"
 
 
 def check_work_documents_are_in_the_dump(manifest: dict, facts: dict) -> tuple[bool, str]:
