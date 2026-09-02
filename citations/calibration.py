@@ -5,9 +5,13 @@
 загрузчик ходит в сеть и пишет граф, а здесь — только формулировки замера
 (EXTENDING процедура D) и рендер распределения в текст.
 
-RECOMMENDATION — прочтение распределения ИСПОЛНИТЕЛЕМ, константа, чтобы
-отчёт пересоздавался байт в байт. Вердикт (само число τ, принятое к обходу)
-выносит оркестратор; здесь только рекомендация и факты под ней.
+Ни рекомендации, ни вердикта этот модуль не пишет: и то и другое — чтение
+распределения человеком, привязанное к одному прогону. Обе секции живут в
+самом отчёте и ПЕРЕНОСЯТСЯ в следующую регенерацию как есть
+(carry_over_sections) — та же сделка, что у загрузчиков с transcribed-
+страницами: перезапуск инструмента не уничтожает работу, которую этот
+инструмент не делал. Из чисел здесь считается только одно, и оно посчитано,
+а не записано: suggest_tau() — где в данных есть пустая корзина.
 """
 from __future__ import annotations
 
@@ -15,56 +19,44 @@ from . import frontier as frontier_math
 
 SPIKE = "research/citation-frontier-threshold"
 REPORT_PATH = "research/citation-frontier/threshold.md"
-# The orchestrator writes the verdict INTO the generated report, by hand.
-# Regenerating the report must therefore carry that section over instead of
-# overwriting it -- the same bargain the loaders strike with transcribed
-# pages: a rerun of a tool never destroys work the tool did not produce.
+# The sections the orchestrator and the executor write INTO the generated
+# report by hand, in the order they appear. Regenerating carries everything
+# from the first of them onward across unchanged; nothing above it survives,
+# because that is exactly what the new measurement recomputed.
+RECOMMENDATION_HEADING = "## Рекомендация исполнителя"
 VERDICT_HEADING = "## Вердикт"
+CARRIED_HEADINGS = (RECOMMENDATION_HEADING, VERDICT_HEADING)
 
-RECOMMENDED_TAU = 0.50
-# The executor's reading of the distribution below, kept as a constant so the
-# generated report is reproducible byte for byte. The VERDICT is the
-# orchestrator's; this is the recommendation the facts in the report support.
-RECOMMENDATION = """\
-**τ = 0.50.**
+# Ширина корзины, в которой ищется разрыв. 0.02 — примерно шаг, на котором
+# 390 кандидатов depth-1 перестают быть непрерывными: уже — дыры от
+# разреженности, шире — разрыв тонет в соседях.
+BIN_WIDTH = 0.02
 
-1. **Это единственная пустая корзина гистограммы.** Распределение
-   одномодальное и без плато, кроме одного места: 0.484…0.504 — ноль
-   кандидатов. Слева от неё шесть записей и все шесть работами не являются:
-   `Preface` (0.4245), `Bibliography` (0.4381), `Rellich Inequality` (0.4445),
-   `Navigation System For Elderly Care Applications` (0.4515), `Maximal
-   Operator` (0.4647), `Index` (0.4736) — OpenAlex индексирует главы и
-   служебные разделы сборников отдельными works. Справа, начиная с 0.5182,
-   идут работы. Порог в пустой корзине отделяет «не работа» от «работа», и
-   это единственная граница на всей кривой, которую данные ставят сами.
-2. **Всё, что выше, — по делу, и чем ниже смотришь, тем дороже ошибка.**
-   Первые за границей: «Moment Functions in Image Analysis» (0.5182 — прямая
-   цель продукта «моменты изображений»), «Collected Works» Чебышёва (0.5259),
-   «Global asymptotics of the Hahn polynomials» (0.5274), «Mean Convergence of
-   Expansions in Laguerre and Hermite Series» (0.5338), «Transverse limits in
-   the Askey tableau» (0.5470), «Nonnegativity of a discrete Poisson kernel
-   for the Hahn polynomials» (0.5693), «Limit relationships between Chebyshev
-   and Hahn polynomials» (0.5891), «Asymptotic analysis of the Krawtchouk
-   polynomials by the WKB method» (0.5916). Порог 0.60 выбрасывает последние
-   две, порог 0.65 — весь этот список: ровно ту литературу, ради которой
-   существуют задачи 010 (граница Кравчука) и M1 (асимптотики).
-3. **Высокий порог фильтрует полноту метаданных, а не релевантность.**
-   Измерено на этих же 390 кандидатах: у 173 без реферата медиана 0.6506, у
-   217 с рефератом — 0.6893. Реферата в OpenAlex нет как раз у старых русских
-   работ и у монографий — у слоя, который и в run 85 был опознан хуже
-   прочих. Порог 0.65 срезал бы их не за содержание, а за то, что источник о
-   них знает меньше.
-4. **Цена не аргумент за высокий порог.** depth-2 при τ=0.50 — ≈102 запроса
-   против ≈59 при τ=0.65, при окне квоты 1000 (на 2026-09-02 остаток ≈280).
 
-**Вывод важнее самого числа: на depth-1 фильтр почти ничего не делает** —
-384 кандидата из 390. Окрестность цитирования ИИШ по построению чистая:
-работа, которая цитирует ИИШ или процитирована им, почти никогда не бывает
-не по теме, и косинус к центроиду семян здесь отделяет не «своё от чужого», а
-«работу от оглавления». Ценность порога проверится на depth-2, где популяция
-кандидатов другая (соседи соседей); тот же τ там может вести себя иначе, и
-это стоит перемерить отдельно, а не считать установленным.
-"""
+def suggest_tau(rows, width: float = BIN_WIDTH) -> float | None:
+    """Середина ближайшей к медиане ПУСТОЙ корзины слева от неё, либо None.
+
+    Читает ровно то, что в данных есть: место, где распределение
+    прерывается. Корзины шириной `width` выкладываются от минимума; поиск
+    идёт от медианы влево и останавливается на первой пустой — справа от
+    медианы разрыв отделял бы работы от работ, а вопрос порога стоит о
+    нижнем крае.
+
+    None — честный ответ «границы в данных нет»: одномодальное распределение
+    без разрыва не указывает точку, и любая «точка перегиба» была бы
+    придумана. Вердикт в обоих случаях за оркестратором.
+    """
+    scores = sorted(r["score"] for r in rows)
+    if len(scores) < 2 or width <= 0:
+        return None
+    low, median = scores[0], scores[len(scores) // 2]
+    counts: dict[int, int] = {}
+    for score in scores:
+        counts[int((score - low) / width)] = counts.get(int((score - low) / width), 0) + 1
+    for index in range(int((median - low) / width) - 1, -1, -1):
+        if not counts.get(index):
+            return low + (index + 0.5) * width
+    return None
 
 
 def cost_table(rows, refs, taus=(0.50, 0.55, 0.58, 0.60, 0.62, 0.65, 0.70)) -> list[str]:
@@ -99,7 +91,7 @@ def title_table(rows) -> list[str]:
     return lines
 
 
-def calibration_report(rows, tau_hint: float, refs=None) -> str:
+def calibration_report(rows, tau_hint: float | None, refs=None) -> str:
     scores = [r["score"] for r in rows]
     with_abstract = sorted(r["score"] for r in rows if r.get("has_abstract"))
     without = sorted(r["score"] for r in rows if not r.get("has_abstract"))
@@ -143,29 +135,46 @@ def calibration_report(rows, tau_hint: float, refs=None) -> str:
     lines += ["", "## Цена depth-2 при разном τ", ""] + cost_table(rows, refs or {})
     lines += ["", "## Десять нижних кандидатов (что именно отсекает низкий порог)", ""]
     lines += title_table(sorted(rows, key=lambda r: r["score"])[:10])
-    lines += ["", f"## Десять заголовков вокруг рекомендуемой границы τ = {tau_hint:.2f}", ""]
-    lines += title_table(sorted(rows, key=lambda r: abs(r["score"] - tau_hint))[:10])
-    lines += ["", "## Рекомендация исполнителя (вердикт — за оркестратором)", "",
-              RECOMMENDATION]
+    lines += ["", "## Разрыв в распределении", "", boundary_line(tau_hint), ""]
+    if tau_hint is not None:
+        lines += [f"Десять заголовков вокруг неё (τ = {tau_hint:.2f}):", ""]
+        lines += title_table(sorted(rows, key=lambda r: abs(r["score"] - tau_hint))[:10])
+    lines += ["", "Рекомендация исполнителя и вердикт оркестратора ниже написаны "
+                  "руками и переносятся сюда из предыдущей версии отчёта как есть: "
+                  "генератор их не пишет и не правит.", ""]
     return "\n".join(lines) + "\n"
 
 
-def carry_over_verdict(new_text: str, previous_path) -> str:
-    """Re-attach the orchestrator's verdict to a freshly generated report.
+def boundary_line(tau_hint: float | None) -> str:
+    """Что распределение говорит о границе — включая «ничего»."""
+    if tau_hint is None:
+        return (f"Пустых корзин шириной {BIN_WIDTH} слева от медианы нет: "
+                "границы в данных нет, распределение её не показывает.")
+    low, high = tau_hint - BIN_WIDTH / 2, tau_hint + BIN_WIDTH / 2
+    return (f"Ближайшая к медиане пустая корзина слева: {low:.4f}…{high:.4f} — "
+            f"ни одного кандидата. Её середина: τ = {tau_hint:.4f}. Это то, что "
+            "данные показывают сами; вердикт — за оркестратором.")
 
-    Without this, a second --calibrate silently deletes a section this code
-    never wrote. Nothing else of the old file survives: the facts above the
-    verdict are exactly what the new measurement recomputed.
+
+def carry_over_sections(new_text: str, previous_path) -> str:
+    """Re-attach the hand-written tail of the report to a freshly generated
+    one: the executor's recommendation and the orchestrator's verdict.
+
+    Without this, a second --calibrate silently deletes sections this code
+    never wrote. Nothing else of the old file survives: the facts above them
+    are exactly what the new measurement recomputed.
     """
     if not previous_path.is_file():
         return new_text
     previous = previous_path.read_text(encoding="utf-8")
-    if VERDICT_HEADING not in previous or VERDICT_HEADING in new_text:
+    found = [previous.index(h) for h in CARRIED_HEADINGS if h in previous
+             and h not in new_text]
+    if not found:
         return new_text
-    return new_text.rstrip("\n") + "\n\n" + previous[previous.index(VERDICT_HEADING):]
+    return new_text.rstrip("\n") + "\n\n" + previous[min(found):]
 
 
-def run_fields(rows, tau_hint: float) -> dict:
+def run_fields(rows) -> dict:
     scores = sorted(r["score"] for r in rows)
     return {
         "question": (
@@ -217,15 +226,3 @@ def run_fields(rows, tau_hint: float) -> dict:
         "area": ["citation-graph", "relevance", "frontier"],
         "varied": ["threshold"],
     }
-
-
-def suggest_tau(_rows) -> float:
-    """Число, которое исполнитель предлагает, прочитав распределение.
-
-    Формулы здесь нет намеренно: распределение одномодальное и без разрыва,
-    так что любая «точка перегиба» была бы придумана. Обоснование — в
-    RECOMMENDATION, вердикт — за оркестратором.
-    """
-    return RECOMMENDED_TAU
-
-

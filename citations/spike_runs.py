@@ -98,13 +98,13 @@ def record_calibration(snowball, client, data_root: Path, writer) -> int:
         return 1
     tau_hint = calibration.suggest_tau(rows)
     writer.ddl(threshold_store.THRESHOLD_DDL)
-    run_id = writer.upsert_run(calibration.SPIKE, calibration.run_fields(rows, tau_hint))
+    run_id = writer.upsert_run(calibration.SPIKE, calibration.run_fields(rows))
     written = writer.threshold_rows(run_id, rows)
     report = data_root / calibration.REPORT_PATH
-    writer.report(report, calibration.carry_over_verdict(
+    writer.report(report, calibration.carry_over_sections(
         calibration.calibration_report(rows, tau_hint, snowball.candidate_refs), report))
     print(f"запросов OpenAlex: {client.n_requests} (из кэша: {client.n_cache_hits})")
-    print(f"рекомендация τ (не вердикт): {tau_hint:.4f}")
+    print(calibration.boundary_line(tau_hint))
     if writer.dry:
         print(f"--dry-run: ни строки прогона, ни строк порога ({written} записалось бы), "
               f"ни отчёта {report} — ничего не записано")
