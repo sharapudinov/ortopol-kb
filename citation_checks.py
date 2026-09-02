@@ -41,8 +41,8 @@ from __future__ import annotations
 
 import pg_graph_common
 from paths import EXTERNAL_SOURCE_DIR, IIS_SOURCE_DIR
-from pg_common import run_sql, scalar
-from pg_graph_common import FIELD_SEP, citation_schema_exists, kind_counts
+from pg_common import FIELD_SEP, run_sql, scalar
+from pg_graph_common import citation_schema_exists, kind_counts
 
 
 _UNPLACED_SQL = f"""

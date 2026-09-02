@@ -32,7 +32,7 @@ import sys
 import pg_graph_common
 import pg_search
 from pg_common import scalar, sql_literal
-from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
+from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
 MIN_DEPTH, MAX_DEPTH = 1, 3
 

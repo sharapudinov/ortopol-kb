@@ -8,7 +8,9 @@ Postgres is reachable -- against what the server makes of that text.
 """
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
@@ -44,6 +46,65 @@ class ScalarRowSplitTests(unittest.TestCase):
         self.assertEqual(row, ["a", "b", "c"])
         _, kwargs = run_sql_mock.call_args
         self.assertIn(",", kwargs["extra_args"])
+
+
+class RowSeparatorsHaveOneHomeTests(unittest.TestCase):
+    """The psql row/field separators are one convention, so they are one
+    declaration: pg_common's, the module every psql caller already imports.
+
+    Spelled as a check over the sources rather than agreed, because a second
+    declaration costs nothing to write and is invisible until the day the
+    convention changes in one place only. Tests are exempt: several of them
+    stub the wire format psql produces and have to spell the bytes they are
+    imitating.
+    """
+
+    ROOT = Path(pg_common.__file__).resolve().parent
+    # The byte itself, and the two SQL spellings of it. Prose about the
+    # separators is fine anywhere; only a value is a second declaration,
+    # which is why this reads string constants and not the file's text.
+    SPELLINGS = ("\x1f", "\x1e", "chr(31)", "chr(30)")
+
+    def _sources(self):
+        for directory in (self.ROOT, self.ROOT / "citations", self.ROOT / "deploy"):
+            for path in sorted(directory.glob("*.py")):
+                if path.name != "pg_common.py":
+                    yield path
+
+    def test_no_other_module_spells_a_separator_byte(self):
+        for path in self._sources():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            constants = [node.value for node in ast.walk(tree)
+                         if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+            for spelling in self.SPELLINGS:
+                self.assertTrue(
+                    all(spelling not in text for text in constants),
+                    f"{path.name} spells {spelling!r}: import it from pg_common")
+
+    def test_no_other_module_declares_the_separator_names(self):
+        owned = {"FIELD_SEP", "RECORD_SEP", "ROW_ARGS"}
+        for path in self._sources():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            assigned = {
+                target.id
+                for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                for target in node.targets if isinstance(target, ast.Name)
+            }
+            self.assertEqual(assigned & owned, set(),
+                             f"{path.name}: import the separators from pg_common")
+
+    def test_the_row_args_are_the_flags_that_produce_them(self):
+        self.assertEqual(
+            pg_common.ROW_ARGS,
+            ["-t", "-A", "-F", pg_common.FIELD_SEP, "-R", pg_common.RECORD_SEP])
+
+    def test_split_records_keeps_a_multi_line_cell_in_one_record(self):
+        stdout = (f"first{pg_common.FIELD_SEP}line one\nline two{pg_common.RECORD_SEP}"
+                  f"second{pg_common.FIELD_SEP}plain{pg_common.RECORD_SEP}")
+        self.assertEqual(
+            pg_common.split_records(stdout),
+            [f"first{pg_common.FIELD_SEP}line one\nline two",
+             f"second{pg_common.FIELD_SEP}plain"])
 
 
 class ScalarRowExpectedColumnsTests(unittest.TestCase):

@@ -32,7 +32,7 @@ from citations.openalex_client import (
 )
 from citations.store import csv_rows, vector_literal
 from pg_common import sql_literal
-from pg_graph_common import FIELD_SEP, RECORD_SEP
+from pg_common import FIELD_SEP, RECORD_SEP
 
 # Verbatim from research/citation-sources/data/openalex_works_A5066843289_p1.json
 # (W2074536792). Kept whole rather than trimmed: a truncated index would let a

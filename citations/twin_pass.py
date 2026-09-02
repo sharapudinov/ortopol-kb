@@ -27,7 +27,8 @@ from __future__ import annotations
 import json
 
 from pg_common import run_sql
-from pg_graph_common import FIELD_SEP, ROW_ARGS, kind_counts, split_records
+from pg_common import FIELD_SEP, ROW_ARGS, split_records
+from pg_graph_common import kind_counts
 
 from . import journal, twins
 

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""The citation graph's low-level layer: AGE session contract, psql row
-separators, and the projection primitives every consumer shares.
+"""The citation graph's low-level layer: the AGE session contract and the
+projection primitives every consumer shares.
+
+The psql row separators are NOT here: they are the convention every psql
+caller in the repository follows, graph or not, so they live in pg_common
+beside run_sql() and are imported from there (this module included).
 
 Talks to Postgres through psql, like every other pg_*.py script here (see
 pg_common.py for why no driver). AGE's own contract is session-local:
@@ -27,7 +31,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from pg_common import run_sql, run_sql_file, scalar, scalar_row
+from pg_common import FIELD_SEP, run_sql, run_sql_file, scalar, scalar_row
 
 # Applied in this order by init_schema(): data definition first (crawl_step's
 # columns/indexes must exist before anything reads or backfills them), the
@@ -42,22 +46,6 @@ SCHEMA_PATHS = (
 )
 GRAPH_NAME = "citation_graph"
 AGE_PREAMBLE = "LOAD 'age';\nSET search_path = ag_catalog, \"$user\", public;\n"
-
-# How a multi-row graph query's psql output is delimited, and the psql flags
-# that produce it. Here rather than in the query modules because it is the
-# same plumbing graph_sql() is: a title/reason can contain a comma, a tab and
-# a newline, so the separators are the ASCII unit/record ones no source text
-# carries. \x1e is deliberately NOT run through str.splitlines() -- that
-# treats \x1c-\x1e and \x85 as line boundaries too, which is how a
-# multi-line title used to arrive as several rows.
-FIELD_SEP = "\x1f"
-RECORD_SEP = "\x1e"
-ROW_ARGS = ["-t", "-A", "-F", FIELD_SEP, "-R", RECORD_SEP]
-
-
-def split_records(stdout: str) -> list[str]:
-    return [r.strip("\n") for r in stdout.split(RECORD_SEP) if r.strip("\n")]
-
 
 _SCHEMA_EXISTS_SQL = "SELECT to_regclass('citation.work') IS NOT NULL;"
 _KIND_COUNTS_SQL = "SELECT w.kind, count(*) FROM citation.work w{where} GROUP BY 1 ORDER BY 1;"

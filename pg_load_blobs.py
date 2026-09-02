@@ -19,9 +19,8 @@ import sys
 from pathlib import Path
 
 from paths import data_root, default_corpus_dir
-from pg_common import PostgresUnavailable, load_pgenv, run_sql
+from pg_common import FIELD_SEP, PostgresUnavailable, load_pgenv, run_sql
 
-FIELD_SEP = "\x1f"
 
 
 def main(argv: list[str] | None = None) -> int:

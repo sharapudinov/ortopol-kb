@@ -18,6 +18,11 @@ Three mechanisms, all avoiding shell string interpolation of untrusted data:
 - Where neither fits -- a LIST of values inside one statement, for which
   psql has no binding form at all -- sql_literal() builds the quoted
   literal. One implementation, so no call site invents an f-string.
+
+Reading psql's answer is the same kind of shared plumbing, so the row and
+field separators (FIELD_SEP/RECORD_SEP/ROW_ARGS/split_records) live here
+too, and every parser in the repository imports them rather than spelling
+the bytes again.
 """
 from __future__ import annotations
 
@@ -29,6 +34,24 @@ from pathlib import Path
 
 class PostgresUnavailable(RuntimeError):
     pass
+
+
+# How a multi-row psql result is delimited, and the flags that produce it.
+# Here because it is the same kind of plumbing run_sql() is -- every reader
+# in this repository parses psql's output, and a title, a reason or a page
+# of PDF text can contain a comma, a tab and a newline, so the separators
+# are the ASCII unit/record ones no source text carries. \x1e is
+# deliberately NOT run through str.splitlines() -- that treats \x1c-\x1e and
+# \x85 as line boundaries too, which is how a multi-line title used to
+# arrive as several rows. One declaration and one splitter: a second copy
+# drifts the moment one caller's separator changes.
+FIELD_SEP = "\x1f"
+RECORD_SEP = "\x1e"
+ROW_ARGS = ["-t", "-A", "-F", FIELD_SEP, "-R", RECORD_SEP]
+
+
+def split_records(stdout: str) -> list[str]:
+    return [r.strip("\n") for r in stdout.split(RECORD_SEP) if r.strip("\n")]
 
 
 def load_pgenv(pgenv_path: Path) -> dict[str, str]:
@@ -142,7 +165,7 @@ def scalar_row(
     env: dict[str, str],
     sql: str,
     variables: dict[str, str] | None = None,
-    field_sep: str = "\x1f",
+    field_sep: str = FIELD_SEP,
     expected_columns: int | None = None,
 ) -> list[str]:
     """Run a SQL script expected to return exactly one row and split its

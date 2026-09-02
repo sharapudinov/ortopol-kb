@@ -27,7 +27,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from pg_common import PostgresUnavailable, load_pgenv, row_or_none, run_sql
+from pg_common import (
+    FIELD_SEP, PostgresUnavailable, RECORD_SEP, load_pgenv, row_or_none, run_sql,
+)
 
 # paths.py is repo-specific (walks up looking for a theory/iis/ data tree,
 # meaningless outside a checkout) and is deliberately NOT bundled into the self-
@@ -44,8 +46,6 @@ OLLAMA_URL = "http://127.0.0.1:5471/api/embed"
 # request per candidate is one round trip per candidate.
 EMBED_BATCH = 16
 TS_CONFIG = "russian"
-FIELD_SEP = "\x1f"
-RECORD_SEP = "\x1e"
 
 
 _SEARCH_SQL = """

@@ -147,7 +147,7 @@ class CliLayerTests(unittest.TestCase):
     def test_the_plumbing_is_not_defined_here(self):
         defined = {node.name for node in self.TREE.body
                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        for name in ("graph_sql", "split_records", "graph_exists",
+        for name in ("graph_sql", "graph_exists",
                      "projection_reading", "compare_counts", "project",
                      "init_schema"):
             self.assertNotIn(name, defined, f"{name}() belongs to pg_graph_common.py")
@@ -198,7 +198,7 @@ class SharedCitationPlumbingTests(unittest.TestCase):
             self.assertNotIn("citation_schema_exists", functions, path.name)
             self.assertNotIn("kind_counts", functions, path.name)
             self.assertNotIn("counts_by_kind", functions, path.name)
-            self.assertNotIn("FIELD_SEP", assigned, f"{path.name}: import it from pg_graph_common")
+            self.assertNotIn("FIELD_SEP", assigned, f"{path.name}: import it from pg_common")
 
     def test_neither_consumer_carries_its_own_copy_of_the_queries(self):
         for path in self.CONSUMERS:

@@ -19,7 +19,7 @@ corpus/cache/openalex (meta.count батчей — их считает hub_cache
 from __future__ import annotations
 
 from pg_common import run_sql
-from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
+from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
 SPIKE = "research/citation-frontier-hub-expansion"
 REPORT_PATH = "research/citation-frontier/hub-expansion.md"

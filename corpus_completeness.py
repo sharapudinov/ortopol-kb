@@ -29,9 +29,9 @@ from external_registry import REGISTRY_FILENAME
 from external_checks import external_problems
 from citation_checks import citation_problems, citation_summary
 from paths import data_root, default_corpus_dir
-from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
-
-FIELD_SEP = "\x1f"
+from pg_common import (
+    FIELD_SEP, PostgresUnavailable, check_postgres_available, load_pgenv, run_sql,
+)
 
 # Правила классификации, в порядке применения. Первое совпавшее решает.
 # (предикат по относительному пути, вердикт, причина/вид)

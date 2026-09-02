@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pg_graph_common
 import pg_search
-from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
+from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
 
 # ------------------------------------------------------------- candidates --

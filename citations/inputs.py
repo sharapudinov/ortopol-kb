@@ -19,7 +19,7 @@ import json
 
 from paths import IIS_SOURCE_DIR
 from pg_common import run_sql, scalar, sql_literal
-from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
+from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
 # The measurement that established which OpenAlex/zbMATH record each of our
 # documents is (measurements.citation_source_coverage). A run number, i.e. a

@@ -17,7 +17,7 @@ import _pathfix  # noqa: F401
 import paths
 import pg_load_citations
 from citations import inputs
-from pg_graph_common import FIELD_SEP, RECORD_SEP
+from pg_common import FIELD_SEP, RECORD_SEP
 
 CITATIONS_DIR = Path(inputs.__file__).resolve().parent
 LOADER = Path(pg_load_citations.__file__).resolve()
@@ -92,7 +92,7 @@ class SeedPredicateTests(unittest.TestCase):
 
 
 class RowProtocolTests(unittest.TestCase):
-    """The psql row protocol is pg_graph_common's, for the crawl too.
+    """The psql row protocol is pg_common's, for the crawl too.
 
     A title, an abstract or a reason can carry a comma, a tab and a newline,
     and third-party titles from OpenAlex/zbMATH/Math-Net are exactly what
@@ -110,7 +110,7 @@ class RowProtocolTests(unittest.TestCase):
             for sep, name in (("\x1f", "FIELD_SEP"), ("\x1e", "RECORD_SEP")):
                 self.assertNotIn(
                     sep, text,
-                    f"{path.name}: import {name} from pg_graph_common")
+                    f"{path.name}: import {name} from pg_common")
 
     def test_no_module_cuts_psql_output_into_lines(self):
         for path in self.MODULES:
@@ -134,7 +134,7 @@ class RowProtocolTests(unittest.TestCase):
                     continue
                 self.assertTrue(
                     isinstance(node.value, ast.Name) and node.value.id == "ROW_ARGS",
-                    f"{path.name}: extra_args must be pg_graph_common.ROW_ARGS")
+                    f"{path.name}: extra_args must be pg_common.ROW_ARGS")
 
 
 class ScoringIsDependencyFreeTests(unittest.TestCase):

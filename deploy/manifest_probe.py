@@ -36,7 +36,7 @@ from manifest_contract import (  # noqa: E402
     schemas_for,
 )
 from ollama_registry import served_model_digest  # noqa: E402
-from pg_common import scalar, scalar_row  # noqa: E402
+from pg_common import FIELD_SEP, scalar, scalar_row  # noqa: E402
 
 FULLTEXT_PROBE_QUERY = "повторные средние"
 
@@ -127,8 +127,8 @@ SELECT
 # only way this guard sees what phraseto_tsquery sees. chr(31) (ASCII unit
 # separator) joins the result: real Russian lexemes never contain it, unlike
 # a comma.
-_TOKEN_OVERLAP_SQL = """
-SELECT coalesce(string_agg(DISTINCT lexeme, chr(31)), '')
+_TOKEN_OVERLAP_SQL = f"""
+SELECT coalesce(string_agg(DISTINCT lexeme, chr({ord(FIELD_SEP)})), '')
 FROM (
     SELECT lexeme FROM unnest(to_tsvector('russian', :'q'))
     INTERSECT
@@ -145,7 +145,7 @@ def _stemmed_token_overlap(env: dict, query: str, document_id: str, page_number:
         env, _TOKEN_OVERLAP_SQL,
         variables={"q": query, "doc": document_id, "page": str(int(page_number))},
     )
-    return sorted(raw.split("\x1f")) if raw else []
+    return sorted(raw.split(FIELD_SEP)) if raw else []
 
 
 def gather_manifest(
