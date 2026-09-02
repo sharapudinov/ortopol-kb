@@ -27,7 +27,7 @@ import legal_profile  # noqa: E402
 import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key  # noqa: E402
-from manifest_contract import CitationMode, Profile, schemas_for  # noqa: E402
+from manifest_contract import Profile, schemas_for, ships_citation  # noqa: E402
 from ollama_registry import served_model_digest  # noqa: E402
 from pg_common import FIELD_SEP, scalar, scalar_row  # noqa: E402
 from probe_query import VECTOR_PROBE_QUERY  # noqa: E402
@@ -64,7 +64,10 @@ def _citation_block(env: dict, mode: str, public: bool, policy_source: str) -> d
     """
     block = {Key.CITATION_MODE: mode, Key.CITATION_POLICY_SOURCE: policy_source,
              Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {}}
-    if mode == CitationMode.NONE:
+    # manifest_contract.ships_citation(), the predicate the dump itself is
+    # written by: a mode that carries no citation byte must not have the
+    # live schema's counts stamped into the block describing it.
+    if not ships_citation(mode):
         return block
     work_n, cites_n, by_kind = citation_profile.citation_counts(env, shipped_only=public)
     block.update({Key.WORK_COUNT: work_n, Key.CITES_COUNT: cites_n,

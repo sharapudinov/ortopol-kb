@@ -23,7 +23,7 @@ from manifest_keys import (  # noqa: E402,F401 -- MANIFEST_SCHEMA_VERSION re-exp
     MANIFEST_SCHEMA_VERSION,
     Key,
 )
-from manifest_contract import CitationMode  # noqa: E402
+from manifest_contract import ships_citation  # noqa: E402
 from ollama_registry import served_model_digest  # noqa: E402
 import pg_graph_common  # noqa: E402
 from pg_common import scalar, scalar_row  # noqa: E402
@@ -153,16 +153,18 @@ def check_citation_projection(env: dict, manifest: dict) -> tuple[bool | None, s
     declares -- confirms deploy/init/02_project_graph.sql actually ran, the
     way check_measurements_run confirms 01_dump.sql.gz did.
 
-    SKIP (None), not FAIL, when the artifact's manifest declares no shipped
-    citation mode (an older artifact predating the citation schema, or one built under
-    CitationMode.NONE): there is no graph to have projected, and querying
+    SKIP (None), not FAIL, when manifest_contract.ships_citation() says
+    this artifact's mode carries no citation schema (an older artifact
+    predating it, or one built under a mode that ships nothing -- the same
+    allowlist the dump was written by): there is no graph to have
+    projected, and querying
     ag_catalog/citation_graph against a database that never created either
     would be a psql error that says nothing about the package's health --
     same convention as check_measurements_run for the public profile.
     """
     citation = manifest.get(Key.CITATION, {})
     mode = citation.get(Key.CITATION_MODE)
-    if mode is None or mode == CitationMode.NONE:
+    if not ships_citation(mode):
         return None, f"citation mode={mode!r} -- профиль не несёт граф, проверять нечего"
     seen = pg_graph_common.projection_diff(env)
     if seen is None:

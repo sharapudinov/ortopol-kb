@@ -24,7 +24,8 @@ the same external fact by different routes, and pg_dump tolerates a
 produced a manifest describing a schema set its own dump lacks, which is
 what MANIFEST_DESCRIBES_ARTIFACT exists to forbid.
 
-Beyond schemas_for(), base_schemas_for() and strips_content() -- each of
+Beyond schemas_for(), base_schemas_for(), ships_citation() and
+strips_content() -- each of
 them a question two sides of the build would otherwise answer independently
 -- this module holds no logic, and imports only citation_vocab (which
 imports nothing at all):
@@ -135,6 +136,26 @@ class CitationMode(PublicPolicyMode):
     FULL_CONTENT = (PublicPolicyMode.FULL_SKELETON,)
 
 
+def ships_citation(mode: str | None) -> bool:
+    """Whether an artifact built under `mode` carries the citation schema at
+    all -- the one authority for that question, read by the bytes
+    (citation_dump.dump_citation), by their description (schemas_for below,
+    manifest_probe._citation_block) and by both verifiers
+    (citation_content_checks, deploy/smoke_checks).
+
+    Asked as "is this mode declared shipping", never as "is it NONE".
+    CitationMode.ALL is INHERITED from the column's own vocabulary and grows
+    with it; SHIPPED is hand-written on purpose, so a mode nobody here has
+    heard of ships nothing and declares nothing. Spelled `!= NONE` at four
+    of the six sites, the halves disagreed the moment a fifth mode existed:
+    the dump wrote no citation byte while the manifest stamped the live
+    work/cites counts into it -- MANIFEST_DESCRIBES_ARTIFACT broken by the
+    packager silently, and certification failed at the recipient on a build
+    reported as successful.
+    """
+    return mode in CitationMode.SHIPPED
+
+
 def strips_content(mode: str | None) -> bool:
     """Whether a dump built under `mode` must blank the content columns.
 
@@ -200,6 +221,6 @@ def schemas_for(profile: str, citation_mode: str) -> list[str]:
     if citation_mode not in CitationMode.ALL:
         raise ValueError(
             f"unknown citation mode {citation_mode!r} -- expected one of {CitationMode.ALL}")
-    if citation_mode in CitationMode.SHIPPED:
+    if ships_citation(citation_mode):
         schemas.append("citation")
     return schemas

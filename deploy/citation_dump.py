@@ -55,7 +55,7 @@ from schema_catalog import (
     setval_sql,
 )
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
-from manifest_contract import CitationMode, strips_content
+from manifest_contract import ships_citation, strips_content
 from pg_stream import stream_stdout
 
 SCHEMA = "citation"
@@ -174,16 +174,17 @@ def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
     """Writes the citation schema's DDL + every table's COPY block for
     `mode`, or writes nothing at all under a mode that does not ship it.
 
-    The allowlist is the same one manifest_contract.schemas_for() reads to
-    decide whether manifest.json declares the schema -- one predicate, so
-    the bytes and their description cannot disagree. Keyed on `== NONE` it
-    was a denylist beside an allowlist: CitationMode.ALL grows with the
-    database's own vocabulary (it is inherited, deliberately), SHIPPED is
-    hand-written, and a fourth mode would have been omitted from the
-    manifest and written into the dump anyway -- third-party titles in a
-    package whose manifest denies carrying them.
+    The predicate is manifest_contract.ships_citation(), the same one
+    schemas_for() reads to decide whether manifest.json declares the schema
+    -- one authority, so the bytes and their description cannot disagree.
+    Keyed on `== NONE` it was a denylist beside an allowlist:
+    CitationMode.ALL grows with the database's own vocabulary (it is
+    inherited, deliberately), SHIPPED is hand-written, and a fourth mode
+    would have been omitted from the manifest and written into the dump
+    anyway -- third-party titles in a package whose manifest denies
+    carrying them.
     """
-    if mode not in CitationMode.SHIPPED:
+    if not ships_citation(mode):
         return
     dump_ddl(env, dst)
     dst.write(b"\n")

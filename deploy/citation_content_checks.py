@@ -7,8 +7,9 @@ that claim.
 
 Checks:
 
-  schema/counts agree     the dump carries (or, under CitationMode.NONE,
-                           carries NEITHER of) citation.work/citation.cites,
+  schema/counts agree     the dump carries (or, under a mode that ships
+                           nothing, carries NEITHER of)
+                           citation.work/citation.cites,
                            and their row counts equal
                            manifest.citation.work_count/cites_count
   content is stripped     no row of any dumped table carries a non-empty
@@ -46,7 +47,7 @@ from __future__ import annotations
 import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
 from manifest_keys import Key
-from manifest_contract import CitationMode, strips_content
+from manifest_contract import ships_citation, strips_content
 
 # How many offending rows the verdict quotes. The count is exact; the list
 # is a sample, because the scan that fills it runs over citation.crawl_step
@@ -172,8 +173,11 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
 
 
 def _ships_citation(manifest: dict) -> bool:
-    mode = manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE)
-    return mode is not None and mode != CitationMode.NONE
+    """manifest_contract.ships_citation() over this manifest's block -- the
+    same allowlist the dump was written by, so a mode neither side has heard
+    of leaves the checks demanding an absent schema rather than exempting
+    themselves."""
+    return ships_citation(manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE))
 
 
 def check_work_documents_are_in_the_dump(manifest: dict, facts: dict) -> tuple[bool, str]:
@@ -215,7 +219,7 @@ def check_citation_schema_matches_mode(manifest: dict, scans: dict) -> tuple[boo
     citation = manifest.get(Key.CITATION, {})
     mode = citation.get(Key.CITATION_MODE)
     present = {WORK_TABLE, CITES_TABLE} & set(scans)
-    if mode == CitationMode.NONE or mode is None:
+    if not ships_citation(mode):
         ok = not present
         return ok, f"mode={mode!r}, citation table(s) in dump: {sorted(present) or 'none'}"
     work_rows = scans[WORK_TABLE].rows if WORK_TABLE in scans else 0
