@@ -47,6 +47,7 @@ from citations.inputs import (
 from citations.seed_metadata import mathnet_names, zbmath_abstracts
 from citations.store import DryRunWriter, PostgresWriter
 from paths import (
+    data_root,
     default_cache_dir,
     default_corpus_dir,
     default_mathnet_cache_dir,
@@ -87,7 +88,7 @@ def do_merge_twins(env, args) -> int:
     return 0
 
 
-def do_hub_report(env, args, data_root: Path, writer) -> int:
+def do_hub_report(env, args, tree_root: Path, writer) -> int:
     """Замер цены расширения вверх: что записано и что об этом сказано.
 
     Каталог кэша проверяется ЗДЕСЬ и до того, как объект кэша построен:
@@ -105,7 +106,7 @@ def do_hub_report(env, args, data_root: Path, writer) -> int:
         return 1
     cache = cache_for(cache_path, read_only=args.dry_run)
     try:
-        record = record_hub_report(env, cache, data_root, writer, args.hub_cap)
+        record = record_hub_report(env, cache, tree_root, writer, args.hub_cap)
     except NothingToMeasure as exc:
         print(f"{exc} (кэш {cache_path})", file=sys.stderr)
         return 1
@@ -124,10 +125,10 @@ def do_hub_report(env, args, data_root: Path, writer) -> int:
     return 0
 
 
-def do_calibrate(snowball: Snowball, client, data_root: Path, writer) -> int:
+def do_calibrate(snowball: Snowball, client, tree_root: Path, writer) -> int:
     """Калибровка порога: тот же порядок — записать, потом рассказать."""
     try:
-        record = record_calibration(snowball, data_root, writer)
+        record = record_calibration(snowball, tree_root, writer)
     except NothingToMeasure as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -232,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Оба режима ниже считают по уже записанному и кэшу: ни семян, ни сети.
     if args.hub_report:
-        return do_hub_report(env, args, corpus_dir.parent, measurements)
+        return do_hub_report(env, args, data_root(), measurements)
     if args.merge_twins:
         return do_merge_twins(env, args)
 
@@ -272,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"семян: {len(snowball.seed_keys)}; "
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:
-            return do_calibrate(snowball, client, corpus_dir.parent, measurements)
+            return do_calibrate(snowball, client, data_root(), measurements)
         return do_crawl(env, snowball, client, args)
     except QuotaExhausted as exc:
         _journal_error(writer, crawl_id, args.depth, exc)

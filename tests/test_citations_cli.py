@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
+import paths
 
 import pg_graph_common
 import pg_load_citations
@@ -298,6 +299,26 @@ class HubReportCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("18904", said)
         harness.upsert_run.assert_not_called()
+
+    def test_the_report_root_is_the_one_paths_resolves(self):
+        """paths.py owns "where the data tree is", and it locates it by a
+        marker (theory/iis/) rather than by position. Inverting
+        default_corpus_dir() with .parent re-derives the same fact from an
+        assumption about the corpus directory's place, and would put the
+        reports one directory off the day that assumption changes.
+        """
+        record = spike_runs.HubRecord([1], 7, [], pathlib.Path("research/r.md"))
+        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
+            _MainHarness(stack)
+            report = stack.enter_context(mock.patch.object(
+                pg_load_citations, "record_hub_report", return_value=record))
+            stack.enter_context(mock.patch.object(
+                pg_load_citations, "default_corpus_dir",
+                return_value=pathlib.Path(cache) / "elsewhere" / "corpus"))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            code = pg_load_citations.main(["--hub-report", "--cache-dir", cache])
+        self.assertEqual(code, 0)
+        self.assertEqual(report.call_args[0][2], paths.data_root())
 
     def test_a_real_run_prints_the_run_it_wrote(self):
         """Also the complement to the dry-run guard above: a run that is not
