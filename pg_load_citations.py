@@ -45,6 +45,7 @@ from citations.inputs import (
     seed_matches,
 )
 from citations.seed_metadata import mathnet_names, zbmath_abstracts
+from citation_vocab import CrawlAction
 from citations.store import DryRunWriter, PostgresWriter
 from paths import (
     data_root,
@@ -160,8 +161,8 @@ def do_crawl(env, snowball: Snowball, client, args) -> int:
 def _journal_error(writer, crawl_id: str, depth: int, exc: Exception) -> None:
     """Одна строка журнала об оборванном прогоне -- через тот же шов, что и
     всё остальное, поэтому под --dry-run её тоже никто не пишет."""
-    writer.journal([{"crawl_id": crawl_id, "depth": depth, "action": "error",
-                     "reason": str(exc)}])
+    writer.journal([{"crawl_id": crawl_id, "depth": depth,
+                     "action": CrawlAction.ERROR, "reason": str(exc)}])
 
 
 def main(argv: list[str] | None = None) -> int:

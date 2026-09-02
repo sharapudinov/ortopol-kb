@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 
+from citation_vocab import WorkKind
+
 
 WORK_COLUMNS = (
     "key", "doi", "title", "abstract", "year", "authors", "external_ids",
@@ -43,7 +45,7 @@ CREATE TEMP TABLE stage_work (
     document_id TEXT, evidence JSONB, embedding vector(1024)) ON COMMIT DROP;
 """
 
-WORK_UPSERT = """
+WORK_UPSERT = f"""
 WITH upserted AS (
 INSERT INTO citation.work
     (key, doi, title, abstract, year, authors, external_ids, source, kind,
@@ -59,8 +61,9 @@ ON CONFLICT (key) DO UPDATE SET
     authors      = COALESCE(EXCLUDED.authors, citation.work.authors),
     external_ids = COALESCE(EXCLUDED.external_ids, citation.work.external_ids),
     source       = EXCLUDED.source,
-    kind         = CASE WHEN citation.work.kind IN ('our-document', 'indexed')
-                         AND EXCLUDED.kind = 'external-skeleton'
+    kind         = CASE WHEN citation.work.kind IN ('{WorkKind.OUR_DOCUMENT}',
+                                                    '{WorkKind.INDEXED}')
+                         AND EXCLUDED.kind = '{WorkKind.EXTERNAL_SKELETON}'
                         THEN citation.work.kind ELSE EXCLUDED.kind END,
     document_id  = COALESCE(EXCLUDED.document_id, citation.work.document_id),
     evidence     = EXCLUDED.evidence,
@@ -99,12 +102,12 @@ CREATE TEMP TABLE stage_twin (
     key TEXT, document_id TEXT, seed_key TEXT, rule TEXT) ON COMMIT DROP;
 """
 
-PROMOTE_UPDATE = """
+PROMOTE_UPDATE = f"""
 WITH promoted AS (
 UPDATE citation.work w
-SET kind = 'our-document',
+SET kind = '{WorkKind.OUR_DOCUMENT}',
     document_id = s.document_id,
-    evidence = coalesce(w.evidence, '{}'::jsonb)
+    evidence = coalesce(w.evidence, '{{}}'::jsonb)
                || jsonb_build_object('twin_of', s.seed_key, 'twin_rule', s.rule)
 FROM stage_twin s
 WHERE w.key = s.key

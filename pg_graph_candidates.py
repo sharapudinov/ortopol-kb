@@ -23,12 +23,13 @@ import sys
 
 import pg_graph_common
 import pg_search
+from citation_vocab import WorkKind
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
 
 _CENTROID_EXPR = (
     "(SELECT avg(embedding) FROM citation.work "
-    "WHERE kind = 'our-document' AND embedding IS NOT NULL)"
+    f"WHERE kind = '{WorkKind.OUR_DOCUMENT}' AND embedding IS NOT NULL)"
 )
 
 # Input for external-literature triage: external-skeleton nodes ranked by
@@ -98,7 +99,7 @@ WITH links AS (
     FROM (SELECT citing AS id, cited AS other FROM citation.cites
           UNION ALL
           SELECT cited AS id, citing AS other FROM citation.cites) e
-    JOIN citation.work o ON o.id = e.other AND o.kind = 'our-document'
+    JOIN citation.work o ON o.id = e.other AND o.kind = '{our_document}'
     GROUP BY e.id
 ),
 target AS MATERIALIZED (
@@ -111,7 +112,7 @@ nearest AS (
         SELECT w.id, w.key, w.year, w.title,
                1 - (w.embedding <=> t.v) AS score
         FROM citation.work w
-        WHERE w.kind = 'external-skeleton' AND w.embedding IS NOT NULL
+        WHERE w.kind = '{external_skeleton}' AND w.embedding IS NOT NULL
         ORDER BY w.embedding <=> t.v
         LIMIT :top
     ) n
@@ -130,7 +131,9 @@ _LINKS_CUT = "JOIN links l ON l.id = n.id AND l.n >= :min_links"
 def build_candidates_sql(target_expr: str, min_links: int) -> str:
     return _CANDIDATES_SQL.format(
         target_expr=target_expr,
-        links_join=_LINKS_CUT if min_links > 0 else _LINKS_KEPT)
+        links_join=_LINKS_CUT if min_links > 0 else _LINKS_KEPT,
+        our_document=WorkKind.OUR_DOCUMENT,
+        external_skeleton=WorkKind.EXTERNAL_SKELETON)
 
 
 def rank_candidates(rows: list[dict], min_links: int = 0, top: int | None = None) -> list[dict]:

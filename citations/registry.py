@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
+from citation_vocab import WorkKind
 from .openalex_client import restore_abstract, short_id
 
 ID_FIELDS = ("openalex", "doi", "mag", "pmid", "pmcid")
@@ -225,7 +226,7 @@ class WorkRegistry:
         if existing_key is not None:
             node = self.nodes[existing_key]
             node.absorb(record)
-            if kind == "our-document":
+            if kind == WorkKind.OUR_DOCUMENT:
                 node.kind, node.document_id = kind, document_id or node.document_id
             self._reindex(node)
             return node, False

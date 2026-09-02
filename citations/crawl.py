@@ -32,6 +32,7 @@ calibration never saw is a query, not a re-crawl:
 """
 from __future__ import annotations
 
+from citation_vocab import CrawlAction, WorkKind
 from . import edges as edges_mod
 from . import gathering, journal, seeding
 from .frontier import vectors_for as frontier_vectors
@@ -221,7 +222,7 @@ class Snowball:
                     self.tau, item["relation"], item["discovered_from"]))
                 continue
             node, is_new = self.registry.add(
-                item["record"], kind="external-skeleton", depth=depth,
+                item["record"], kind=WorkKind.EXTERNAL_SKELETON, depth=depth,
                 relation=item["relation"], discovered_from=item["discovered_from"])
             # Two kept candidates can be one work: score() cannot know that,
             # because the twin union only happens on add(). The second record
@@ -257,7 +258,7 @@ class Snowball:
         edges = edges_mod.among_known(self.registry, frontier_keys, candidates, references)
         self.writer.edges(edges)
         self.writer.journal(steps)
-        kept_rows = sum(1 for s in steps if s["action"] == "keep")
+        kept_rows = sum(1 for s in steps if s["action"] == CrawlAction.KEEP)
         self.per_depth[depth] = {"candidates": len(scored), "kept": kept_rows,
                                  "nodes": len(kept_keys),
                                  "dropped": len(scored) - kept_rows,

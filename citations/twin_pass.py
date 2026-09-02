@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 
+from citation_vocab import WorkKind
 from pg_common import run_sql
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
 from pg_graph_common import kind_counts
@@ -42,7 +43,8 @@ def corpus_years(env) -> dict[str, list[int]]:
     out = run_sql(
         env,
         "SELECT document_id, coalesce(external_ids->>'years', '[]') "
-        "FROM citation.work WHERE kind = 'our-document' AND document_id IS NOT NULL;",
+        f"FROM citation.work WHERE kind = '{WorkKind.OUR_DOCUMENT}' "
+        "AND document_id IS NOT NULL;",
         extra_args=ROW_ARGS,
     ).stdout
     years: dict[str, list[int]] = {}
@@ -68,7 +70,8 @@ def seed_titles(env) -> list[dict]:
         "CASE WHEN d.source_url LIKE '%mathnet.ru%' "
         "     THEN lower(regexp_replace(d.source_url, '^.*/', '')) ELSE '' END "
         "FROM citation.work w JOIN corpus.documents d ON d.id = w.document_id "
-        "WHERE w.kind = 'our-document' AND w.document_id IS NOT NULL ORDER BY w.key;",
+        f"WHERE w.kind = '{WorkKind.OUR_DOCUMENT}' AND w.document_id IS NOT NULL "
+        "ORDER BY w.key;",
         extra_args=ROW_ARGS,
     ).stdout
     seeds = []
@@ -90,7 +93,7 @@ def skeleton_nodes(env):
     out = run_sql(
         env,
         "SELECT key, coalesce(title, ''), coalesce(year::text, ''), coalesce(doi, '') "
-        "FROM citation.work WHERE kind = 'external-skeleton' ORDER BY key;",
+        f"FROM citation.work WHERE kind = '{WorkKind.EXTERNAL_SKELETON}' ORDER BY key;",
         extra_args=ROW_ARGS,
     ).stdout
     rows = []

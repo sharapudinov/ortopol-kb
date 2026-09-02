@@ -30,25 +30,41 @@ edit.
 """
 from __future__ import annotations
 
+from citation_vocab import CrawlAction
+
 
 def _step(crawl_id, depth, action, **fields) -> dict:
+    """One journal row, with its action checked against the vocabulary.
+
+    Checked HERE, not by the database: the journal travels as a bulk COPY
+    (citations/store.py), which is all-or-nothing, so a value the CHECK
+    rejects loses the whole level's audit record after its work rows and
+    edges have already been written. The two spellings of the vocabulary --
+    citation_vocab.CrawlAction and pg_schema_citation.sql's constraint --
+    are held together by tests/test_citation_vocab.py.
+    """
+    if action not in CrawlAction.ALL:
+        raise ValueError(
+            f"unknown crawl_step.action {action!r} -- one of {CrawlAction.ALL}; "
+            "a new kind of decision is a value in citation_vocab.CrawlAction "
+            "AND in pg_schema_citation.sql's crawl_step_action_check")
     step = {"crawl_id": crawl_id, "depth": depth, "action": action}
     step.update({k: v for k, v in fields.items() if v is not None})
     return step
 
 
 def seed(crawl_id, document_id, key) -> dict:
-    return _step(crawl_id, 0, "seed", frontier_key=document_id,
+    return _step(crawl_id, 0, CrawlAction.SEED, frontier_key=document_id,
                  candidate_key=key, n_found=1, n_kept=1)
 
 
 def seed_missing(crawl_id, document_id) -> dict:
-    return _step(crawl_id, 0, "seed-missing", frontier_key=document_id,
+    return _step(crawl_id, 0, CrawlAction.SEED_MISSING, frontier_key=document_id,
                  reason="not in OpenAlex (run 85)")
 
 
 def seed_error(crawl_id, document_id, openalex_id) -> dict:
-    return _step(crawl_id, 0, "error", frontier_key=document_id,
+    return _step(crawl_id, 0, CrawlAction.ERROR, frontier_key=document_id,
                  candidate_key=openalex_id,
                  reason="матч run 85 не отдан OpenAlex по openalex_id")
 
@@ -61,7 +77,7 @@ def zbmath_error(crawl_id, document_id, zbmath_id, reason) -> dict:
     it a transient 429 during the seeding pass is indistinguishable, forever
     after, from a work zbMATH genuinely does not review.
     """
-    return _step(crawl_id, 0, "error", frontier_key=document_id,
+    return _step(crawl_id, 0, CrawlAction.ERROR, frontier_key=document_id,
                  candidate_key=zbmath_id, reason=f"zbmath: {reason}")
 
 
@@ -70,7 +86,7 @@ def keep(crawl_id, depth, candidate_key, node_key, score, tau, relation,
     """`node_key` is the registry node the candidate was merged into -- two
     OpenAlex records of one work share a node, so it is not always the
     candidate's own key, and it is the name the graph actually carries."""
-    return _step(crawl_id, depth, "keep", frontier_key=frontier_key or None,
+    return _step(crawl_id, depth, CrawlAction.KEEP, frontier_key=frontier_key or None,
                  candidate_key=candidate_key, node_key=node_key,
                  score=score, tau=tau, relation=relation, reason="kept")
 
@@ -79,13 +95,13 @@ def drop(crawl_id, depth, candidate_key, score, tau, relation,
          frontier_key=None) -> dict:
     """No node_key: a dropped candidate becomes no node, which is exactly
     what the empty column says about it."""
-    return _step(crawl_id, depth, "drop", frontier_key=frontier_key or None,
+    return _step(crawl_id, depth, CrawlAction.DROP, frontier_key=frontier_key or None,
                  candidate_key=candidate_key, score=score, tau=tau,
                  relation=relation, reason="below-threshold")
 
 
 def fetch(crawl_id, depth, frontier_key, n_found, n_kept) -> dict:
-    return _step(crawl_id, depth, "fetch", frontier_key=frontier_key,
+    return _step(crawl_id, depth, CrawlAction.FETCH, frontier_key=frontier_key,
                  n_found=n_found, n_kept=n_kept)
 
 
@@ -97,7 +113,7 @@ def hub_skip(crawl_id, depth, frontier_key, cited_by_count, cap) -> dict:
     the run's own `--hub-cap`, recorded for a human reading one row, and
     nothing queries it.
     """
-    return _step(crawl_id, depth, "hub-skip", frontier_key=frontier_key,
+    return _step(crawl_id, depth, CrawlAction.HUB_SKIP, frontier_key=frontier_key,
                  node_key=frontier_key, cited_by_count=cited_by_count,
                  reason=f"цитирующих больше порога хабов ({cap})")
 
@@ -113,6 +129,6 @@ def twin(crawl_id, candidate_key, document_id, seed_key) -> dict:
     out to BE (node_key) -- that last one is what "the node this decision
     resolved to" means for a promotion.
     """
-    return _step(crawl_id, 0, "keep", frontier_key=document_id,
+    return _step(crawl_id, 0, CrawlAction.KEEP, frontier_key=document_id,
                  candidate_key=candidate_key, node_key=seed_key,
                  reason="двойник нашей работы")

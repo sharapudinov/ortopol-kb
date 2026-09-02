@@ -83,6 +83,12 @@ CORPUS_LIB_FILES = [
     # the CLI left every documented graph query raising ModuleNotFoundError
     # on a package whose own guide says it can answer them.
     "pg_graph_candidates.py",
+    # ... and the two closed vocabularies of the schema those queries name
+    # (citation.work.kind here), declared once for both sides of the
+    # boundary -- see citation_vocab.py's own docstring for why it is a
+    # root module rather than part of citations/, which deliberately does
+    # not travel.
+    "citation_vocab.py",
     "pg_graph_cocitation.py",
     "pg_graph_cypher.py",
     # ... and the three schema files `pg_graph.py init` applies, in order

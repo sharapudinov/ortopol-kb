@@ -63,13 +63,36 @@ GRAPH_IS_PROJECTION [HARD, 2026-09-02]: истина графа цитирова
 CITATION_POLICY_IS_DATA [HARD, 2026-09-02]: режим схемы citation в профиле public —
   строка citation.public_policy (full-skeleton | topology-only | none), пишет
   владелец; без строки public-сборка отказывается (тот же принцип, что
-  UNCLASSIFIED_FAILS_BUILD). Флаг --policy-override существует только для
+  UNCLASSIFIED_FAILS_BUILD). ОТСУТСТВИЕ САМОЙ СХЕМЫ — тот же отказ, а не
+  «нечего везти»: «граф не уезжает» — это режим none, записанный владельцем
+  в существующей схеме, и со стороны артефакта два случая неразличимы
+  (schemas_for(public, none) объявляет только corpus, citation_content_checks
+  проходят вхолостую, смок SKIP-ает) — то есть пакетировщик решил бы
+  умолчанием вопрос владельца. Профиль full — обратный случай: он не
+  применяет политику и описывает базу как есть, поэтому на базе без схемы
+  честно даёт none/not-applicable.
+  Флаг --policy-override существует только для
   проверок и никогда не даёт артефакт с именем kb-public-*: такая сборка
   называется kb-override-<профиль>-<дата>, ВНЕ пространства имён профиля,
   чтобы её не достал ни один отбор по имени (glob kb-public-*, скрипт
   публикации, человек в листинге). Суффикс ВНУТРИ пространства
   (kb-public-override-...) доставался всеми тремя и сортировался ПОЗЖЕ
-  настоящего артефакта той же даты.
+  настоящего артефакта той же даты. Схему он тоже не заменяет: override
+  называет режим для схемы, которая ЕСТЬ.
+VOCABULARY_ONE_DECLARATION [HARD, 2026-09-02]: закрытый словарь колонки
+  (citation.work.kind, citation.crawl_step.action) объявлен ОДИН раз на
+  Python-стороне (citation_vocab.WorkKind / CrawlAction), SQL CHECK его
+  зеркалит, а держит их вместе живой тест (tests/test_citation_vocab.py,
+  сравнение с pg_get_constraintdef в ОБЕ стороны) плюс AST-скан: строковый
+  литерал словаря запрещён во всех модулях, называющих схему citation
+  (в позиции значения или внутри SQL-строки; проза в docstring — можно).
+  Причина: журнал уезжает bulk COPY «всё или ничего», поэтому новое значение
+  action, не добавленное в CHECK, теряет ВЕСЬ журнал уровня уже после того,
+  как записаны work-строки и рёбра. Новое значение = строка в citation_vocab
+  И в pg_schema_citation.sql, одним коммитом. citation_vocab.py — КОРНЕВОЙ
+  модуль (DEPENDENCY_DIRECTION: общие инструменты не импортируют citations/,
+  а словарь нужен и citation_checks, и графовым запросам, которые уезжают
+  в артефакт).
 DRY_RUN_WRITES_NOTHING [HARD, 2026-09-02]: `--dry-run` у pg_load_citations.py
   означает НИ ОДНОЙ записи — ни в citation.*, ни в measurements.*, ни в дерево
   данных, ни DDL. Схему в этом режиме не применяют (это ALTER/CREATE на живой
@@ -141,7 +164,7 @@ SNOWBALL_FRONTIER [2026-09-02, измерено run 89/93]: обход расш�
 Любая правка закрывается этим (из корня репозитория):
 
 ```bash
-python3 -m unittest discover -s tests -t tests            # 999 тестов, exit 0
+python3 -m unittest discover -s tests -t tests            # 1009 тестов, exit 0
 set -a; . ../corpus/.pgenv; set +a
 python3 corpus_completeness.py                            # exit 0
 ```

@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS citation.work (
     --   (kept distinct from our-document, which means "one of the 68/4 IIS
     --   works", not "we happened to read this one too").
     -- excluded: considered and rejected by the crawl filter.
+    -- The same four values are declared once on the Python side, in
+    -- citation_vocab.WorkKind; tests/test_citation_vocab.py compares this
+    -- CHECK against them in both directions, so an extra, missing or
+    -- renamed value fails there rather than at a COPY.
     kind              TEXT NOT NULL CHECK (kind IN ('our-document', 'external-skeleton', 'indexed', 'excluded')),
     document_id       TEXT REFERENCES corpus.documents(id) ON DELETE SET NULL,
     exclusion_reason  TEXT,
@@ -166,6 +170,10 @@ ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS cited_by_count BIGINT;
 -- ~100k rows per depth-2 crawl. Value-idempotent DROP+ADD was never the
 -- gap; the gap was paying a full validation scan to arrive at the
 -- constraint that was already there.
+--
+-- The same seven values are declared once on the Python side, in
+-- citation_vocab.CrawlAction, which is where the crawl reads them from;
+-- tests/test_citation_vocab.py compares the two in both directions.
 --
 -- Compared as the VOCABULARY, not as text: pg_get_constraintdef() renders
 -- the same CHECK as `action = ANY (ARRAY[...])`, and its exact spelling is

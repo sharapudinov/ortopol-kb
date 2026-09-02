@@ -43,6 +43,7 @@ import json
 from typing import NamedTuple
 
 import pg_graph_common
+from citation_vocab import CrawlAction, WorkKind
 from paths import EXTERNAL_SOURCE_DIR, IIS_SOURCE_DIR
 from pg_common import scalar
 from pg_graph_common import citation_schema_exists, kind_counts_expression
@@ -53,17 +54,19 @@ SELECT d.id
 FROM corpus.documents d
 WHERE d.source_dir = '{IIS_SOURCE_DIR}' AND d.extraction_state <> 'metadata'
   AND NOT EXISTS (
-      SELECT 1 FROM citation.work w WHERE w.kind = 'our-document' AND w.document_id = d.id)
+      SELECT 1 FROM citation.work w WHERE w.kind = '{WorkKind.OUR_DOCUMENT}'
+        AND w.document_id = d.id)
   AND NOT EXISTS (
       SELECT 1 FROM citation.crawl_step c
-      WHERE c.action = 'seed-missing' AND c.frontier_key = d.id)
+      WHERE c.action = '{CrawlAction.SEED_MISSING}' AND c.frontier_key = d.id)
 ORDER BY d.id;
 """
 
 
-_NO_EVIDENCE_SQL = """
+_NO_EVIDENCE_SQL = f"""
 SELECT key, kind FROM citation.work
-WHERE kind IN ('external-skeleton', 'indexed') AND evidence IS NULL
+WHERE kind IN ({", ".join(f"'{kind}'" for kind in WorkKind.NEED_EVIDENCE)})
+  AND evidence IS NULL
 ORDER BY key;
 """
 
@@ -86,7 +89,7 @@ ORDER BY key;
 
 _INDEXED_WITHOUT_EXTERNAL_SQL = f"""
 SELECT w.key FROM citation.work w
-WHERE w.kind = 'indexed'
+WHERE w.kind = '{WorkKind.INDEXED}'
   AND (w.document_id IS NULL OR NOT EXISTS (
         SELECT 1 FROM corpus.documents d
         WHERE d.id = w.document_id AND d.source_dir = '{EXTERNAL_SOURCE_DIR}'))
@@ -233,8 +236,9 @@ def _projection_stale(seen) -> list[str]:
 def _problems(read: CitationReading, seen) -> list[str]:
     problems: list[str] = []
     problems += [
-        f"UNPLACED DOCUMENT: {doc_id} -- neither citation.work(kind='our-document') "
-        "nor citation.crawl_step(action='seed-missing') accounts for it"
+        f"UNPLACED DOCUMENT: {doc_id} -- neither "
+        f"citation.work(kind='{WorkKind.OUR_DOCUMENT}') nor "
+        f"citation.crawl_step(action='{CrawlAction.SEED_MISSING}') accounts for it"
         for doc_id in read.unplaced
     ]
     problems += [
@@ -252,7 +256,8 @@ def _problems(read: CitationReading, seen) -> list[str]:
         for key in read.no_semantic_key
     ]
     problems += [
-        f"INDEXED WITHOUT EXTERNAL DOCUMENT: citation.work {key!r} (kind='indexed') has "
+        f"INDEXED WITHOUT EXTERNAL DOCUMENT: citation.work {key!r} "
+        f"(kind='{WorkKind.INDEXED}') has "
         f"no corpus.documents row under source_dir='{EXTERNAL_SOURCE_DIR}'"
         for key in read.indexed_without_external
     ]

@@ -18,6 +18,7 @@ corpus/cache/openalex (meta.count батчей — их считает hub_cache
 """
 from __future__ import annotations
 
+from citation_vocab import CrawlAction
 from pg_common import run_sql
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
@@ -76,7 +77,7 @@ CREATE INDEX IF NOT EXISTS citation_hub_expansion_relation
 # jsonb_array_elements не даёт ни строки, агрегат по пустому множеству —
 # одна строка с NULL, и coalesce снаружи делает из неё 0 (раньше это же
 # делал coalesce внутри каждого подзапроса).
-POPULATE = """
+POPULATE = f"""
 INSERT INTO measurements.citation_hub_expansion
     (run_id, work_key, relation, cited_by_count, n_references)
 SELECT :run, w.key, j.relation,
@@ -89,7 +90,7 @@ SELECT :run, w.key, j.relation,
 FROM citation.work w
 JOIN (SELECT DISTINCT ON (node_key) node_key, relation
         FROM citation.crawl_step
-       WHERE action = 'keep' AND depth = 1
+       WHERE action = '{CrawlAction.KEEP}' AND depth = 1
          AND node_key IS NOT NULL AND relation IS NOT NULL
        ORDER BY node_key, id) j ON j.node_key = w.key
 LEFT JOIN LATERAL (
@@ -165,7 +166,8 @@ def run_fields(counts: list[int], rows: list[list[str]]) -> dict:
             "# СЕТИ НЕ ТРЕБУЕТ: считает из citation.work (evidence) и из кэша "
             "corpus/cache/openalex, поэтому воспроизводится при исчерпанной квоте. "
             "Узлы depth-1 определяются по журналу citation.crawl_step "
-            "(action='keep', depth=1), а не предположением «в базе только depth-1»"
+            f"(action='{CrawlAction.KEEP}', depth=1), а не предположением "
+            "«в базе только depth-1»"
         ),
         "verify_query": VERIFY_QUERY + "  -- ждать: "
         + "; ".join(f"{r[0]} {r[1]} узлов, Σ cited_by {r[2]}, макс {r[3]}, "
@@ -227,7 +229,7 @@ def report(counts: list[int], rows: list[list[str]], worst: list[list[str]],
         f"Принято (оркестратор, 2026-09-02): на depth ≥ 2 расширяются только узлы со "
         f"связью `cites`; узлы `referenced` — листья. Плюс кап: узел с "
         f"`cited_by_count > {cap}` не спрашивается вверх (вниз — можно, ссылки уже в "
-        "записи), с журнальной строкой `action='hub-skip'`.",
+        f"записи), с журнальной строкой `action='{CrawlAction.HUB_SKIP}'`.",
         "",
         "Почему именно так, а не «поднять τ»: порог отбирает кандидата по "
         "релевантности, а цену создаёт цитируемость уже оставленного узла. Это "

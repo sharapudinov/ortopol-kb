@@ -26,6 +26,7 @@ centroid, raises, and must still leave behind the rows explaining why.
 from __future__ import annotations
 
 from . import journal
+from citation_vocab import WorkKind
 from .scoring import centroid, cosine_unit
 from .openalex_client import short_id
 
@@ -37,7 +38,7 @@ def _fetch_seeds(registry, client, crawl_id, documents, matches) -> tuple[dict[s
     seen = set()
     for record in client.works_by_ids(sorted(wanted)):
         identity = short_id(record.get("id"))
-        node, _ = registry.add(record, kind="our-document", depth=0,
+        node, _ = registry.add(record, kind=WorkKind.OUR_DOCUMENT, depth=0,
                                document_id=wanted.get(identity))
         seen.add(identity)
         steps.append(journal.seed(crawl_id, wanted.get(identity), node.key))
