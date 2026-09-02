@@ -9,7 +9,7 @@ level -- none imports this module, so there is no cycle to defer an import
 around.
 
 Usage:
-    python3 pg_graph.py init                  # applies pg_schema_citation.sql
+    python3 pg_graph.py init                  # applies the citation schema files
     python3 pg_graph.py project               # rebuilds citation_graph
     python3 pg_graph.py project --check       # compares graph vs relational counts
     python3 pg_graph.py citers <document_id> [--depth N]

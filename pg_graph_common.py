@@ -28,7 +28,17 @@ from pathlib import Path
 
 from pg_common import run_sql, run_sql_file, scalar, scalar_row
 
-SCHEMA_PATH = Path(__file__).resolve().parent / "pg_schema_citation.sql"
+# Applied in this order by init_schema(): data definition first (crawl_step's
+# columns/indexes must exist before anything reads or backfills them), the
+# AGE projection functions second (they only reference citation.work/cites,
+# not the journal columns), the journal's one-time backfill last (it depends
+# on the columns the first file adds). kb/CLAUDE.md FILE_SIZE split
+# pg_schema_citation.sql into these three along that seam.
+SCHEMA_PATHS = (
+    Path(__file__).resolve().parent / "pg_schema_citation.sql",
+    Path(__file__).resolve().parent / "pg_schema_citation_graph.sql",
+    Path(__file__).resolve().parent / "pg_schema_citation_backfill.sql",
+)
 GRAPH_NAME = "citation_graph"
 AGE_PREAMBLE = "LOAD 'age';\nSET search_path = ag_catalog, \"$user\", public;\n"
 
@@ -90,7 +100,8 @@ def graph_sql(env: dict[str, str], sql: str, **kwargs):
 
 
 def init_schema(env: dict[str, str]) -> None:
-    run_sql_file(env, SCHEMA_PATH)
+    for path in SCHEMA_PATHS:
+        run_sql_file(env, path)
 
 
 def project(env: dict[str, str]) -> tuple[int, int]:

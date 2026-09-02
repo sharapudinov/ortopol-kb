@@ -38,11 +38,11 @@ def _live_env() -> dict[str, str]:
 def _backfill_statements() -> list[str]:
     """Every one-time journal backfill, taken from the schema file itself.
 
-    Read out of pg_schema_citation.sql rather than restated here: a copy
-    would let the test keep passing over statements the schema no longer
-    applies -- or miss one it has since grown.
+    Read out of pg_schema_citation_backfill.sql rather than restated here: a
+    copy would let the test keep passing over statements the schema no
+    longer applies -- or miss one it has since grown.
     """
-    schema = pg_graph_common.SCHEMA_PATH.read_text(encoding="utf-8")
+    schema = pg_graph_common.SCHEMA_PATHS[2].read_text(encoding="utf-8")
     found, at = [], 0
     while (start := schema.find("UPDATE citation.crawl_step SET", at)) != -1:
         at = schema.index(";", start) + 1

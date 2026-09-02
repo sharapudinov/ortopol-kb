@@ -288,7 +288,7 @@ class ImportClosureTests(unittest.TestCase):
 
     def test_every_module_relative_file_dependency_is_bundled_too(self):
         """An import graph does not mention a data file a module opens next
-        to itself (pg_graph_common.SCHEMA_PATH is the one here), so no
+        to itself (pg_graph_common.SCHEMA_PATHS are the ones here), so no
         import test can catch its absence: `pg_graph.py init` shipped
         pointing at a schema file that was not in the package.
         """

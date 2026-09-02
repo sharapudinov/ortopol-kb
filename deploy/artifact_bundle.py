@@ -80,12 +80,16 @@ CORPUS_LIB_FILES = [
     # on a package whose own guide says it can answer them.
     "pg_graph_queries.py",
     "pg_graph_cypher.py",
-    # ... and the schema `pg_graph.py init` applies. pg_graph_common.
-    # SCHEMA_PATH resolves it NEXT TO THE MODULE, so it must land in
-    # corpus_lib/ or the artifact ships a documented first subcommand that
-    # cannot run -- a module-relative dependency the bundle list has to
-    # model, since nothing in an import graph mentions it.
+    # ... and the three schema files `pg_graph.py init` applies, in order
+    # (data definition, AGE projection, journal backfill -- kb/CLAUDE.md
+    # FILE_SIZE split pg_schema_citation.sql along that seam).
+    # pg_graph_common.SCHEMA_PATHS resolves each NEXT TO THE MODULE, so all
+    # three must land in corpus_lib/ or the artifact ships a documented
+    # first subcommand that cannot run -- a module-relative dependency the
+    # bundle list has to model, since nothing in an import graph mentions it.
     "pg_schema_citation.sql",
+    "pg_schema_citation_graph.sql",
+    "pg_schema_citation_backfill.sql",
 ]
 
 
