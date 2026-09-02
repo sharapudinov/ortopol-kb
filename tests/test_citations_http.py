@@ -19,7 +19,7 @@ from pathlib import Path
 
 import _pathfix  # noqa: F401
 
-from citations import frontier, http_cache
+from citations import frontier, http_cache, openalex_client
 from citations.mathnet import MathnetClient, parse_titles
 from citations.openalex_client import (
     RETRY_CODES,
@@ -264,6 +264,43 @@ class ACorruptedCacheEntryIsAMissTests(unittest.TestCase):
             self.assertEqual(json.loads(entry.read_text(encoding="utf-8")), body,
                              "битая запись осталась в кэше")
         self.assertIn("кэш", said.getvalue().lower())
+
+
+class OnePageIsTheWholeBatchTests(unittest.TestCase):
+    """A short page is the last page.
+
+    50 ids per filter (the measured cap) cannot fill a 200-record page, yet
+    OpenAlex hands back a next_cursor all the same, and following it costs
+    one guaranteed-empty request per batch out of a window of 1000 that
+    refills over about a day.
+    """
+
+    def _page(self, n: int, cursor: str | None) -> bytes:
+        return json.dumps({
+            "results": [{"id": f"https://openalex.org/W{i}"} for i in range(n)],
+            "meta": {"next_cursor": cursor},
+        }).encode()
+
+    def test_a_short_page_ends_the_batch_without_another_request(self):
+        opener = _Sequence([_Response(self._page(3, "next")),
+                            _Response(self._page(0, None))])
+        client = OpenAlexClient(opener=opener, sleep=lambda _s: None, pause=0.0)
+        got = list(client.works_by_ids([f"W{i}" for i in range(50)]))
+        self.assertEqual(len(got), 3)
+        self.assertEqual(opener.calls, 1, "заведомо пустой запрос всё-таки сделан")
+
+    def test_a_full_page_is_still_followed(self):
+        """The cut is `shorter than asked for`, not `smaller than the cap`:
+        citers_of legitimately spans pages, and a batch whose first page came
+        back full must still ask for the next one.
+        """
+        with mock.patch.object(openalex_client, "PER_PAGE", 2):
+            opener = _Sequence([_Response(self._page(2, "next")),
+                                _Response(self._page(1, None))])
+            client = OpenAlexClient(opener=opener, sleep=lambda _s: None, pause=0.0)
+            got = list(client.citers_of(["W0"]))
+        self.assertEqual(len(got), 3)
+        self.assertEqual(opener.calls, 2)
 
 
 class NoClientHoldsAPathTests(unittest.TestCase):

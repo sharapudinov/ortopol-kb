@@ -23,7 +23,7 @@ from _citation_fixtures import (
     unit,
     work,
 )
-from citations import frontier, inputs, registry, scoring
+from citations import frontier, inputs, openalex_client, registry, scoring
 from citations.openalex_client import (
     OpenAlexClient,
     QuotaExhausted,
@@ -322,7 +322,14 @@ class PagedStreamingTests(unittest.TestCase):
     """
 
     class PagedOpener:
-        """Three cursor pages of one work each, logging every fetch."""
+        """Three cursor pages of one work each, logging every fetch.
+
+        One record per page IS a full page here: PER_PAGE is patched to 1
+        for the tests that follow the cursor, because a page shorter than
+        the one asked for is the last page and stops the batch (the batch
+        of 50 ids that can never fill a 200-record page is
+        test_citations_http.OnePageIsTheWholeBatchTests).
+        """
 
         PAGES = [
             '{"results": [{"id": "https://openalex.org/W1"}], "meta": {"next_cursor": "c2"}}',
@@ -352,17 +359,19 @@ class PagedStreamingTests(unittest.TestCase):
 
     def test_pages_interleave_with_consumption_instead_of_piling_up(self):
         log = []
-        for record in self._client(log).citers_of(["W0"]):
-            log.append("seen " + record["id"].rsplit("/", 1)[-1])
+        with mock.patch.object(openalex_client, "PER_PAGE", 1):
+            for record in self._client(log).citers_of(["W0"]):
+                log.append("seen " + record["id"].rsplit("/", 1)[-1])
         self.assertEqual(log, ["fetch1", "seen W1", "fetch2", "seen W2",
                                "fetch3", "seen W3"])
 
     def test_works_by_ids_streams_the_same_way(self):
         log = []
         seen = []
-        for record in self._client(log).works_by_ids(["W0"]):
-            seen.append(record["id"].rsplit("/", 1)[-1])
-            self.assertEqual(len(log), len(seen), "страница прочитана впрок")
+        with mock.patch.object(openalex_client, "PER_PAGE", 1):
+            for record in self._client(log).works_by_ids(["W0"]):
+                seen.append(record["id"].rsplit("/", 1)[-1])
+                self.assertEqual(len(log), len(seen), "страница прочитана впрок")
         self.assertEqual(seen, ["W1", "W2", "W3"])
 
 

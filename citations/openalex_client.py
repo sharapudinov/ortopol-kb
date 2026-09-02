@@ -219,12 +219,17 @@ class OpenAlexClient:
         could drop a single one. Nothing is requested until the consumer
         asks for the next record.
         """
-        cursor = "*"
+        cursor, per_page = "*", params.get("per-page")
         while cursor:
             body = self.get_json(self.url("works", cursor=cursor, **params))
             results = body.get("results") or []
             yield from results
-            if not results:
+            # A page shorter than the one asked for is the last page, and
+            # OpenAlex hands back a next_cursor anyway: an id filter takes
+            # at most 50 values (ID_BATCH) against a 200-record page, so
+            # following that cursor bought one guaranteed-empty request per
+            # batch out of a window of 1000 that refills over about a day.
+            if not results or (per_page is not None and len(results) < per_page):
                 break
             cursor = (body.get("meta") or {}).get("next_cursor")
 
