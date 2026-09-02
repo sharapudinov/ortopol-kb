@@ -190,6 +190,26 @@ class SqlLiteralTests(unittest.TestCase):
             pg_common.sql_literal("a\x00b")
 
 
+class VectorLiteralTests(unittest.TestCase):
+    """pgvector's text form, beside sql_literal and for the same reason:
+    citation.work.embedding has two writers (the crawl and pg_embed.py) and
+    neither may spell the brackets itself.
+    """
+
+    def test_a_vector_is_pgvector_shaped(self):
+        self.assertEqual(pg_common.vector_literal([1.0, 0.5]), "[1.0,0.5]")
+
+    def test_no_vector_is_a_null_rather_than_an_empty_literal(self):
+        self.assertIsNone(pg_common.vector_literal(None))
+
+    def test_the_number_written_is_the_number_given(self):
+        """A shortened float is a different vector, and nothing downstream
+        could tell: repr() round-trips a double exactly.
+        """
+        value = 0.1234567890123456789
+        self.assertEqual(float(pg_common.vector_literal([value])[1:-1]), float(value))
+
+
 class SqlLiteralRoundTripTests(unittest.TestCase):
     """The only assertion that matters in the end: what the SERVER reads
     back out of the literal is the string that went in.

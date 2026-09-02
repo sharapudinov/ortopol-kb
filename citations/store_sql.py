@@ -115,7 +115,3 @@ SELECT count(*) FROM promoted;
 
 def json_or_null(value):
     return None if value is None else json.dumps(value, ensure_ascii=False)
-
-
-def vector_literal(vector) -> str | None:
-    return None if vector is None else "[" + ",".join(repr(float(v)) for v in vector) + "]"

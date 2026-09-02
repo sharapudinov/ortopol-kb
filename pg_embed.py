@@ -34,7 +34,6 @@ import sys
 import time
 from pathlib import Path
 
-from citations.store_sql import vector_literal
 from paths import default_corpus_dir
 from pg_common import (
     FIELD_SEP,
@@ -45,6 +44,7 @@ from pg_common import (
     scalar,
     split_records,
     sql_literal,
+    vector_literal,
 )
 from pg_copy import copy_csv_rows
 from pg_embedding_text import MAX_CHARS, WORKS_TEXT_SQL

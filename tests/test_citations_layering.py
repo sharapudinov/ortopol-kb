@@ -159,6 +159,50 @@ class ScoringIsDependencyFreeTests(unittest.TestCase):
                 self.assertEqual(node.level, 0, "относительный импорт в чистой математике")
 
 
+class DependencyDirectionTests(unittest.TestCase):
+    """The crawl package depends on the repository's shared modules, never
+    the other way round.
+
+    pg_embed.py covers `pages`, `spikes` and `works`: two of the three have
+    nothing to do with citations, and an import of citations/ made the whole
+    tool unimportable without the crawl package -- which deploy/
+    artifact_bundle.py deliberately does not ship. A shared encoder belongs
+    in pg_common.py beside sql_literal, not reached for through a module
+    whose own docstring calls itself store.py's plumbing.
+
+    pg_load_citations.py is the one exception, and by definition: it IS the
+    crawl's command line.
+    """
+
+    ROOT = CITATIONS_DIR.parent
+    DISPATCHER = "pg_load_citations.py"
+
+    def test_only_the_crawls_own_cli_imports_the_crawl_package(self):
+        for path in sorted(self.ROOT.glob("*.py")):
+            if path.name == self.DISPATCHER:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module]
+                for name in names:
+                    self.assertNotEqual(
+                        name.split(".")[0], CITATIONS_DIR.name,
+                        f"{path.name}: {name} -- общий модуль не тянет пакет обхода")
+
+    def test_the_dispatcher_still_does(self):
+        """The complement: the guard must not pass because nothing imports
+        the package at all any more.
+        """
+        tree = ast.parse((self.ROOT / self.DISPATCHER).read_text(encoding="utf-8"))
+        imported = {node.module.split(".")[0] for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom) and node.module}
+        self.assertIn(CITATIONS_DIR.name, imported)
+
+
 class CacheModeIsAnObjectTests(unittest.TestCase):
     """DRY_RUN_WRITES_NOTHING's third channel travels the way the other two
     do: the run picks an http_cache object and hands it over.

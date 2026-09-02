@@ -31,7 +31,6 @@ from citations.openalex_client import (
     restore_abstract,
     short_id,
 )
-from citations.store import vector_literal
 import pg_copy
 from pg_common import FIELD_SEP, RECORD_SEP, sql_literal
 
@@ -409,10 +408,6 @@ class CsvEncodingTests(unittest.TestCase):
                 [["a,b", None, 'quote"inside', "line\nbreak"]])
         self.assertIn('"a,b"', seen["text"])
         self.assertIn('"line\nbreak"', seen["text"])
-
-    def test_vector_literal_is_pgvector_shaped(self):
-        self.assertEqual(vector_literal([1.0, 0.5]), "[1.0,0.5]")
-        self.assertIsNone(vector_literal(None))
 
 
 if __name__ == "__main__":

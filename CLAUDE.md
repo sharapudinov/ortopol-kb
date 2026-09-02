@@ -117,6 +117,15 @@ EMBEDDING_ONE_CONTRACT [HARD, 2026-09-02]: у citation.work.embedding два
   текст — из pg_embedding_text (WORKS_TEXT_SQL и works_text, одно правило
   в двух диалектах, держится живым тестом test_embedding_text.py). Новый
   писатель эмбеддингов импортирует оба, а не пишет своё выражение.
+DEPENDENCY_DIRECTION [HARD, 2026-09-02]: корневые модули — общие инструменты
+  корпуса (pg_embed.py, pg_search.py, pg_common.py …) — НЕ импортируют пакет
+  citations/; единственное исключение pg_load_citations.py, он и есть командная
+  строка обхода. Общий кодек живёт в pg_common.py рядом с sql_literal
+  (vector_literal — оба писателя citation.work.embedding), а не добывается из
+  citations/store_sql.py, который сам называет себя внутренностями store.py.
+  Причина: citations/ намеренно не входит в артефакт (artifact_bundle.
+  CORPUS_LIB_FILES), и такой импорт делает общий инструмент неимпортируемым
+  там, где обхода нет. Проверяет test_citations_layering.DependencyDirectionTests.
 SNOWBALL_FRONTIER [2026-09-02, измерено run 89/93]: обход расширяет на depth ≥ 2
   только узлы с relation='cites'; узлы, пришедшие по references, — листья; хабы
   (cited_by_count > --hub-cap) вверх не спрашиваются. Порог релевантности τ — не

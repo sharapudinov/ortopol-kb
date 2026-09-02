@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from pg_common import vector_literal
 from pg_copy import copy_csv_rows
 
 from .store_sql import (
@@ -45,7 +46,6 @@ from .store_sql import (
     WORK_STAGE_DDL,
     WORK_UPSERT,
     json_or_null,
-    vector_literal,
 )
 
 # -- writes --------------------------------------------------------------

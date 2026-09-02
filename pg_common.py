@@ -19,7 +19,8 @@ Three mechanisms, all avoiding shell string interpolation of untrusted data:
   everything else.
 - Where neither fits -- a LIST of values inside one statement, for which
   psql has no binding form at all -- sql_literal() builds the quoted
-  literal. One implementation, so no call site invents an f-string.
+  literal, and vector_literal() the pgvector form its two writers COPY.
+  One implementation, so no call site invents an f-string.
 
 Reading psql's answer is the same kind of shared plumbing, so the row and
 field separators (FIELD_SEP/RECORD_SEP/ROW_ARGS/split_records) live here
@@ -133,6 +134,18 @@ def sql_literal(value) -> str:
     if "\x00" in text:
         raise ValueError("NUL byte cannot appear in a SQL string literal")
     return "E'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def vector_literal(vector) -> str | None:
+    """One embedding as pgvector's own text form, or None for no vector.
+
+    The pgvector analogue of sql_literal(), and here for the same reason:
+    both writers of an embedding column (the crawl, pg_embed.py) encode a
+    vector for COPY, and neither may invent the bracket-and-comma spelling
+    at its own call site. repr(float) round-trips exactly -- a shortened
+    number would be a different vector, silently.
+    """
+    return None if vector is None else "[" + ",".join(repr(float(v)) for v in vector) + "]"
 
 
 def scalar(
