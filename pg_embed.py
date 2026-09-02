@@ -21,19 +21,32 @@ pg_search.embed_batch, где живут адрес, размер партии �
 (размерность и КОЛИЧЕСТВО векторов).
 
 Никаких зависимостей: Postgres через psql — драйвера Postgres в системе нет,
-и ради одного скрипта он не заводится.
+и ради одного скрипта он не заводится. Ровно один путь к базе: pg_common
+(run_sql/scalar/copy_csv_rows) с ЯВНЫМ env, и `--pgenv`, как у
+pg_load_citations.py и pg_graph.py. Свой subprocess-вызов рядом с ними брал
+подключение из окружения молча, и цель `works` — писатель citation.work —
+никуда, кроме базы по умолчанию, направлена быть не могла.
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
+import argparse
 import sys
-import tempfile
 import time
 from pathlib import Path
 
-from pg_common import sql_literal
+from citations.store_sql import vector_literal
+from paths import default_corpus_dir
+from pg_common import (
+    FIELD_SEP,
+    PostgresUnavailable,
+    ROW_ARGS,
+    load_pgenv,
+    run_sql,
+    scalar,
+    split_records,
+    sql_literal,
+)
+from pg_copy import copy_csv_rows
 from pg_embedding_text import MAX_CHARS, WORKS_TEXT_SQL
 from pg_search import EMBED_BATCH, embed_batch, resolve_model
 
@@ -50,21 +63,24 @@ DEFAULT_DIMS = 1024
 FETCH_BATCH = 200
 
 
-def psql(sql: str, tuples_only: bool = True) -> str:
-    """Выполняет SQL через psql. Возвращает stdout."""
-    args = ["psql", "-v", "ON_ERROR_STOP=1", "-q"]
-    if tuples_only:
-        args += ["-tA"]
-    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as fh:
-        fh.write(sql)
-        path = fh.name
-    try:
-        r = subprocess.run(args + ["-f", path], capture_output=True, text=True)
-        if r.returncode != 0:
-            raise RuntimeError(f"psql: {r.stderr.strip()}")
-        return r.stdout
-    finally:
-        Path(path).unlink(missing_ok=True)
+# Куда уходит посчитанная страница: во временную таблицу одним \copy, и
+# UPDATE читает её же в том же скрипте (pg_copy.copy_csv_rows). Раньше это
+# был склеенный текст из 200 отдельных UPDATE'ов, каждый с вектором в 1024
+# числа внутри строкового литерала — тот самый способ, ради отказа от
+# которого citations/store.py и завёл этот шов.
+_STAGE_DDL = """
+CREATE TEMP TABLE stage_embedding (id BIGINT, embedding TEXT) ON COMMIT DROP;
+"""
+
+
+def _update_sql(table: str) -> str:
+    return f"""
+WITH updated AS (
+UPDATE {table} t SET embedding = s.embedding::vector
+FROM stage_embedding s WHERE t.id = s.id
+RETURNING 1)
+SELECT count(*) FROM updated;
+"""
 
 
 def resolve_target(env: dict[str, str]) -> tuple[str, int]:
@@ -80,10 +96,9 @@ def resolve_target(env: dict[str, str]) -> tuple[str, int]:
         return resolved
     print(f"corpus.embedding_model пуста — объявляю {DEFAULT_MODEL}/{DEFAULT_DIMS}; "
           "все дальнейшие читатели прочтут эту пару")
-    psql("insert into corpus.embedding_model (id, model, dims) values "
-         f"(1, {sql_literal(DEFAULT_MODEL)}, {int(DEFAULT_DIMS)}) "
-         "on conflict (id) do nothing;",
-         tuples_only=False)
+    run_sql(env, "insert into corpus.embedding_model (id, model, dims) values "
+                 f"(1, {sql_literal(DEFAULT_MODEL)}, {int(DEFAULT_DIMS)}) "
+                 "on conflict (id) do nothing;")
     return DEFAULT_MODEL, DEFAULT_DIMS
 
 
@@ -132,24 +147,48 @@ TARGETS = {
 }
 
 
-def pending(table: str, content_pred: str = "true") -> int:
-    return int(psql(
-        f"select count(*) from {table} "
-        f"where embedding is null and ({content_pred});").strip())
+def pending(env: dict[str, str], table: str, content_pred: str = "true") -> int:
+    return int(scalar(env, f"select count(*) from {table} "
+                           f"where embedding is null and ({content_pred});"))
 
 
-def missing_semantic_key() -> list[tuple[str, int]]:
+def missing_semantic_key(env: dict[str, str]) -> list[tuple[str, int]]:
     """Записи-результаты без семантического ключа. Пустой список — инвариант держится."""
     return [
         (name, n)
         for name, (table, _, pred) in TARGETS.items()
-        if (n := pending(table, pred)) > 0
+        if (n := pending(env, table, pred)) > 0
     ]
 
 
-def embed_target(name: str, model: str, dims: int) -> int:
+def fetch_page(env: dict[str, str], table: str, text_expr: str,
+               content_pred: str) -> list[tuple[int, str]]:
+    """Страница ожидающих строк как (id, текст), обрезанный до MAX_CHARS.
+
+    Разбор общий (ROW_ARGS/split_records), а не построчный по '|': текст
+    здесь — чужой (тело страницы, заголовок работы), а str.splitlines()
+    считает границей строки не только \n (pg_common's own comment на
+    FIELD_SEP/RECORD_SEP). Разделитель в тексте больше не рвёт строку на
+    две записи.
+    """
+    out = run_sql(
+        env,
+        f"select id, left({text_expr}, {MAX_CHARS}) from {table} "
+        f"where embedding is null and ({content_pred}) "
+        f"order by id limit {FETCH_BATCH};",
+        extra_args=ROW_ARGS,
+    ).stdout
+    pairs = []
+    for record in split_records(out):
+        row_id, _, text = record.partition(FIELD_SEP)
+        if text.strip():
+            pairs.append((int(row_id), text))
+    return pairs
+
+
+def embed_target(env: dict[str, str], name: str, model: str, dims: int) -> int:
     table, text_expr, content_pred = TARGETS[name]
-    total = pending(table, content_pred)
+    total = pending(env, table, content_pred)
     if total == 0:
         print(f"{name}: все записи уже несут семантический ключ")
         return 0
@@ -158,30 +197,22 @@ def embed_target(name: str, model: str, dims: int) -> int:
 
     done, started = 0, time.monotonic()
     while True:
-        rows = psql(
-            f"select id, left({text_expr}, {MAX_CHARS}) from {table} "
-            f"where embedding is null and ({content_pred}) "
-            f"order by id limit {FETCH_BATCH};"
-        ).strip()
-        if not rows:
-            break
-        pairs = []
-        for line in rows.split("\n"):
-            pid, _, text = line.partition("|")
-            if text.strip():
-                pairs.append((int(pid), text))
+        pairs = fetch_page(env, table, text_expr, content_pred)
         if not pairs:
-            # Все оставшиеся записи с пустым текстом — вектор им не из чего строить.
+            # Страниц не осталось, либо у оставшихся записей пустой текст —
+            # вектор им не из чего строить.
             break
 
-        # Вся страница — один UPDATE-блок: embed() уже разбивает тексты на
-        # партии по EMBED_BATCH внутри себя (pg_search.embed_batch).
+        # Вся страница — один \copy плюс один UPDATE: embed() уже разбивает
+        # тексты на партии по EMBED_BATCH внутри себя (pg_search.embed_batch).
         vecs = embed([t for _, t in pairs], model, dims)
-        updates = "\n".join(
-            f"update {table} set embedding = '{json.dumps(v)}' where id = {pid};"
-            for (pid, _), v in zip(pairs, vecs)
+        copy_csv_rows(
+            env,
+            "stage_embedding (id, embedding)",
+            ([pid, vector_literal(vector)] for (pid, _), vector in zip(pairs, vecs)),
+            preamble=_STAGE_DDL,
+            epilogue=_update_sql(table),
         )
-        psql("begin;\n" + updates + "\ncommit;")
 
         done += len(pairs)
         rate = done / max(time.monotonic() - started, 1e-9)
@@ -189,19 +220,31 @@ def embed_target(name: str, model: str, dims: int) -> int:
     return done
 
 
-def main() -> int:
-    which = sys.argv[1:] or list(TARGETS)
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("targets", nargs="*", default=None,
+                        help=f"что считать; по умолчанию всё: {list(TARGETS)}")
+    parser.add_argument("--pgenv", type=Path, default=None,
+                        help="файл с доступом к базе (по умолчанию corpus/.pgenv)")
+    args = parser.parse_args(argv)
+
+    which = args.targets or list(TARGETS)
     for name in which:
         if name not in TARGETS:
             print(f"неизвестная цель: {name}; известны {list(TARGETS)}")
             return 2
+    try:
+        env = load_pgenv(args.pgenv or (default_corpus_dir() / ".pgenv"))
+    except PostgresUnavailable as exc:
+        print(f"Postgres недоступен: {exc}", file=sys.stderr)
+        return 1
     # Один раз на прогон: таблица несёт ровно одну строку (CHECK (id = 1)),
     # и модель не может смениться посреди обсчёта.
-    model, dims = resolve_target(dict(os.environ))
+    model, dims = resolve_target(env)
     for name in which:
-        embed_target(name, model, dims)
+        embed_target(env, name, model, dims)
 
-    gaps = missing_semantic_key()
+    gaps = missing_semantic_key(env)
     if gaps:
         # Не падаем: пустой текст встречается легитимно. Но молчать нельзя —
         # запись без ключа находится только тем, кто знает точное слово.

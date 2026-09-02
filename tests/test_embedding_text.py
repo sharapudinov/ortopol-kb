@@ -146,11 +146,11 @@ class SingleContractTests(unittest.TestCase):
         carries names the f-string as the alternative it exists to replace.
         """
         with mock.patch.object(pg_embed, "resolve_model", return_value=None), \
-             mock.patch.object(pg_embed, "psql", return_value="") as psql, \
+             mock.patch.object(pg_embed, "run_sql") as run_mock, \
              mock.patch("builtins.print"):
             self.assertEqual(pg_embed.resolve_target({}),
                              (pg_embed.DEFAULT_MODEL, pg_embed.DEFAULT_DIMS))
-        statement = psql.call_args.args[0]
+        statement = run_mock.call_args.args[1]
         self.assertIn(sql_literal(pg_embed.DEFAULT_MODEL), statement)
         self.assertNotIn(f" '{pg_embed.DEFAULT_MODEL}'", statement,
                          "значение вклеено f-строкой, а не sql_literal()")
