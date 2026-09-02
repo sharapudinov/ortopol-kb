@@ -75,10 +75,21 @@ CREATE INDEX IF NOT EXISTS work_embedding_hnsw ON citation.work
 -- planner needing a bigger table to prefer it.
 CREATE INDEX IF NOT EXISTS work_pending_embedding_idx ON citation.work (id)
     WHERE embedding IS NULL;
--- external_ids carries per-source keys (openalex, s2, zbmath, doi, ...) for
--- an item first seen through one source and later matched from another;
--- GIN makes "does any source already know this id" a lookup, not a scan.
-CREATE INDEX IF NOT EXISTS work_external_ids_gin ON citation.work USING GIN (external_ids);
+-- external_ids carries per-source keys (openalex, s2, zbmath, doi, ...) plus
+-- the titles and years a node is known by. It was indexed with GIN for
+-- "does any source already know this id", but nothing asks that in SQL: the
+-- identity question is answered in Python, in citations/registry.WorkRegistry
+-- by an in-memory index over the ids the crawl has seen, and every SQL reader
+-- of the column extracts a field (->>'titles', jsonb_array_length) -- a shape
+-- default jsonb_ops cannot serve. So the index was write amplification on the
+-- crawl's bulkiest path: one GIN entry per key AND per value of that JSONB,
+-- for thousands of upserts per level, plus the size and restore time it adds
+-- to the public artifact, which ships the column.
+-- Dropped rather than left in place: an index nothing reads is not free.
+-- A SQL-side identity lookup, if one is ever written, arrives WITH its query
+-- and in the shape that query needs (jsonb_path_ops for @>, or a btree
+-- expression index) -- not as this one, kept on the chance of it.
+DROP INDEX IF EXISTS citation.work_external_ids_gin;
 
 -- cites: a directed edge, itself sourced (the same pair can be attested by
 -- more than one crawl source, each independently, hence the PK includes
