@@ -25,6 +25,12 @@ import public_dump
 from legal_profile import Unclassified
 from manifest_contract import CitationMode, Profile, schemas_for
 
+# The citation tables a dump writes today, in restore order -- the live
+# assertion that this is what the catalog and the foreign keys say lives in
+# test_citation_dump_live.py.
+DUMPED_CITATION_TABLES = ("work", "cites", "crawl_step", "public_policy",
+                          "schema_backfill")
+
 
 class TableColumnsTests(unittest.TestCase):
     def _columns(self, stdout, **kwargs):
@@ -216,9 +222,10 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                 side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=self._fake_stream), \
              mock.patch.object(citation_dump, "citation_tables",
-                                return_value=list(citation_dump.TABLE_DUMP_ORDER)), \
+                                return_value=list(DUMPED_CITATION_TABLES)), \
              mock.patch.object(citation_dump, "table_columns",
                                 side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
+             mock.patch.object(citation_dump, "serial_columns", return_value=["id"]), \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
             public_dump.dump_public({}, gz_path, citation_mode=citation_mode)
         return gz_path
@@ -262,9 +269,10 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capturing_stream), \
                  mock.patch.object(citation_dump, "citation_tables",
-                                    return_value=list(citation_dump.TABLE_DUMP_ORDER)), \
+                                    return_value=list(DUMPED_CITATION_TABLES)), \
                  mock.patch.object(citation_dump, "table_columns",
                                     side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
+                 mock.patch.object(citation_dump, "serial_columns", return_value=["id"]), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.TOPOLOGY_ONLY)
         work_select = next(s for s in seen_selects if "citation.work" in s)
@@ -304,9 +312,10 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capture), \
                  mock.patch.object(citation_dump, "citation_tables",
-                                    return_value=list(citation_dump.TABLE_DUMP_ORDER)), \
+                                    return_value=list(DUMPED_CITATION_TABLES)), \
                  mock.patch.object(citation_dump, "table_columns",
                                     side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
+                 mock.patch.object(citation_dump, "serial_columns", return_value=["id"]), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.FULL_SKELETON)
         pg_dump_argvs = [argv for argv in seen_argv if argv[0] == "pg_dump"]

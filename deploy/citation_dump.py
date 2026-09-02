@@ -31,26 +31,28 @@ id is preserved (never re-sequenced the way corpus.pages.id is excluded and
 left to the restore-side sequence): citation.cites references
 citation.work.id BY VALUE, and a column-list COPY has no id-remapping
 mechanism, so both the id and the BIGSERIAL sequence position must survive
-the round trip -- setval() is appended after the work/crawl_step COPY
-blocks for that reason (cites/public_policy carry no serial column of their
-own to fix up).
+the round trip. WHICH columns need that fix-up is the catalog's answer too
+(serial_columns: pg_get_serial_sequence per column), and so is the ORDER
+the blocks are written in (restore_order over pg_constraint) -- both were
+hand-kept lists beside a classification guard that did not check them, so a
+table added later would have shipped in an order nothing verified and with
+its sequence left at 1.
 """
 from __future__ import annotations
 
 from typing import IO
 
+from citation_catalog import (
+    foreign_key_edges,
+    present_tables,
+    restore_order,
+    serial_columns,
+    table_columns,
+)
 from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import CitationMode
-from pg_common import run_sql
 from pg_stream import stream_stdout
-
-# The ORDER the dumped tables are written in, and nothing else -- WHICH
-# tables are dumped comes from the catalog (citation_tables), the same
-# polarity table_columns() gives the column list. Order is still declared
-# here because the restore replays COPY blocks against live foreign keys:
-# citation.cites references citation.work by value, so work goes first.
-TABLE_DUMP_ORDER = ("work", "cites", "crawl_step", "public_policy", "schema_backfill")
 
 # One alias per dumped table (the same discipline public_dump.TABLE_ALIASES
 # follows): an unlisted table raises KeyError instead of quietly producing
@@ -80,33 +82,6 @@ _SOURCE = {
     "schema_backfill": "FROM citation.schema_backfill b ORDER BY b.name",
 }
 
-# Tables carrying a BIGSERIAL id whose sequence must be advanced past every
-# copied value, or a crawl continued on the restored artifact could try to
-# reuse an id already taken.
-_SERIAL_TABLES = ("work", "crawl_step")
-
-# Every ordinary table the schema actually holds. 'r' and 'p' only:
-# views, sequences and indexes are recreated by the DDL and carry no rows
-# of their own to copy.
-_TABLES_SQL = """
-SELECT c.relname
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'citation' AND c.relkind IN ('r', 'p')
-ORDER BY c.relname;
-"""
-
-_COLUMNS_SQL = """
-SELECT a.attname
-FROM pg_attribute a
-JOIN pg_class c ON c.oid = a.attrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'citation' AND c.relname = '{table}'
-  AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
-ORDER BY a.attnum;
-"""
-
-
 class TableUnclassified(RuntimeError):
     """A table in schema citation nobody has said how to dump."""
 
@@ -124,33 +99,22 @@ def classified_tables(present: list[str]) -> list[str]:
     """
     unknown = [name for name in present
                if name not in CITATION_COLUMN_CLASS or name not in TABLE_ALIASES
-               or name not in _SOURCE or name not in TABLE_DUMP_ORDER]
+               or name not in _SOURCE]
     if unknown:
         raise TableUnclassified(
             "таблица citation." + ", citation.".join(sorted(unknown))
             + " не классифицирована: дополните CITATION_COLUMN_CLASS "
-            "(deploy/citation_columns.py), TABLE_ALIASES, _SOURCE и "
-            "TABLE_DUMP_ORDER (deploy/citation_dump.py); сборка отказывается "
+            "(deploy/citation_columns.py), TABLE_ALIASES и _SOURCE "
+            "(deploy/citation_dump.py); сборка отказывается "
             "угадывать, уезжает ли новая таблица в public-артефакт"
         )
-    return sorted(present, key=TABLE_DUMP_ORDER.index)
+    return list(present)
 
 
 def citation_tables(env: dict) -> list[str]:
-    """The tables to dump, read from the catalog and held to the map."""
-    rows = run_sql(env, _TABLES_SQL, extra_args=["-t", "-A"]).stdout
-    present = [line.strip() for line in rows.splitlines() if line.strip()]
-    if not present:
-        raise RuntimeError("schema citation carries no tables -- wrong database?")
-    return classified_tables(present)
-
-
-def table_columns(env: dict, table: str) -> list[str]:
-    rows = run_sql(env, _COLUMNS_SQL.format(table=table), extra_args=["-t", "-A"]).stdout
-    columns = [line.strip() for line in rows.splitlines() if line.strip()]
-    if not columns:
-        raise RuntimeError(f"citation.{table} has no dumpable columns -- wrong table name?")
-    return columns
+    """The tables to dump: the catalog's list, held to the classification
+    and put in the order a restore needs."""
+    return restore_order(classified_tables(present_tables(env)), foreign_key_edges(env))
 
 
 def _select_expression(table: str, column: str, mode: str) -> str:
@@ -191,22 +155,23 @@ def copy_select(table: str, columns: list[str], mode: str) -> str:
     return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
-def _setval_sql(table: str) -> bytes:
+def _setval_sql(table: str, column: str) -> bytes:
     return (
-        f"SELECT setval(pg_get_serial_sequence('citation.{table}', 'id'), "
-        f"coalesce((SELECT max(id) FROM citation.{table}), 1), "
-        f"(SELECT max(id) FROM citation.{table}) IS NOT NULL);\n"
+        f"SELECT setval(pg_get_serial_sequence('citation.{table}', '{column}'), "
+        f"coalesce((SELECT max({column}) FROM citation.{table}), 1), "
+        f"(SELECT max({column}) FROM citation.{table}) IS NOT NULL);\n"
     ).encode()
 
 
-def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str], mode: str) -> None:
+def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
+                     mode: str, serials=()) -> None:
     dst.write(f"COPY citation.{table} ({', '.join(columns)}) FROM stdin;\n".encode())
     argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
             "-c", copy_select(table, columns, mode)]
     stream_stdout(argv, env, dst)
     dst.write(b"\\.\n")
-    if table in _SERIAL_TABLES:
-        dst.write(_setval_sql(table))
+    for column in serials:
+        dst.write(_setval_sql(table, column))
     dst.write(b"\n")
 
 
@@ -229,4 +194,5 @@ def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
     dump_ddl(env, dst)
     dst.write(b"\n")
     for table in citation_tables(env):
-        write_copy_block(env, dst, table, table_columns(env, table), mode)
+        write_copy_block(env, dst, table, table_columns(env, table), mode,
+                         serials=serial_columns(env, table))
