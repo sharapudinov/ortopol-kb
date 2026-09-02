@@ -96,21 +96,29 @@ class ResolveCitationModeTests(unittest.TestCase):
     result to the manifest and to the dump alike).
     """
 
-    def test_no_citation_schema_means_nothing_to_carry(self):
+    def test_no_citation_schema_leaves_a_full_build_nothing_to_carry(self):
+        """full describes the database as it is: no schema means no citation
+        block, and no policy applies to full in the first place."""
         with mock.patch.object(citation_profile, "citation_schema_exists", return_value=False), \
              mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
-            for profile in ("full", "public"):
-                self.assertEqual(
-                    citation_profile.resolve_citation_mode({}, profile),
-                    (CitationMode.NONE, PolicySource.NOT_APPLICABLE))
+            self.assertEqual(
+                citation_profile.resolve_citation_mode({}, "full"),
+                (CitationMode.NONE, PolicySource.NOT_APPLICABLE))
         require_mock.assert_not_called()
+
+    def test_a_public_build_against_a_schemaless_database_refuses(self):
+        """Shipping no citation graph at all is a decision, and the packager
+        does not get to make it by omission."""
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=False):
+            with self.assertRaises(citation_profile.CitationUnclassified) as ctx:
+                citation_profile.resolve_citation_mode({}, "public")
+        self.assertIn("citation schema not found", str(ctx.exception))
 
     def test_an_override_cannot_conjure_a_schema_that_is_absent(self):
         with mock.patch.object(citation_profile, "citation_schema_exists", return_value=False):
-            self.assertEqual(
-                citation_profile.resolve_citation_mode({}, "public", CitationMode.FULL_SKELETON),
-                (CitationMode.NONE, PolicySource.NOT_APPLICABLE),
-            )
+            with self.assertRaises(citation_profile.CitationUnclassified):
+                citation_profile.resolve_citation_mode(
+                    {}, "public", CitationMode.FULL_SKELETON)
 
     def test_full_profile_ships_the_whole_schema_whatever_the_policy_row_says(self):
         with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \

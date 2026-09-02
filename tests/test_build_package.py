@@ -407,34 +407,46 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
         self.assertEqual(seen["manifest_mode"], "full-skeleton")
         self.assertEqual(seen["policy_source"], "not-applicable")
 
-    def test_a_public_build_against_a_schemaless_database_claims_no_owner(self):
-        """The provenance comes out of the resolution, not out of the
-        arguments handed to it: there is nothing to carry, no owner row was
-        read, and naming the owner there would put a decision nobody made
-        into the one field designed to be unfabricable.
+    def test_a_public_build_against_a_schemaless_database_stops(self):
+        """Nothing was decided: no schema to read a policy from, no owner
+        row, and an artifact carrying no citation graph would be the
+        packager answering by omission a question that is the owner's.
+        Refused where an unclassified document is refused, and nothing is
+        written.
         """
         with mock.patch.object(citation_profile, "citation_schema_exists",
-                                return_value=False), \
-             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
+                                return_value=False):
             exit_code, seen = self._run(["--profile", "public"],
                                         resolve=citation_profile.resolve_citation_mode)
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(seen["manifest_mode"], "none")
-        self.assertEqual(seen["policy_source"], "not-applicable")
-        require_mock.assert_not_called()
+        self.assertEqual(exit_code, 1)
+        self.assertNotIn("manifest_mode", seen, "манифест собирался после отказа")
+        self.assertNotIn("dump_mode", seen, "дамп писался после отказа")
 
-    def test_an_override_against_a_schemaless_database_claims_no_override(self):
-        """Nothing was overridden either: the flag names a mode for a schema
-        that exists, and it cannot conjure one.
+    def test_an_override_against_a_schemaless_database_stops_too(self):
+        """The flag names a mode for a schema that exists, and it cannot
+        conjure one -- so it does not turn the refusal off either.
         """
         with mock.patch.object(citation_profile, "citation_schema_exists",
                                 return_value=False):
             exit_code, seen = self._run(
                 ["--profile", "public", "--policy-override", "topology-only"],
                 resolve=citation_profile.resolve_citation_mode)
+        self.assertEqual(exit_code, 1)
+        self.assertNotIn("manifest_mode", seen, "манифест собирался после отказа")
+
+    def test_a_full_build_against_a_schemaless_database_carries_nothing(self):
+        """full applies no policy and describes the database as it is: an
+        instance with no citation schema simply has no citation block, and
+        the provenance says nothing was decided.
+        """
+        with mock.patch.object(citation_profile, "citation_schema_exists",
+                                return_value=False), \
+             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
+            exit_code, seen = self._run([], resolve=citation_profile.resolve_citation_mode)
         self.assertEqual(exit_code, 0)
         self.assertEqual(seen["manifest_mode"], "none")
         self.assertEqual(seen["policy_source"], "not-applicable")
+        require_mock.assert_not_called()
 
 
 if __name__ == "__main__":

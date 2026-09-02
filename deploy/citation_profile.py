@@ -9,7 +9,13 @@ build exactly like an unclassified corpus.documents row does
 (legal_profile.require_classified / UNCLASSIFIED_FAILS_BUILD): the crawl
 kept titles, abstracts and citation edges of works by OTHER authors, and
 shipping that by default -- or stripping it by default -- would both be the
-packager deciding a question only the corpus owner can answer.
+packager deciding a question only the corpus owner can answer. An absent
+citation SCHEMA fails a public build for the same reason and not for a
+different one: "no graph travels" is the owner's mode 'none', recorded in a
+schema that exists, and nothing else looks like it from the artifact side.
+A FULL build is the opposite case throughout -- it applies no policy and
+describes the database as it is, so a schemaless instance simply yields no
+citation block.
 
 Three modes (manifest_contract.CitationMode, mirrored by
 citation.public_policy's own CHECK):
@@ -166,14 +172,25 @@ def citation_public_policy(env: dict) -> str | None:
     return scalar(env, _POLICY_SQL) or None
 
 
-def require_citation_mode(env: dict) -> str:
+def require_citation_schema(env: dict) -> None:
+    """Refuses a public build against a database with no citation schema.
+
+    Separate from the policy read below because it is asked on one more
+    path: --policy-override skips the owner's row, and an override names a
+    mode for a schema that exists -- it cannot conjure an absent one.
+    """
     if not citation_schema_exists(env):
         raise CitationUnclassified(
             "citation schema not found in the database -- the citation graph is part of "
             "the knowledge base, not an optional extra (see kb/CLAUDE.md); apply "
             "pg_schema_citation.sql (python3 pg_graph.py init) before building a public "
-            "artifact"
+            f"artifact: an artifact carrying no graph is mode {CitationMode.NONE!r} "
+            "recorded by the owner, never an omission the packager arrived at"
         )
+
+
+def require_citation_mode(env: dict) -> str:
+    require_citation_schema(env)
     mode = citation_public_policy(env)
     if mode not in CitationMode.ALL:
         raise CitationUnclassified(
@@ -208,20 +225,28 @@ def resolve_citation_mode(
     provenance computed from the profile alone would still call that the
     owner's decision.
 
-    So: NOT_APPLICABLE whenever nothing was decided here (no schema, or a
-    profile that applies no policy -- full carries the whole schema whatever
-    citation.public_policy says, see build_package.py's own docstring),
-    OVERRIDE only where the override picked the mode (TEST ONLY, see
-    build_package.py --help), OWNER only where citation.public_policy was
-    actually read. An override cannot conjure a schema that is absent, and
-    a public build with neither row nor override raises
-    CitationUnclassified.
+    So: NOT_APPLICABLE only on a profile that applies no policy -- full
+    carries whatever the schema holds, and holds nothing when there is no
+    schema (it describes the database as it is; see build_package.py's own
+    docstring), OVERRIDE only where the override picked the mode (TEST
+    ONLY, see build_package.py --help), OWNER only where
+    citation.public_policy was actually read.
+
+    A PUBLIC build against a database with no citation schema is the one
+    case that answers neither way: it raises. Returning NONE there would
+    have the packager decide by omission that the crawl record does not
+    travel -- the decision CITATION_POLICY_IS_DATA reserves for the owner,
+    who records it as mode 'none' in a schema that exists. An override
+    cannot conjure a schema that is absent, so it does not lift the refusal
+    either; and a public build with a schema but neither row nor override
+    raises for the neighbouring reason.
     """
-    if not citation_schema_exists(env):
-        return CitationMode.NONE, PolicySource.NOT_APPLICABLE
     if profile != Profile.PUBLIC:
+        if not citation_schema_exists(env):
+            return CitationMode.NONE, PolicySource.NOT_APPLICABLE
         return CitationMode.FULL_SKELETON, PolicySource.NOT_APPLICABLE
     if override:
+        require_citation_schema(env)
         return override, PolicySource.OVERRIDE
     return require_citation_mode(env), PolicySource.OWNER
 
