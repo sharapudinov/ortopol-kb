@@ -21,7 +21,9 @@ What they share, and why they live together:
   into the server).
 
 Data functions only: CLI parsing, dispatch and table printing live in
-pg_graph.py, which imports this module through pg_graph_queries.
+pg_graph.py, which imports this module directly -- the module that owns a
+name is the module a caller imports it from, and pg_graph_queries next door
+re-exports nothing of what follows.
 """
 from __future__ import annotations
 
@@ -170,6 +172,17 @@ WHERE embedding IS NOT NULL
 ORDER BY embedding <=> :'vec'::vector
 LIMIT :top;
 """
+
+
+def hybrid_sql_template() -> str:
+    """The un-substituted statement `pg_graph.py hybrid --show-sql` prints.
+
+    A function rather than the constant itself: the constant is this
+    module's private working material, and "show me the statement" is a
+    request the CLI is entitled to make without reaching past an
+    underscore into another module.
+    """
+    return _HYBRID_SQL
 
 
 def build_hybrid_sql(seeds: list[tuple[str, str, str]]) -> str | None:

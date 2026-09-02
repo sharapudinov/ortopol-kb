@@ -1,4 +1,8 @@
-"""Tests for pg_graph_queries.py (citers/candidates/cocitation/hybrid).
+"""Tests for the four graph consumers: candidates/cocitation, which
+pg_graph_queries.py owns, and citers/hybrid, which pg_graph_cypher.py owns.
+Each is exercised through the module that defines it -- neither re-exports
+the other, so a test importing one name from the wrong module would be
+asserting over a facade rather than over the code.
 
 Offline tests (no database) cover the pure/text-generation logic: depth
 validation, Cypher/SQL text shape, VOSviewer export format, ranking. Live
@@ -17,6 +21,7 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 import pg_graph_common
+import pg_graph_cypher as pgc
 import pg_graph_queries as pgq
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
@@ -40,13 +45,13 @@ def _live_env() -> dict[str, str]:
 class DepthBoundsTests(unittest.TestCase):
     def test_accepts_one_to_three(self):
         for depth in (1, 2, 3):
-            self.assertEqual(pgq.validate_depth(depth), depth)
+            self.assertEqual(pgc.validate_depth(depth), depth)
 
     def test_rejects_zero_and_four(self):
         with self.assertRaises(ValueError):
-            pgq.validate_depth(0)
+            pgc.validate_depth(0)
         with self.assertRaises(ValueError):
-            pgq.validate_depth(4)
+            pgc.validate_depth(4)
 
 
 class CitersQueryTests(unittest.TestCase):
@@ -58,12 +63,12 @@ class CitersQueryTests(unittest.TestCase):
     """
     def test_depth_bound_enforced(self):
         with self.assertRaises(ValueError):
-            pgq.build_citers_sql("seed", 0)
+            pgc.build_citers_sql("seed", 0)
         with self.assertRaises(ValueError):
-            pgq.build_citers_sql("seed", 4)
+            pgc.build_citers_sql("seed", 4)
 
     def test_embeds_escaped_key_and_depth_verbatim(self):
-        sql = pgq.build_citers_sql(r"it\'s", 2)
+        sql = pgc.build_citers_sql(r"it\'s", 2)
         self.assertIn("key: 'it\\'s'}", sql)
         self.assertIn("*1..2", sql)
         self.assertIn("ag_catalog.cypher('citation_graph'", sql)
@@ -71,7 +76,7 @@ class CitersQueryTests(unittest.TestCase):
 
     def test_delimiter_collision_raises(self):
         with self.assertRaises(ValueError):
-            pgq.build_citers_sql("x$CYPHERQ$y", 1)
+            pgc.build_citers_sql("x$CYPHERQ$y", 1)
 
 
 class CitersOrderTests(unittest.TestCase):
@@ -87,12 +92,12 @@ class CitersOrderTests(unittest.TestCase):
     ]
 
     def test_oldest_first_undated_last_ties_by_key(self):
-        self.assertEqual([r["key"] for r in pgq.sort_citers(self.ROWS)],
+        self.assertEqual([r["key"] for r in pgc.sort_citers(self.ROWS)],
                          ["Wc", "Wa", "Wz", "Wb"])
 
     def test_the_input_order_does_not_survive_into_the_answer(self):
         shuffled = list(reversed(self.ROWS))
-        self.assertEqual(pgq.sort_citers(shuffled), pgq.sort_citers(self.ROWS))
+        self.assertEqual(pgc.sort_citers(shuffled), pgc.sort_citers(self.ROWS))
 
 
 class CandidatesSqlTests(unittest.TestCase):
@@ -263,7 +268,7 @@ class HybridSqlTests(unittest.TestCase):
     """
 
     SEEDS = [("k1", "k1", "0.742"), ("k2", "k2", "0.5")]
-    SQL = pgq.build_hybrid_sql(SEEDS)
+    SQL = pgc.build_hybrid_sql(SEEDS)
 
     def test_cypher_sits_in_a_from_clause(self):
         self.assertIn("FROM ag_catalog.cypher(", self.SQL)
@@ -283,9 +288,9 @@ class HybridSqlTests(unittest.TestCase):
         self.assertIn("(E'k1', 0.742::double precision)", self.SQL)
 
     def test_the_one_vector_scan_uses_the_question_embedding(self):
-        self.assertIn("ORDER BY embedding <=> :'vec'::vector", pgq._NEAREST_SEEDS_SQL)
-        self.assertIn("citation.cypher_literal(key)", pgq._NEAREST_SEEDS_SQL)
-        self.assertIn("LIMIT :top", pgq._NEAREST_SEEDS_SQL)
+        self.assertIn("ORDER BY embedding <=> :'vec'::vector", pgc._NEAREST_SEEDS_SQL)
+        self.assertIn("citation.cypher_literal(key)", pgc._NEAREST_SEEDS_SQL)
+        self.assertIn("LIMIT :top", pgc._NEAREST_SEEDS_SQL)
 
     def test_traversal_is_bounded_by_the_seed_keys(self):
         self.assertIn("a.key IN ['k1', 'k2']", self.SQL)
@@ -294,20 +299,20 @@ class HybridSqlTests(unittest.TestCase):
         self.assertNotIn("MATCH (a:Work)-[:CITES]->(b:Work)\n        RETURN", self.SQL)
 
     def test_keys_are_spliced_already_escaped_not_re_escaped_here(self):
-        sql = pgq.build_hybrid_sql([("it's", r"it\'s", "0.1")])
+        sql = pgc.build_hybrid_sql([("it's", r"it\'s", "0.1")])
         self.assertIn(r"['it\'s']", sql, "ключ для Cypher переэкранирован здесь")
         self.assertIn("E'it\\'s'", sql, "ключ для SQL не проведён через sql_literal")
 
     def test_a_score_that_is_not_a_number_never_reaches_the_statement(self):
         with self.assertRaises(ValueError):
-            pgq.build_hybrid_sql([("k1", "k1", "0.5); DROP TABLE citation.work; --")])
+            pgc.build_hybrid_sql([("k1", "k1", "0.5); DROP TABLE citation.work; --")])
 
     def test_delimiter_collision_raises(self):
         with self.assertRaises(ValueError):
-            pgq.build_hybrid_sql([("x", "x$CYPHERQ$y", "0.5")])
+            pgc.build_hybrid_sql([("x", "x$CYPHERQ$y", "0.5")])
 
     def test_no_seeds_means_no_statement_to_run(self):
-        self.assertIsNone(pgq.build_hybrid_sql([]))
+        self.assertIsNone(pgc.build_hybrid_sql([]))
 
 
 class LiveConsumersTests(unittest.TestCase):
@@ -347,7 +352,7 @@ class LiveConsumersTests(unittest.TestCase):
         )
         pg_graph_common.project(self.env)
 
-        citer_keys = {r["key"] for r in pgq.citers(self.env, "INDEX", depth=1)}
+        citer_keys = {r["key"] for r in pgc.citers(self.env, "INDEX", depth=1)}
         self.assertIn(f"{self.PREFIX}b", citer_keys)
 
         # ALL_PAIRS: the fixture's pair is co-cited once, so it sits at the
@@ -443,7 +448,7 @@ class LiveConsumersTests(unittest.TestCase):
         self.assertEqual(by_key[f"{self.PREFIX}b"]["links"], 1)
         self.assertNotIn(f"{self.PREFIX}c", by_key, "--min-links не отфильтровал узел без связей")
 
-        rows = pgq.hybrid(self.env, "тестовый вопрос", top=400)
+        rows = pgc.hybrid(self.env, "тестовый вопрос", top=400)
         if rows:  # ollama may be unavailable; hybrid() then returns []
             self.assertTrue(all(r["neighbor_key"] for r in rows))
 

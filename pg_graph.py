@@ -2,10 +2,11 @@
 """CLI over the citation AGE graph (schema pg_schema_citation.sql).
 
 Argument parsing, dispatch and table printing, and nothing else: the psql/
-AGE plumbing lives in pg_graph_common.py and the queries in
-pg_graph_queries.py (which re-exports the two Cypher ones from
-pg_graph_cypher.py). Both are imported at module level -- neither imports
-this module, so there is no cycle to defer an import around.
+AGE plumbing lives in pg_graph_common.py, the relational queries in
+pg_graph_queries.py and the two Cypher ones in pg_graph_cypher.py, each
+imported from the module that owns it. All three are imported at module
+level -- none imports this module, so there is no cycle to defer an import
+around.
 
 Usage:
     python3 pg_graph.py init                  # applies pg_schema_citation.sql
@@ -24,6 +25,7 @@ import sys
 from pathlib import Path
 
 import pg_graph_common
+import pg_graph_cypher as pgc
 import pg_graph_queries as pgq
 from pg_common import PostgresUnavailable, load_pgenv
 
@@ -47,7 +49,7 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
 
 
 def cmd_citers(args, env) -> int:
-    rows = pgq.citers(env, args.document_id, depth=args.depth)
+    rows = pgc.citers(env, args.document_id, depth=args.depth)
     _print_table(["id", "год", "kind", "title"],
                  [[r["key"], str(r["year"] or ""), r["kind"], r["title"]] for r in rows])
     return 0
@@ -76,9 +78,9 @@ def cmd_cocitation(args, env) -> int:
 
 def cmd_hybrid(args, env) -> int:
     if args.show_sql:
-        print(pgq._HYBRID_SQL)
+        print(pgc.hybrid_sql_template())
         return 0
-    rows = pgq.hybrid(env, args.question, top=args.top)
+    rows = pgc.hybrid(env, args.question, top=args.top)
     _print_table(
         ["seed", "год", "title", "score", "направление", "сосед", "заголовок соседа"],
         [[r["key"], str(r["year"] or ""), r["title"], f"{r['score']:.3f}",

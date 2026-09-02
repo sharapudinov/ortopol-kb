@@ -68,11 +68,11 @@ CORPUS_LIB_FILES = [
     # The CLI over it, because AGENT_GUIDE.md documents `pg_graph.py
     # project --check` and the four query subcommands to the recipient ...
     "pg_graph.py",
-    # ... and the query layer behind citers/candidates/cocitation/hybrid,
-    # which re-exports the two Cypher consumers from pg_graph_cypher.py --
-    # bundling only the CLI left every documented graph query raising
-    # ModuleNotFoundError on a package whose own guide says it can answer
-    # them.
+    # ... and the query layer behind citers/candidates/cocitation/hybrid:
+    # the relational two here, the two Cypher ones in pg_graph_cypher.py,
+    # each imported by the CLI from the module that owns it. Bundling only
+    # the CLI left every documented graph query raising ModuleNotFoundError
+    # on a package whose own guide says it can answer them.
     "pg_graph_queries.py",
     "pg_graph_cypher.py",
     # ... and the schema `pg_graph.py init` applies. pg_graph_common.

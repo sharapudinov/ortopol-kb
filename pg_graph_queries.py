@@ -5,8 +5,10 @@ Both read citation.work/citation.cites directly -- a nearest-neighbour
 ranking with a 1-hop link count, and a co-citation self-join, are plain SQL
 questions, and answering them through Cypher would buy nothing. The two
 graph-shaped consumers (citers, hybrid) live in pg_graph_cypher.py and are
-re-exported here, so pg_graph.py and every other caller still see one
-module with all four.
+imported FROM THERE by whoever needs them -- this module re-exports
+nothing. A facade would put the two files back into one surface: a change
+to the other module's own private SQL constants would be a change to this
+module's exports, which is precisely the coupling the split removed.
 
 Both talk to Postgres through `pg_graph_common.graph_sql()` like everything
 else that touches this schema -- see that module's own docstring for why
@@ -23,18 +25,6 @@ from pathlib import Path
 import pg_graph_common
 import pg_search
 from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
-from pg_graph_cypher import (  # noqa: F401  (re-exported: see the docstring)
-    MAX_DEPTH,
-    MIN_DEPTH,
-    build_citers_sql,
-    build_hybrid_sql,
-    citers,
-    hybrid,
-    sort_citers,
-    validate_depth,
-    _HYBRID_SQL,
-    _NEAREST_SEEDS_SQL,
-)
 
 
 # ------------------------------------------------------------- candidates --
