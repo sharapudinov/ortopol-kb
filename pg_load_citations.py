@@ -26,17 +26,16 @@ import sys
 import time
 from pathlib import Path
 
-from citations import frontier, hub_report, journal, threshold_store, twin_pass
-from citations.calibration import (
-    REPORT_PATH,
-    SPIKE,
-    calibration_report,
-    carry_over_verdict,
-    run_fields,
-    suggest_tau,
-)
+from citations import frontier, journal, twin_pass
 from citations.crawl import HUB_CAP, Snowball
+from citations.mathnet import MathnetClient, mathnet_id
 from citations.openalex_client import OpenAlexClient, QuotaExhausted
+from citations.spike_runs import (
+    DryRunMeasurementsWriter,
+    MeasurementsWriter,
+    record_calibration,
+    record_hub_report,
+)
 from citations.store import (
     DryRunWriter,
     PostgresWriter,
@@ -45,12 +44,11 @@ from citations.store import (
     fresh_keys,
     seed_matches,
 )
-from citations.mathnet import MathnetClient, mathnet_id
 from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 from paths import default_cache_dir, default_corpus_dir, default_mathnet_cache_dir
 from pg_common import PostgresUnavailable, load_pgenv, run_sql
 from pg_graph_common import check as graph_check
-from pg_graph_common import init_schema, project
+from pg_graph_common import citation_schema_exists, init_schema, project
 
 COVERAGE_RUN = 85
 
@@ -136,51 +134,6 @@ def make_embedder(model: str, dims: int):
     return lambda texts: frontier.embed_texts(texts, model, dims)
 
 
-def do_calibrate(env, snowball: Snowball, client, data_root: Path) -> int:
-    rows = snowball.calibrate()
-    if not rows:
-        print("кандидатов depth-1 нет — калибровать нечего", file=sys.stderr)
-        return 1
-    tau_hint = suggest_tau(rows)
-    run_sql(env, threshold_store.THRESHOLD_DDL)
-    run_id = threshold_store.upsert_run(env, SPIKE, run_fields(rows, tau_hint))
-    written = threshold_store.insert_threshold_rows(env, run_id, rows)
-    report = data_root / REPORT_PATH
-    report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(
-        carry_over_verdict(calibration_report(rows, tau_hint, snowball.candidate_refs), report),
-        encoding="utf-8")
-    print(f"run {run_id} ({SPIKE}); строк порога: {written}; отчёт: {report}")
-    print(f"запросов OpenAlex: {client.n_requests} (из кэша: {client.n_cache_hits})")
-    print(f"рекомендация τ (не вердикт): {tau_hint:.4f}")
-    return 0
-
-
-def do_hub_report(env, args, data_root: Path) -> int:
-    """Отрицательный результат про цену расширения вверх. Сети не требует."""
-    counts = hub_report.batch_counts(Path(args.cache_dir))
-    run_sql(env, hub_report.DDL)
-    run_id = threshold_store.upsert_run(env, hub_report.SPIKE,
-                                        hub_report.run_fields(counts, []))
-    run_sql(env, hub_report.POPULATE, variables={"run": str(run_id)})
-    rows = hub_report.stats(env, run_id)
-    # Второй проход по строке прогона: verify_query называет ожидаемые числа,
-    # а они известны только после заполнения таблицы.
-    run_id = threshold_store.upsert_run(env, hub_report.SPIKE,
-                                        hub_report.run_fields(counts, rows))
-    run_sql(env, hub_report.POPULATE, variables={"run": str(run_id)})
-    rows = hub_report.stats(env, run_id)
-    report = data_root / hub_report.REPORT_PATH
-    report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(hub_report.report(counts, rows, hub_report.worst_nodes(env, run_id),
-                                        run_id, args.hub_cap), encoding="utf-8")
-    total = sum(int(r[1]) for r in rows)
-    print(f"run {run_id} ({hub_report.SPIKE}); узлов depth-1: {total}; отчёт: {report}")
-    for row in rows:
-        print("  " + " | ".join(row))
-    return 0
-
-
 def do_merge_twins(env, args) -> int:
     merged = twin_pass.merge_twins(env, args.crawl_id or "merge-twins",
                                    dry_run=args.dry_run)
@@ -247,11 +200,22 @@ def main(argv: list[str] | None = None) -> int:
     except PostgresUnavailable as exc:
         print(f"Postgres недоступен: {exc}", file=sys.stderr)
         return 1
-    init_schema(env)
+    # --dry-run не трогает базу ВООБЩЕ, схему включительно: применение
+    # pg_schema_citation.sql — это ALTER/CREATE на живой базе, то есть ровно
+    # то, чего режим обещает не делать. Схема должна уже быть, и применяет
+    # её отдельная санкционированная точка входа.
+    if args.dry_run:
+        if not citation_schema_exists(env):
+            print("схема citation не применена — python3 pg_graph.py init", file=sys.stderr)
+            return 1
+    else:
+        init_schema(env)
+    measurements = DryRunMeasurementsWriter() if args.dry_run else MeasurementsWriter(env)
 
     # Оба режима ниже считают по уже записанному и кэшу: ни семян, ни сети.
     if args.hub_report:
-        return do_hub_report(env, args, corpus_dir.parent)
+        return record_hub_report(env, args.cache_dir, corpus_dir.parent,
+                                 measurements, args.hub_cap)
     if args.merge_twins:
         return do_merge_twins(env, args)
 
@@ -278,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"семян: {len(snowball.seed_keys)}; "
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:
-            return do_calibrate(env, snowball, client, corpus_dir.parent)
+            return record_calibration(snowball, client, corpus_dir.parent, measurements)
         return do_crawl(env, snowball, client, args)
     except QuotaExhausted as exc:
         writer.journal([{"crawl_id": crawl_id, "depth": args.depth, "action": "error",

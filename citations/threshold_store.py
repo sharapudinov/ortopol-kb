@@ -60,30 +60,68 @@ CREATE INDEX IF NOT EXISTS citation_frontier_threshold_score
 
 
 # -- run row and per-candidate rows ------------------------------------
-def upsert_run(env, spike: str, fields: dict) -> int:
-    """Idempotent by spike name, the convention run 85 established: the id
-    shifts on every reload, the spike name does not."""
-    run_sql(env, "DELETE FROM measurements.run WHERE spike = :'spike';",
-            variables={"spike": spike})
-    names = ["spike"] + list(fields)
-    variables = {"spike": spike}
-    values = []
+def _bind(fields: dict) -> tuple[list[tuple[str, str]], dict]:
+    """[(column, SQL expression)] plus the psql variables they read.
+
+    Shared by the insert and the in-place update below so a text[] field is
+    spelled the same way by both. An empty list becomes NULL rather than an
+    empty array: the run row means "not applicable" by it, and the two are
+    different answers to a later query.
+    """
+    bound: list[tuple[str, str]] = []
+    variables: dict[str, str] = {}
     for name, value in fields.items():
         if isinstance(value, (list, tuple)):
             if not value:
-                values.append("NULL")
+                bound.append((name, "NULL"))
                 continue
             variables.update({f"{name}_{i}": str(v) for i, v in enumerate(value)})
             placeholders = ",".join(f":'{name}_{i}'" for i in range(len(value)))
-            values.append(f"ARRAY[{placeholders}]::text[]")
+            bound.append((name, f"ARRAY[{placeholders}]::text[]"))
         else:
             variables[name] = str(value)
-            values.append(f":'{name}'")
+            bound.append((name, f":'{name}'"))
+    return bound, variables
+
+
+def upsert_run(env, spike: str, fields: dict) -> int:
+    """Idempotent by spike name, the convention run 85 established: the id
+    shifts on every reload, the spike name does not.
+
+    Idempotent HERE means DELETE + INSERT, so it also discards every data
+    row that references the old id (ON DELETE CASCADE). Use it to establish
+    the run, never to amend one that already has its data:
+    update_run_fields() is that.
+    """
+    run_sql(env, "DELETE FROM measurements.run WHERE spike = :'spike';",
+            variables={"spike": spike})
+    bound, variables = _bind(fields)
+    variables["spike"] = spike
+    names = ["spike"] + [name for name, _expr in bound]
+    values = [":'spike'"] + [expr for _name, expr in bound]
     sql = (f"INSERT INTO measurements.run ({', '.join(names)}) "
-           f"VALUES (:'spike', {', '.join(values)});")
+           f"VALUES ({', '.join(values)});")
     run_sql(env, sql, variables=variables)
     return int(scalar(env, "SELECT id FROM measurements.run WHERE spike = :'spike';",
                       variables={"spike": spike}))
+
+
+def update_run_fields(env, spike: str, fields: dict) -> None:
+    """Amends the run row in place, keeping its id and its data rows.
+
+    The field this exists for is verify_query: it must name the numbers the
+    measurement produced, and those are known only after the data table is
+    filled. Restating them with a second upsert_run() would delete the run
+    row -- and cascade away exactly the rows just written, forcing the whole
+    aggregation pass to run a second time to put them back.
+    """
+    bound, variables = _bind(fields)
+    if not bound:
+        return
+    variables["spike"] = spike
+    assignments = ", ".join(f"{name} = {expr}" for name, expr in bound)
+    run_sql(env, f"UPDATE measurements.run SET {assignments} WHERE spike = :'spike';",
+            variables=variables)
 
 
 def insert_threshold_rows(env, run_id: int, rows) -> int:
