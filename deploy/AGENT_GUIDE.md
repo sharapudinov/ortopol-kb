@@ -63,7 +63,8 @@ compose своим `--env-file` не разворачивает `$` и до `PGP
 `pg_rank_probe.py`), а также копии общих модулей репозитория
 (`corpus_lib/pg_common.py`, `corpus_lib/pg_search.py`,
 `corpus_lib/pg_graph_common.py`, `corpus_lib/pg_graph.py`,
-`corpus_lib/pg_graph_queries.py`, `corpus_lib/pg_graph_cypher.py`) лежат прямо
+`corpus_lib/pg_graph_candidates.py`,
+`corpus_lib/pg_graph_cocitation.py`, `corpus_lib/pg_graph_cypher.py`) лежат прямо
 здесь, рядом с дампом и `manifest.json` — запускаются без доступа к репозиторию:
 
 ```bash

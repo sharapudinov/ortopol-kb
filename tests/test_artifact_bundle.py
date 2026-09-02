@@ -265,8 +265,8 @@ class ImportClosureTests(unittest.TestCase):
     def test_graph_query_modules_resolve_inside_the_bundle(self):
         """AGENT_GUIDE.md documents `pg_graph.py citers|candidates|
         cocitation|hybrid` for artifact recipients, and those four
-        subcommands import pg_graph_queries and pg_graph_cypher (both of
-        which import pg_graph_common). Bundling the plumbing alone --
+        subcommands import pg_graph_candidates, pg_graph_cocitation and
+        pg_graph_cypher (all of which import pg_graph_common). Bundling the plumbing alone --
         enough for the smoke check that only needs graph_exists/projection_reading
         -- left every documented query command failing with
         ModuleNotFoundError on a package that declares it can answer them.
@@ -276,8 +276,8 @@ class ImportClosureTests(unittest.TestCase):
             artifact_bundle.bundle_runtime_files(workdir)
             result = subprocess.run(
                 [sys.executable, "-c",
-                 "import pg_graph_common, pg_graph, pg_graph_queries, "
-                 "pg_graph_cypher"],
+                 "import pg_graph_common, pg_graph, pg_graph_candidates, "
+                 "pg_graph_cocitation, pg_graph_cypher"],
                 cwd=workdir / "corpus_lib", capture_output=True, text=True,
             )
         self.assertEqual(
@@ -319,7 +319,7 @@ class ImportClosureTests(unittest.TestCase):
                  "from deploy_pathfix import ensure_corpus_importable; "
                  "ensure_corpus_importable(); "
                  "import pg_common, pg_search, pg_graph_common, pg_graph, "
-                 "pg_graph_queries"],
+                 "pg_graph_candidates, pg_graph_cocitation"],
                 cwd=workdir, capture_output=True, text=True,
             )
         self.assertEqual(result.returncode, 0, result.stderr)

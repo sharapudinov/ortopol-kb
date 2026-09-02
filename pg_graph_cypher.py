@@ -1,7 +1,7 @@
 """The two graph-shaped consumers of citation_graph: citers and hybrid.
 
-Split from pg_graph_queries.py (kb/CLAUDE.md FILE_SIZE) along the line that
-already ran through it: these two are the ones that actually issue Cypher.
+Split from the relational query modules (kb/CLAUDE.md FILE_SIZE) along the
+line that already ran through it: these two actually issue Cypher.
 "Who points at this node transitively" and "what does the graph say about
 my nearest neighbours" are questions relational SQL answers only awkwardly;
 candidates/cocitation next door are plain relational reads and share none of
@@ -22,8 +22,8 @@ What they share, and why they live together:
 
 Data functions only: CLI parsing, dispatch and table printing live in
 pg_graph.py, which imports this module directly -- the module that owns a
-name is the module a caller imports it from, and pg_graph_queries next door
-re-exports nothing of what follows.
+name is the module a caller imports it from, and the relational pair next
+door re-exports nothing of what follows.
 """
 from __future__ import annotations
 
@@ -175,7 +175,7 @@ ORDER BY 4 DESC, 1, 5;
 #
 # The question vector is spliced ONCE, into a MATERIALIZED CTE the scan
 # reads through a LATERAL -- the shape the sibling nearest-neighbour query
-# (pg_graph_queries._CANDIDATES_SQL) already uses, and for the reason given
+# (pg_graph_candidates._CANDIDATES_SQL) already uses, and for the reason given
 # there: psql expands a script variable textually, so `:'vec'` in both the
 # score and the ORDER BY wrote the 1024 floats into the statement twice and
 # cast them twice. AS MATERIALIZED because a single-reference CTE is

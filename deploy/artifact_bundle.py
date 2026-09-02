@@ -82,7 +82,8 @@ CORPUS_LIB_FILES = [
     # each imported by the CLI from the module that owns it. Bundling only
     # the CLI left every documented graph query raising ModuleNotFoundError
     # on a package whose own guide says it can answer them.
-    "pg_graph_queries.py",
+    "pg_graph_candidates.py",
+    "pg_graph_cocitation.py",
     "pg_graph_cypher.py",
     # ... and the three schema files `pg_graph.py init` applies, in order
     # (data definition, AGE projection, journal backfill -- kb/CLAUDE.md

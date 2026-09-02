@@ -88,7 +88,7 @@ $$ LANGUAGE sql IMMUTABLE;
 -- and no command text is assembled here at all -- with it goes the
 -- $CYPHERQ$ delimiter hazard the string-building form had to guard
 -- against. citation.cypher_literal() above stays: the READ side
--- (pg_graph_queries.py) still splices a key into a Cypher command.
+-- (pg_graph_cypher.py) still splices a key into a Cypher command.
 -- jsonb_strip_nulls keeps a missing year/title out of the property map
 -- entirely rather than storing a null one, exactly as the Cypher form did.
 --

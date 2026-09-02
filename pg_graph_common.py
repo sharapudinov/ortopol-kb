@@ -16,7 +16,7 @@ the contract.
 
 Separate from pg_graph.py, which is the CLI over these functions and
 nothing else. Five modules need this plumbing and none of them wants a
-command-line parser: pg_graph_queries/pg_graph_cypher issue the queries,
+command-line parser: pg_graph_candidates/pg_graph_cocitation/pg_graph_cypher issue the queries,
 citation_checks.py and deploy/smoke_checks.py compare the projection
 against the relational tables, and pg_load_citations.py applies the schema
 and reprojects after a crawl. While these functions lived in pg_graph.py,

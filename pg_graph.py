@@ -2,10 +2,10 @@
 """CLI over the citation AGE graph (schema pg_schema_citation.sql).
 
 Argument parsing, dispatch and table printing, and nothing else: the psql/
-AGE plumbing lives in pg_graph_common.py, the relational queries in
-pg_graph_queries.py and the two Cypher ones in pg_graph_cypher.py, each
-imported from the module that owns it. All three are imported at module
-level -- none imports this module, so there is no cycle to defer an import
+AGE plumbing lives in pg_graph_common.py, the two relational queries in
+pg_graph_candidates.py and pg_graph_cocitation.py and the two Cypher ones
+in pg_graph_cypher.py, each imported from the module that owns it. All four
+are imported at module level -- none imports this module, so there is no cycle to defer an import
 around.
 
 Usage:
@@ -24,9 +24,10 @@ import argparse
 import sys
 from pathlib import Path
 
+import pg_graph_candidates as pgcand
+import pg_graph_cocitation as pgcoci
 import pg_graph_common
 import pg_graph_cypher as pgc
-import pg_graph_queries as pgq
 from pg_common import PostgresUnavailable, load_pgenv
 
 try:
@@ -56,7 +57,7 @@ def cmd_citers(args, env) -> int:
 
 
 def cmd_candidates(args, env) -> int:
-    rows = pgq.candidates(env, top=args.top, query=args.query, min_links=args.min_links)
+    rows = pgcand.candidates(env, top=args.top, query=args.query, min_links=args.min_links)
     _print_table(
         ["score", "links", "key", "год", "title"],
         [[f"{r['score']:.3f}", str(r["links"]), r["key"], str(r["year"] or ""), r["title"]] for r in rows],
@@ -65,10 +66,10 @@ def cmd_candidates(args, env) -> int:
 
 
 def cmd_cocitation(args, env) -> int:
-    pairs = pgq.cocitation(env, min_count=args.min_count,
+    pairs = pgcoci.cocitation(env, min_count=args.min_count,
                            max_out_degree=args.max_out_degree, limit=args.limit)
     if args.export_vosviewer:
-        map_path, network_path, n_nodes, n_edges = pgq.write_vosviewer_export(pairs, Path(args.export_vosviewer))
+        map_path, network_path, n_nodes, n_edges = pgcoci.write_vosviewer_export(pairs, Path(args.export_vosviewer))
         print(f"{map_path}: {n_nodes} узлов")
         print(f"{network_path}: {n_edges} связей")
         return 0
@@ -119,13 +120,13 @@ def build_parser() -> argparse.ArgumentParser:
     cocitation_parser = sub.add_parser("cocitation")
     cocitation_parser.add_argument("--min-count", type=int, default=2, dest="min_count")
     cocitation_parser.add_argument(
-        "--max-out-degree", type=int, default=pgq.MAX_OUT_DEGREE, dest="max_out_degree",
+        "--max-out-degree", type=int, default=pgcoci.MAX_OUT_DEGREE, dest="max_out_degree",
         help="a citing work with more outgoing references than this generates no pairs "
-             f"(default {pgq.MAX_OUT_DEGREE}; see pg_graph_queries._COCITATION_SQL)",
+             f"(default {pgcoci.MAX_OUT_DEGREE}; see pg_graph_cocitation._COCITATION_SQL)",
     )
     cocitation_parser.add_argument(
-        "--limit", type=int, default=pgq.COCITATION_LIMIT,
-        help=f"how many of the most co-cited pairs to return (default {pgq.COCITATION_LIMIT})",
+        "--limit", type=int, default=pgcoci.COCITATION_LIMIT,
+        help=f"how many of the most co-cited pairs to return (default {pgcoci.COCITATION_LIMIT})",
     )
     cocitation_parser.add_argument("--export-vosviewer", default=None, dest="export_vosviewer")
 

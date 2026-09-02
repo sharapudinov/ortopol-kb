@@ -152,7 +152,7 @@ class CitationGraphLiveTests(unittest.TestCase):
         ).stdout.strip()
         self.assertTrue(row, "спроецированный узел не найден по своему же ключу")
         # agtype's ::text cast strips the JSON-style quoting a bare agtype
-        # column prints (the same cast pg_graph_queries relies on), so these
+        # column prints (the same cast pg_graph_candidates relies on), so these
         # are the plain strings, newline and all.
         title, year, kind = row.split(FIELD_SEP)
         self.assertEqual(title, raw_title)

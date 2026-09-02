@@ -20,8 +20,10 @@ import _pathfix_deploy  # noqa: F401
 import citation_checks
 import citation_profile
 import pg_graph
+import pg_graph_candidates
+import pg_graph_cocitation
 import pg_graph_common
-import pg_graph_queries
+import pg_graph_cypher
 
 
 class CompareCountsTests(unittest.TestCase):
@@ -96,23 +98,29 @@ class CliLayerTests(unittest.TestCase):
             for node in self.TREE.body if isinstance(node, ast.Import)
             for alias in node.names
         }
-        self.assertIn("pg_graph_queries", imported)
+        self.assertIn("pg_graph_candidates", imported)
+        self.assertIn("pg_graph_cocitation", imported)
         self.assertIn("pg_graph_cypher", imported)
         self.assertIn("pg_graph_common", imported)
 
-    def test_the_query_layer_does_not_re_export_the_cypher_module(self):
-        """pg_graph_cypher owns citers/hybrid, pg_graph_queries owns the
-        relational four, and a caller imports the module that owns the name.
-        A facade re-exporting the other module's surface -- underscore-
-        private names included -- makes the two files one unit again, which
-        is the coupling the split was made to remove.
+    def test_no_query_module_re_exports_another(self):
+        """pg_graph_cypher owns citers/hybrid, pg_graph_candidates and
+        pg_graph_cocitation own one relational consumer each, and a caller
+        imports the module that owns the name. A facade re-exporting a
+        neighbour's surface -- underscore-private names included -- makes
+        the files one unit again, which is the coupling the split was made
+        to remove.
         """
-        tree = ast.parse(Path(pg_graph_queries.__file__).read_text(encoding="utf-8"))
-        imported = {node.module for node in ast.walk(tree)
-                    if isinstance(node, ast.ImportFrom)}
-        imported |= {alias.name for node in ast.walk(tree)
-                     if isinstance(node, ast.Import) for alias in node.names}
-        self.assertNotIn("pg_graph_cypher", imported)
+        modules = (pg_graph_candidates, pg_graph_cocitation, pg_graph_cypher)
+        names = {module.__name__ for module in modules}
+        for module in modules:
+            tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+            imported = {node.module for node in ast.walk(tree)
+                        if isinstance(node, ast.ImportFrom)}
+            imported |= {alias.name for node in ast.walk(tree)
+                         if isinstance(node, ast.Import) for alias in node.names}
+            self.assertEqual(imported & names, set(),
+                             f"{module.__name__} imports a sibling query module")
 
     def test_the_plumbing_is_not_defined_here(self):
         defined = {node.name for node in self.TREE.body
