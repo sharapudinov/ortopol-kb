@@ -8,7 +8,7 @@ together only if something compares them, so:
 - an AST scan over every module that talks to the citation schema refuses a
   bare literal from either vocabulary (docstrings excepted -- prose about a
   value is not a use of it);
-- a static test reads pg_schema_citation.sql itself and compares the literals
+- a static test reads the schema files themselves and compares the literals
   in each CHECK clause against the Python constants in BOTH directions, so a
   value added on one side only fails on ANY checkout, server or not;
 - a live test asks the same of pg_get_constraintdef(), which is the constraint
@@ -54,17 +54,22 @@ VALUES = tuple(WorkKind.ALL) + tuple(CrawlAction.ALL)
 VOCAB_FILE = Path(citation_vocab.__file__).resolve()
 
 SCHEMA_FILE = kb_root() / "pg_schema_citation.sql"
+CONSTRAINTS_FILE = kb_root() / "pg_schema_citation_constraints.sql"
 
-# Each vocabulary as the schema FILE spells it. The kind and the mode are
-# inline CHECKs on their column; the action is the `wanted` array of the DO
-# block that widens its named constraint without a validation scan. Anchored
-# on the column name, so a CHECK elsewhere in the file cannot stand in for a
-# missing one -- and a clause that stops matching is a failure here, never a
-# silently empty comparison (test_every_vocabulary_is_found_and_is_not_empty).
+# Each vocabulary as the schema FILES spell it, and WHICH file spells it.
+# kind and mode are inline CHECKs on their column, in the data definition;
+# action lives in the constraints file, as the wanted array handed to the
+# function that widens a named constraint without a validation scan (an
+# inline CHECK cannot be widened on a table that already exists). Anchored on
+# the column name -- or, in the constraints file, on the constraint name --
+# so a clause elsewhere cannot stand in for a missing one, and a clause that
+# stops matching is a failure here rather than a silently empty comparison
+# (test_every_vocabulary_is_found_and_is_not_empty).
 SQL_CLAUSES = {
-    "kind": re.compile(r"CHECK \(kind IN \(([^)]*)\)\)"),
-    "action": re.compile(r"wanted\s+CONSTANT text\[\] := ARRAY\[([^\]]*)\]", re.S),
-    "mode": re.compile(r"CHECK \(mode IN \(([^)]*)\)\)"),
+    "kind": (SCHEMA_FILE, re.compile(r"CHECK \(kind IN \(([^)]*)\)\)")),
+    "action": (CONSTRAINTS_FILE,
+               re.compile(r"'crawl_step_action_check',\s*ARRAY\[([^\]]*)\]", re.S)),
+    "mode": (SCHEMA_FILE, re.compile(r"CHECK \(mode IN \(([^)]*)\)\)")),
 }
 PYTHON_VOCABULARIES = {
     "kind": WorkKind.ALL,
@@ -215,14 +220,11 @@ class VocabularyMatchesTheSchemaFileTests(unittest.TestCase):
     comparison below stays beside it.
     """
 
-    @classmethod
-    def setUpClass(cls):
-        cls.sql = SCHEMA_FILE.read_text(encoding="utf-8")
-
     def _literals(self, column: str) -> set[str]:
-        found = SQL_CLAUSES[column].search(self.sql)
+        path, pattern = SQL_CLAUSES[column]
+        found = pattern.search(path.read_text(encoding="utf-8"))
         self.assertIsNotNone(
-            found, f"{column}: словарь не найден в {SCHEMA_FILE.name} -- "
+            found, f"{column}: словарь не найден в {path.name} -- "
                    "форма CHECK изменилась, и сравнивать стало нечего")
         return set(re.findall(r"'([^']*)'", found.group(1)))
 

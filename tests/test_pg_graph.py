@@ -42,12 +42,13 @@ class CompareCountsTests(unittest.TestCase):
 
 class SchemaFileSplitTests(unittest.TestCase):
     """pg_schema_citation.sql grew past kb/CLAUDE.md's FILE_SIZE cap (code
-    <= 300 lines) and was split by responsibility into three files: data
-    definition, AGE projection, journal backfill. What matters structurally
-    is that each stays under the cap and that init_schema() applies all
-    three, in that fixed order (the backfill's UPDATEs read columns the
-    first file adds; the projection functions are independent of both, but
-    documented and bundled between them -- kb/CLAUDE.md SCHEMA_PATHS order).
+    <= 300 lines) and was split by responsibility into four files: data
+    definition, idempotent constraint migrations, AGE projection, journal
+    backfill. What matters structurally is that each stays under the cap and
+    that init_schema() applies all of them, in that fixed order (the
+    constraints ALTER tables the first file declares; the backfill's UPDATEs
+    read columns it adds; the projection functions are independent of both,
+    but documented and bundled between them -- SCHEMA_PATHS order).
     """
 
     def test_every_schema_file_is_within_the_line_cap(self):
@@ -55,7 +56,7 @@ class SchemaFileSplitTests(unittest.TestCase):
             lines = path.read_text(encoding="utf-8").count("\n")
             self.assertLessEqual(lines, 300, f"{path.name}: {lines} lines")
 
-    def test_init_schema_applies_all_three_files_in_order(self):
+    def test_init_schema_applies_every_file_in_order(self):
         applied = []
         with mock.patch.object(
             pg_graph_common, "run_sql_file",
@@ -303,7 +304,7 @@ class CrawlStepIndexTests(unittest.TestCase):
     matches two of its columns by equality, once per name it removes.
     """
 
-    SCHEMA = pg_graph_common.SCHEMA_PATHS[0].read_text(encoding="utf-8")
+    SCHEMA = pg_graph_common.SCHEMA_DEFINITION.read_text(encoding="utf-8")
 
     def test_the_cut_columns_are_indexed_idempotently(self):
         for column in ("frontier_key", "candidate_key"):
@@ -323,7 +324,7 @@ class ProjectionShapeTests(unittest.TestCase):
     whole vertex label per edge (AGE indexes no property by itself).
     """
 
-    SCHEMA = pg_graph_common.SCHEMA_PATHS[1].read_text(encoding="utf-8")
+    SCHEMA = pg_graph_common.SCHEMA_GRAPH.read_text(encoding="utf-8")
 
     def test_labels_are_filled_by_bulk_insert(self):
         self.assertIn('INSERT INTO citation_graph."Work" (id, properties)', self.SCHEMA)

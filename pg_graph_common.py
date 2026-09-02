@@ -36,15 +36,21 @@ from pg_common import FIELD_SEP, run_sql, run_sql_file, scalar, scalar_row
 
 # Applied in this order by init_schema(): data definition first (crawl_step's
 # columns/indexes must exist before anything reads or backfills them), the
-# AGE projection functions second (they only reference citation.work/cites,
-# not the journal columns), the journal's one-time backfill last (it depends
-# on the columns the first file adds). kb/CLAUDE.md FILE_SIZE split
-# pg_schema_citation.sql into these three along that seam.
-SCHEMA_PATHS = (
-    Path(__file__).resolve().parent / "pg_schema_citation.sql",
-    Path(__file__).resolve().parent / "pg_schema_citation_graph.sql",
-    Path(__file__).resolve().parent / "pg_schema_citation_backfill.sql",
-)
+# idempotent constraint migrations second (they ALTER the tables the first
+# file declares), the AGE projection functions third (they only reference
+# citation.work/cites, not the journal columns), the journal's one-time
+# backfill last (it depends on the columns the first file adds).
+# kb/CLAUDE.md FILE_SIZE split pg_schema_citation.sql along those seams.
+# Named, not merely ordered: the readers that check one file's own claims
+# (its indexes, its projection shape, its backfill statements) name the one
+# they mean, so inserting a file cannot silently point them at another.
+_HERE = Path(__file__).resolve().parent
+SCHEMA_DEFINITION = _HERE / "pg_schema_citation.sql"
+SCHEMA_CONSTRAINTS = _HERE / "pg_schema_citation_constraints.sql"
+SCHEMA_GRAPH = _HERE / "pg_schema_citation_graph.sql"
+SCHEMA_BACKFILL = _HERE / "pg_schema_citation_backfill.sql"
+SCHEMA_PATHS = (SCHEMA_DEFINITION, SCHEMA_CONSTRAINTS, SCHEMA_GRAPH,
+                SCHEMA_BACKFILL)
 GRAPH_NAME = "citation_graph"
 AGE_PREAMBLE = "LOAD 'age';\nSET search_path = ag_catalog, \"$user\", public;\n"
 

@@ -42,7 +42,7 @@ def _backfill_statements() -> list[str]:
     copy would let the test keep passing over statements the schema no
     longer applies -- or miss one it has since grown.
     """
-    schema = pg_graph_common.SCHEMA_PATHS[2].read_text(encoding="utf-8")
+    schema = pg_graph_common.SCHEMA_BACKFILL.read_text(encoding="utf-8")
     found, at = [], 0
     while (start := schema.find("UPDATE citation.crawl_step SET", at)) != -1:
         at = schema.index(";", start) + 1
@@ -246,7 +246,7 @@ class ActionVocabularyGuardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.env = _live_env()
-        cls.schema = pg_graph_common.SCHEMA_PATHS[0].read_text(encoding="utf-8")
+        cls.schema = pg_graph_common.SCHEMA_CONSTRAINTS.read_text(encoding="utf-8")
 
     DEFINITION = (
         "SELECT c.oid::text, c.xmin::text, pg_get_constraintdef(c.oid) "
@@ -308,7 +308,7 @@ class BackfillRegistryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.env = _live_env()
-        cls.schema = pg_graph_common.SCHEMA_PATHS[2].read_text(encoding="utf-8")
+        cls.schema = pg_graph_common.SCHEMA_BACKFILL.read_text(encoding="utf-8")
 
     BACKFILL_NAME = "crawl_step_reason_parse"
     # One row the parse WOULD fill: prose carrying score/tau/relation/node

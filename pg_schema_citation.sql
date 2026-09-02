@@ -4,10 +4,13 @@
 -- citation.public_policy) are the durable truth of the citation graph.
 -- The AGE graph projected from them is a separate, derived structure,
 -- defined in pg_schema_citation_graph.sql -- see that file's header for why
--- the graph is never itself the source of truth. The journal's one-time
--- prose-to-column backfill is likewise separate, in
--- pg_schema_citation_backfill.sql: it depends on the columns this file
--- creates and must be applied after them.
+-- the graph is never itself the source of truth. Two more files
+-- complete the definition and are applied after this one:
+-- pg_schema_citation_constraints.sql carries what a CREATE TABLE IF NOT
+-- EXISTS cannot establish on an instance that already has the table -- the
+-- closed-vocabulary CHECKs and the document FK's referential action -- and
+-- pg_schema_citation_backfill.sql the journal's one-time prose-to-column
+-- backfill, which depends on the columns this file adds.
 
 CREATE SCHEMA IF NOT EXISTS citation;
 
@@ -45,7 +48,20 @@ CREATE TABLE IF NOT EXISTS citation.work (
     -- CHECK against them in both directions, so an extra, missing or
     -- renamed value fails there rather than at a COPY.
     kind              TEXT NOT NULL CHECK (kind IN ('our-document', 'external-skeleton', 'indexed', 'excluded')),
-    document_id       TEXT REFERENCES corpus.documents(id) ON DELETE SET NULL,
+    -- ON DELETE: nothing, deliberately -- NOT the SET NULL this column
+    -- carried. Under SET NULL the two constraints on this table could not
+    -- both hold: deleting a corpus.documents row UPDATEs the referencing
+    -- work row to document_id = NULL, and the CHECK below (an our-document
+    -- row must name its document) rejects exactly that, so the delete
+    -- aborted with a CHECK violation naming a row the deleter never
+    -- touched. The loaders DO delete documents -- pg_load_djvu.py and
+    -- pg_load_metadata.py re-insert each of theirs, pg_load.py and
+    -- pg_load_external.py drop what vanished from a manifest -- and the IIS
+    -- documents they delete are precisely the crawl's seeds. So the refusal
+    -- is a live path, and it must at least be the error it really is: a
+    -- referential one, naming this constraint. Demoting the node first is
+    -- the deleter's step, and EXTENDING.md procedure A carries it.
+    document_id       TEXT REFERENCES corpus.documents(id),
     exclusion_reason  TEXT,
     -- Where the fields above came from: the raw source record (or enough of
     -- it to re-derive a verdict without re-fetching), not prose.
@@ -90,6 +106,26 @@ CREATE INDEX IF NOT EXISTS work_pending_embedding_idx ON citation.work (id)
 -- and in the shape that query needs (jsonb_path_ops for @>, or a btree
 -- expression index) -- not as this one, kept on the chance of it.
 DROP INDEX IF EXISTS citation.work_external_ids_gin;
+
+-- No index on `kind` either, and that too is measured rather than
+-- forgotten. Its two per-kind readers are in citations/twin_pass.py:
+-- seed_titles() (kind = 'our-document' AND document_id IS NOT NULL) and
+-- skeleton_nodes() (kind = 'external-skeleton', ORDER BY key). EXPLAIN
+-- (ANALYZE, BUFFERS) on the live instance with the table grown to
+-- depth-2 size (60438 rows, inside a rolled-back transaction):
+--
+--   seed_titles already reaches its 75 rows through work_document_id_idx
+--   (Bitmap Index Scan on document_id IS NOT NULL, 30 buffers, 0.41 ms),
+--   because every non-seed row has a NULL there; adding ON citation.work
+--   (key) WHERE kind = 'our-document' turns that into a BitmapAnd over two
+--   indexes and measures 31 buffers, 0.42 ms -- worse, not better;
+--   skeleton_nodes returns 60363 rows of 60438, i.e. the table itself, in
+--   key order through work_key_key. No selective index exists for a query
+--   whose answer IS the table.
+--
+-- So the index would be one more write on every upsert of the crawl's
+-- bulkiest path and would serve neither reader: the same verdict the GIN
+-- index got, reached the same way.
 
 -- cites: a directed edge, itself sourced (the same pair can be attested by
 -- more than one crawl source, each independently, hence the PK includes
@@ -147,10 +183,12 @@ ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS tau DOUBLE PRECISION;
 
 -- Two more of the same kind, promoted for the same reason.
 --
--- relation ('cites' | 'referenced') is HOW the candidate reached the
--- frontier, and the crawl acts on it: only a node reached by 'cites'
--- expands at depth >= 2 (kb/CLAUDE.md SNOWBALL_FRONTIER), and the hub
--- measurement groups its whole verdict by it. It lived in the prose, so
+-- relation is HOW the candidate reached the frontier, and the crawl acts
+-- on it: only a node reached as a citer expands at depth >= 2 (kb/CLAUDE.md
+-- SNOWBALL_FRONTIER), and the hub measurement groups its whole verdict by
+-- it. Its two values are as closed a vocabulary as action's, and are
+-- CHECKed beside it in pg_schema_citation_constraints.sql. It lived in the
+-- prose, so
 -- citations/hub_report.py had to re-derive it from citation.work.evidence
 -- with a coalesce(..., 'unknown') -- reading a decision off a blob shaped
 -- by registry.Node.absorb instead of off the decision that made it.
@@ -161,66 +199,6 @@ ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS tau DOUBLE PRECISION;
 -- searched by; an index arrives with the query that needs one.
 ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS relation TEXT;
 ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS cited_by_count BIGINT;
-
--- The action vocabulary lives in a NAMED constraint applied separately, not
--- inline in CREATE TABLE: the crawl grows new kinds of decision (hub-skip
--- arrived when depth-2 turned out to pull >51k citers through a handful of
--- heavily-cited classics), and an inline CHECK cannot be widened on an
--- instance that already has the table.
---
--- hub-skip: the node was NOT expanded upward because its citer count is past
--- the cap. It is a decision, not an error -- without a row saying so, "why is
--- this node a dead end" is unanswerable after the fact, which is the whole
--- reason crawl_step exists.
---
--- Replaced only when the vocabulary actually differs, for the same reason
--- the reason-parse backfill below carries a registry: ADD CONSTRAINT
--- validates the new CHECK against every existing row under an ACCESS
--- EXCLUSIVE lock, and this schema is applied on every `pg_graph.py init`
--- AND every non-dry-run crawl, against an append-only journal that grows by
--- ~100k rows per depth-2 crawl. Value-idempotent DROP+ADD was never the
--- gap; the gap was paying a full validation scan to arrive at the
--- constraint that was already there.
---
--- The same seven values are declared once on the Python side, in
--- citation_vocab.CrawlAction, which is where the crawl reads them from;
--- tests/test_citation_vocab.py compares the two in both directions.
---
--- Compared as the VOCABULARY, not as text: pg_get_constraintdef() renders
--- the same CHECK as `action = ANY (ARRAY[...])`, and its exact spelling is
--- the server's business (and its version's). The literals inside it are
--- ours, so they are what is compared -- an extra value, a missing one or a
--- renamed one all differ, and nothing else does.
-DO $action_check$
-DECLARE
-    wanted     CONSTANT text[] := ARRAY['seed', 'seed-missing', 'fetch', 'keep',
-                                        'drop', 'hub-skip', 'error'];
-    definition text;
-    current_vocabulary text[];
-BEGIN
-    SELECT pg_get_constraintdef(c.oid) INTO definition
-    FROM pg_constraint c
-    WHERE c.conrelid = 'citation.crawl_step'::regclass
-      AND c.conname = 'crawl_step_action_check';
-
-    IF definition IS NOT NULL THEN
-        SELECT array_agg(m[1] ORDER BY m[1]) INTO current_vocabulary
-        FROM regexp_matches(definition, '''([^'']*)''', 'g') AS m;
-    END IF;
-
-    IF current_vocabulary IS NOT DISTINCT FROM
-       (SELECT array_agg(value ORDER BY value) FROM unnest(wanted) AS value) THEN
-        RETURN;
-    END IF;
-
-    EXECUTE 'ALTER TABLE citation.crawl_step '
-            'DROP CONSTRAINT IF EXISTS crawl_step_action_check';
-    EXECUTE format(
-        'ALTER TABLE citation.crawl_step ADD CONSTRAINT crawl_step_action_check '
-        'CHECK (action IN (%s))',
-        (SELECT string_agg(quote_literal(value), ', ') FROM unnest(wanted) AS value));
-END
-$action_check$;
 
 CREATE INDEX IF NOT EXISTS crawl_step_crawl_depth_idx ON citation.crawl_step (crawl_id, depth);
 
