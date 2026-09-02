@@ -97,12 +97,27 @@ CREATE TABLE IF NOT EXISTS citation.crawl_step (
     depth         INTEGER NOT NULL,
     frontier_key  TEXT,
     candidate_key TEXT,
-    action        TEXT NOT NULL CHECK (action IN ('seed', 'seed-missing', 'fetch', 'keep', 'drop', 'error')),
+    action        TEXT NOT NULL,
     n_found       INTEGER,
     n_kept        INTEGER,
     reason        TEXT,
     at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The action vocabulary lives in a NAMED constraint applied separately, not
+-- inline in CREATE TABLE: the crawl grows new kinds of decision (hub-skip
+-- arrived when depth-2 turned out to pull >51k citers through a handful of
+-- heavily-cited classics), and an inline CHECK cannot be widened on an
+-- instance that already has the table. DROP IF EXISTS + ADD is idempotent on
+-- both a fresh database and one created before the value existed.
+--
+-- hub-skip: the node was NOT expanded upward because its citer count is past
+-- the cap. It is a decision, not an error -- without a row saying so, "why is
+-- this node a dead end" is unanswerable after the fact, which is the whole
+-- reason crawl_step exists.
+ALTER TABLE citation.crawl_step DROP CONSTRAINT IF EXISTS crawl_step_action_check;
+ALTER TABLE citation.crawl_step ADD CONSTRAINT crawl_step_action_check
+    CHECK (action IN ('seed', 'seed-missing', 'fetch', 'keep', 'drop', 'hub-skip', 'error'));
 
 CREATE INDEX IF NOT EXISTS crawl_step_crawl_depth_idx ON citation.crawl_step (crawl_id, depth);
 
@@ -209,3 +224,32 @@ BEGIN
     RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Public-artifact policy for the WHOLE citation schema, one row (id = 1)
+-- decided once by the corpus owner -- the same DATA-not-code discipline as
+-- corpus.documents.legal_class/public_distribution (kb/CLAUDE.md
+-- LEGAL_IS_DATA), applied here to the crawl's own record rather than to an
+-- individual document (see deploy/citation_profile.py for what each mode
+-- means to a public build, and deploy/citation_dump.py for how it is
+-- applied to the dump).
+--
+-- No default row is inserted here, and none may be inserted anywhere but by
+-- the owner: absence of a row is the same UNCLASSIFIED_FAILS_BUILD refusal
+-- corpus.documents applies per-document (deploy/legal_profile.py) -- a
+-- public build over a citation schema with no policy decided MUST fail with
+-- an explicit message ("citation schema not classified for a public
+-- artifact"), not silently ship or silently strip a crawl record that
+-- names third-party titles, abstracts and citation edges.
+CREATE TABLE IF NOT EXISTS citation.public_policy (
+    id          SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    mode        TEXT NOT NULL CHECK (mode IN ('full-skeleton', 'topology-only', 'none')),
+    note        TEXT NOT NULL,
+    decided_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE citation.public_policy IS
+    'Row written by the corpus owner, never by code: decides whether/how the '
+    'citation schema ships in the public artifact (full-skeleton | '
+    'topology-only | none). No row = the public build refuses '
+    '(deploy/citation_profile.py), the same way an unclassified '
+    'corpus.documents row refuses deploy/legal_profile.py.';

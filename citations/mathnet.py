@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Math-Net.Ru as the identity anchor: both titles of one work, at once.
+
+Not a source of citations -- a source of NAMES. corpus.documents holds one
+title per document, in whichever language Math-Net showed at export time
+(some Russian, some the translated English). OpenAlex indexes sometimes the
+original and sometimes the translation, so matching one language against the
+other returns nothing where the work plainly exists. Measured in run 85: the
+protocol found 43 of 69 works before Math-Net was consulted and 56 after --
+the whole difference was cross-language misses.
+
+The /rus/<id> page carries both citations in its <title>:
+
+  И. И. Шарапудинов, "<рус. название>", Матем. сб., 180:9 (1989), ...;
+  I. I. Sharapudinov, "<англ. название>", Math. USSR-Sb., 68:1 (1991), ...
+
+Two traps, both paid for in run 53 and re-measured in 85: the page 302s to
+archive.phtml, so redirects must be followed, and it is windows-1251, not
+UTF-8. The HTTP 403 recorded in run 53 does not reproduce with an ordinary
+User-Agent.
+"""
+from __future__ import annotations
+
+import html
+import re
+import time
+import urllib.request
+from pathlib import Path
+
+BASE = "https://www.mathnet.ru/rus/"
+USER_AGENT = "Mozilla/5.0 (ortopol-kb-citations; mailto:tooba.mexico@gmail.com)"
+QUOTED = re.compile("“(.*?)”", re.S)
+YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+TAG = re.compile(r"<[^>]+>")
+TITLE = re.compile(r"<title>(.*?)</title>", re.S)
+
+
+def mathnet_id(source_url: str | None) -> str | None:
+    """'https://www.mathnet.ru/rus/mzm8442' -> 'mzm8442'.
+
+    None for a document Math-Net does not carry (the Vestnik DNC paper and
+    the four monographs): absence is a fact about the document, and the
+    caller journals it rather than guessing an id from the filename.
+    """
+    if not source_url or "mathnet.ru" not in source_url:
+        return None
+    tail = str(source_url).rstrip("/").rsplit("/", 1)[-1]
+    return tail or None
+
+
+def parse_titles(raw: str) -> tuple[list[str], list[int]]:
+    """(titles, years) from the page head -- both languages, both years."""
+    found = TITLE.search(raw)
+    if not found:
+        return [], []
+    head = html.unescape(TAG.sub("", found.group(1))).replace("\xa0", " ")
+    titles = [t.strip() for t in QUOTED.findall(head) if t.strip()]
+    years = sorted({int(y) for y in YEAR.findall(head)})
+    return titles, years
+
+
+class MathnetClient:
+    """Pages are cached on disk and failures are COUNTED, never swallowed.
+
+    Both were paid for on 2026-09-02: an uncached run of 64 pages got the
+    site to start timing out, five documents silently came back with no
+    English title, and the twin index was quietly weaker than it looked --
+    including for 2019_rm9846, the very pair the twin rule exists for. A gap
+    in the identity anchor must be visible in the output, and a retry must
+    not re-fetch the 59 pages that already worked.
+    """
+
+    def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
+                 pause=0.6, cache_dir: Path | None = None):
+        self._opener = opener
+        self._sleep = sleep
+        self.pause = pause
+        self._cache_dir = Path(cache_dir) if cache_dir else None
+        if self._cache_dir:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self.n_requests = 0
+        self.n_cache_hits = 0
+        self.failures: list[str] = []
+
+    def _cached(self, identifier: str) -> Path | None:
+        if not self._cache_dir:
+            return None
+        return self._cache_dir / f"{identifier}.html"
+
+    def titles(self, identifier: str) -> tuple[list[str], list[int]]:
+        """([titles], [years]); ([], []) with the id recorded in .failures."""
+        path = self._cached(identifier)
+        if path is not None and path.is_file() and path.stat().st_size > 2000:
+            self.n_cache_hits += 1
+            return parse_titles(path.read_text(encoding="utf-8"))
+        request = urllib.request.Request(BASE + identifier,
+                                         headers={"User-Agent": USER_AGENT})
+        try:
+            with self._opener(request, timeout=90) as response:
+                raw = response.read().decode("windows-1251", "replace")
+        except Exception as err:
+            self.n_requests += 1
+            self.failures.append(f"{identifier}: {type(err).__name__}")
+            return [], []
+        self.n_requests += 1
+        self._sleep(self.pause)
+        titles, years = parse_titles(raw)
+        if not titles:
+            self.failures.append(f"{identifier}: страница без цитат в <title>")
+            return [], []
+        if path is not None:
+            path.write_text(raw, encoding="utf-8")
+        return titles, years

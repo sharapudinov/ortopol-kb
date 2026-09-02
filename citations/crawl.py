@@ -34,19 +34,28 @@ re-crawl:
 """
 from __future__ import annotations
 
+from . import edges as edges_mod
+from . import journal, seeding
 from .frontier import candidate_text, centroid, cosine
 from .openalex_client import short_id
 from .registry import Node, WorkRegistry
 
+# A node cited more than this is not asked "who cites you": the answer is
+# tens of thousands of works about the field, not about the node. Default
+# measured, not guessed -- see expandable()'s docstring.
+HUB_CAP = 1000
+
 
 class Snowball:
-    def __init__(self, client, embed, writer, *, tau, crawl_id, log=print, skip_keys=frozenset()):
+    def __init__(self, client, embed, writer, *, tau, crawl_id, log=print,
+                 skip_keys=frozenset(), hub_cap=HUB_CAP):
         """`embed` is a callable list[str] -> list[list[float]]; the model is
         bound by the caller from corpus.embedding_model, never chosen here."""
         self.client = client
         self.embed = embed
         self.writer = writer
         self.tau = tau
+        self.hub_cap = hub_cap
         self.crawl_id = crawl_id
         self.log = log
         self.skip_keys = set(skip_keys)
@@ -57,52 +66,12 @@ class Snowball:
         self.candidate_refs: dict[str, set[str]] = {}
 
     # -- seeds -----------------------------------------------------------
-    def seed(self, documents, matches, abstracts=None) -> list[str]:
-        """documents: every corpus document id; matches: document -> OpenAlex
-        id from run 85. A document with no match gets a journal row and no
-        work row -- 'absent from the source' is a recorded decision, not a
-        silent gap (038.7's completeness predicate reads exactly these)."""
-        steps = [
-            {"crawl_id": self.crawl_id, "depth": 0, "frontier_key": document,
-             "action": "seed-missing", "reason": "not in OpenAlex (run 85)"}
-            for document in documents if document not in matches
-        ]
-        wanted = {short_id(matches[d]): d for d in documents if d in matches}
-        seen = set()
-        for record in self.client.works_by_ids(sorted(wanted)):
-            identity = short_id(record.get("id"))
-            node, _ = self.registry.add(record, kind="our-document", depth=0,
-                                        document_id=wanted.get(identity))
-            seen.add(identity)
-            steps.append({"crawl_id": self.crawl_id, "depth": 0,
-                          "frontier_key": wanted.get(identity), "candidate_key": node.key,
-                          "action": "seed", "n_found": 1, "n_kept": 1})
-        for openalex_id, document in sorted(wanted.items()):
-            if openalex_id not in seen:
-                steps.append({"crawl_id": self.crawl_id, "depth": 0,
-                              "frontier_key": document, "candidate_key": openalex_id,
-                              "action": "error",
-                              "reason": "матч run 85 не отдан OpenAlex по openalex_id"})
+    def seed(self, documents, matches, abstracts=None, names=None) -> list[str]:
+        """See seeding.seed(): kept as a method so the crawl reads as one
+        object, implemented there so this file stays about traversal."""
+        return seeding.seed(self, documents, matches, abstracts, names)
 
-        for node in self.registry.nodes.values():
-            filled = (abstracts or {}).get(node.document_id)
-            if filled and not node.abstract:
-                node.abstract, node.abstract_source, node.zbmath_id = filled[0], "zbmath", filled[1]
-
-        # Journalled before the centroid is computed, not after: a run where
-        # OpenAlex returned nothing has no centroid and cannot continue, and
-        # the error rows explaining why must survive that exit.
-        self.writer.journal(steps)
-        self.seed_keys = sorted(self.registry.nodes)
-        seeds = [self.registry.nodes[k] for k in self.seed_keys]
-        self.centroid = centroid(self._embed_nodes(seeds))
-        for node in seeds:
-            node.score = cosine(node.embedding, self.centroid)
-        self.per_depth[0] = {"seeds": len(self.seed_keys),
-                             "seed_missing": len(documents) - len(wanted)}
-        return self.seed_keys
-
-    def _embed_nodes(self, nodes) -> list[list[float]]:
+    def embed_nodes(self, nodes) -> list[list[float]]:
         vectors = self.embed([candidate_text(n.title, n.abstract) for n in nodes])
         for node, vector in zip(nodes, vectors):
             node.embedding = vector
@@ -112,15 +81,46 @@ class Snowball:
         self.writer.works([self.registry.nodes[k] for k in self.seed_keys])
 
     # -- one level -------------------------------------------------------
-    def gather(self, frontier_keys: list[str]) -> tuple[list, dict]:
-        """(candidates, per-frontier-node found counts) for one level.
+    def expandable(self, keys: list[str], depth: int) -> list[str]:
+        """Which of `keys` open the next level.
+
+        Depth 1 expands the seeds. From depth 2 on, only nodes reached by
+        `relation='cites'` -- works that cite the frontier -- expand; a node
+        reached by `relation='referenced'` is a LEAF: written, never opened.
+
+        Measured reason (2026-09-02, the aborted first depth-2 attempt): the
+        down direction keeps classics -- Higher Transcendental Functions,
+        Interpolation of Operators, Spectral Methods in MATLAB -- and asking
+        who cites THOSE returned over 51000 works across eight batches
+        (meta.count 18904, 13271, 11021, 3227, 3124, 1788, 296, 21), which
+        exhausted a 1000-request window without writing a single node. It is
+        also the wrong question: someone citing a 1953 handbook says nothing
+        about Sharapudinov. survey §8's estimate (4.6 citers/node, 31
+        requests) was measured on citers of the five key works and does not
+        transfer to the classics the down direction pulls in.
+        """
+        if depth <= 1:
+            return list(keys)
+        return [k for k in keys if self.registry.nodes[k].relation == "cites"]
+
+    def gather(self, frontier_keys: list[str]) -> tuple[list, dict, list]:
+        """(candidates, per-frontier-node found counts, hub skips) for a level.
 
         A candidate is (record, relation, discovered_from) with relation in
         {'cites', 'referenced'}. Records already known to the registry are
         returned too -- their edges still count -- and the caller recognises
-        them as not-new rather than re-scoring them."""
+        them as not-new rather than re-scoring them.
+
+        A node past the hub cap is not asked upward: its citer set is huge
+        and, being huge, is about the field rather than about this work. It
+        still expands DOWNWARD, because its references came free with the
+        record and cost no request.
+        """
         frontier = [self.registry.nodes[k] for k in frontier_keys]
-        owner = {i: node.key for node in frontier for i in node.openalex_ids()}
+        hubs = [n for n in frontier if n.cited_by_count > self.hub_cap]
+        hub_keys = {n.key for n in hubs}
+        owner = {i: node.key for node in frontier if node.key not in hub_keys
+                 for i in node.openalex_ids()}
         candidates: list[tuple[dict, str, str]] = []
         found: dict[str, int] = {key: 0 for key in frontier_keys}
 
@@ -142,7 +142,7 @@ class Snowball:
         for record in self.client.works_by_ids(sorted(wanted)):
             candidates.append((record, "referenced",
                                wanted.get(short_id(record.get("id")), "")))
-        return candidates, found
+        return candidates, found, [(n.key, n.cited_by_count) for n in hubs]
 
     def score(self, candidates) -> list[dict]:
         """Cosine to the seed centroid for every NEW candidate, in one pass.
@@ -183,20 +183,18 @@ class Snowball:
 
     def expand(self, frontier_keys: list[str], depth: int) -> list[str]:
         """One level, written. Returns the keys kept at this level."""
-        candidates, found = self.gather(frontier_keys)
+        candidates, found, hubs = self.gather(frontier_keys)
         scored = self.score(candidates)
         steps, kept_keys = [], []
+        for key, cited_by in hubs:
+            steps.append(journal.hub_skip(self.crawl_id, depth, key, cited_by, self.hub_cap))
         kept_per_frontier: dict[str, int] = {key: 0 for key in frontier_keys}
 
         for item in scored:
             if item["score"] < self.tau:
-                steps.append({
-                    "crawl_id": self.crawl_id, "depth": depth,
-                    "frontier_key": item["discovered_from"] or None,
-                    "candidate_key": item["candidate_key"], "action": "drop",
-                    "reason": f"below-threshold; score={item['score']:.4f} "
-                              f"tau={self.tau:.4f} relation={item['relation']}",
-                })
+                steps.append(journal.drop(
+                    self.crawl_id, depth, item["candidate_key"], item["score"],
+                    self.tau, item["relation"], item["discovered_from"]))
                 continue
             node, is_new = self.registry.add(
                 item["record"], kind="external-skeleton", depth=depth,
@@ -213,22 +211,16 @@ class Snowball:
                 kept_keys.append(node.key)
             kept_per_frontier[item["discovered_from"]] = \
                 kept_per_frontier.get(item["discovered_from"], 0) + 1
-            steps.append({
-                "crawl_id": self.crawl_id, "depth": depth,
-                "frontier_key": item["discovered_from"] or None,
-                "candidate_key": item["candidate_key"], "action": "keep",
-                "reason": f"kept; score={item['score']:.4f} tau={self.tau:.4f} "
-                          f"relation={item['relation']} node={node.key}",
-            })
+            steps.append(journal.keep(
+                self.crawl_id, depth, item["candidate_key"], node.key,
+                item["score"], self.tau, item["relation"], item["discovered_from"]))
 
         for key in frontier_keys:
-            steps.append({"crawl_id": self.crawl_id, "depth": depth,
-                          "frontier_key": key, "action": "fetch",
-                          "n_found": found.get(key, 0),
-                          "n_kept": kept_per_frontier.get(key, 0)})
+            steps.append(journal.fetch(self.crawl_id, depth, key,
+                                       found.get(key, 0), kept_per_frontier.get(key, 0)))
 
         self.writer.works([self.registry.nodes[k] for k in kept_keys])
-        edges = self.edges_among_known(frontier_keys, candidates)
+        edges = edges_mod.among_known(self.registry, frontier_keys, candidates)
         self.writer.edges(edges)
         self.writer.journal(steps)
         kept_rows = sum(1 for s in steps if s["action"] == "keep")
@@ -238,32 +230,12 @@ class Snowball:
                                  "edges": len(edges)}
         return kept_keys
 
-    def edges_among_known(self, frontier_keys, candidates) -> list[tuple[str, str, str, str]]:
-        """Every (citing, cited, relation, discovered_from) both of whose
-        endpoints are nodes. Derived after the level's nodes are registered,
-        so a reference fetched at this level is already resolvable."""
-        edges: set[tuple[str, str, str, str]] = set()
-
-        def emit(citing_key: str, references, relation: str, source_key: str) -> None:
-            for reference in references or []:
-                target = self.registry.resolve_openalex(reference)
-                if target and target != citing_key:
-                    edges.add((citing_key, target, relation, source_key or citing_key))
-
-        for key in frontier_keys:
-            node = self.registry.nodes[key]
-            emit(key, sorted(node.referenced_works), "referenced", key)
-        for record, relation, source_key in candidates:
-            key = self.registry.find(record)
-            if key is not None:
-                emit(key, record.get("referenced_works"), relation, source_key)
-        return sorted(edges)
-
     def run(self, depth: int) -> dict:
         self.write_seeds()
         frontier = list(self.seed_keys)
         for level in range(1, depth + 1):
-            frontier = [k for k in frontier if k not in self.skip_keys]
+            frontier = [k for k in self.expandable(frontier, level)
+                        if k not in self.skip_keys]
             if not frontier:
                 self.log(f"глубина {level}: фронтир пуст, обход остановлен")
                 break
@@ -280,7 +252,7 @@ class Snowball:
         that badly (measured: 15177 references against 4262 distinct works --
         neighbours cite the same things), so the cost table needs the sets.
         """
-        candidates, _found = self.gather(self.seed_keys)
+        candidates, _found, _hubs = self.gather(self.seed_keys)
         self.candidate_refs = {
             short_id(record.get("id")):
                 {short_id(r) for r in (record.get("referenced_works") or [])}

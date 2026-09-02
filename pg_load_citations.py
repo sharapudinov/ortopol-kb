@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from citations import frontier, threshold_store
+from citations import frontier, hub_report, threshold_store, twin_pass
 from citations.calibration import (
     REPORT_PATH,
     SPIKE,
@@ -35,7 +35,7 @@ from citations.calibration import (
     run_fields,
     suggest_tau,
 )
-from citations.crawl import Snowball
+from citations.crawl import HUB_CAP, Snowball
 from citations.openalex_client import OpenAlexClient, QuotaExhausted
 from citations.store import (
     DryRunWriter,
@@ -45,8 +45,9 @@ from citations.store import (
     fresh_keys,
     seed_matches,
 )
+from citations.mathnet import MathnetClient, mathnet_id
 from citations.zbmath_client import ZbmathClient, abstract_of
-from paths import default_corpus_dir
+from paths import default_cache_dir, default_corpus_dir, default_mathnet_cache_dir
 from pg_common import PostgresUnavailable, load_pgenv, run_sql
 from pg_graph import check as graph_check
 from pg_graph import init_schema, project
@@ -55,7 +56,7 @@ COVERAGE_RUN = 85
 
 
 def build_client(args) -> OpenAlexClient:
-    return OpenAlexClient(cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+    return OpenAlexClient(cache_dir=Path(args.cache_dir),
                           quota_floor=args.quota_floor,
                           max_quota_wait=args.max_quota_wait)
 
@@ -77,6 +78,42 @@ def zbmath_abstracts(env, documents, matches) -> dict[str, tuple[str, str]]:
             out[document] = (text, zb_matches[document])
     print(f"zbMATH: рефератов добыто {len(out)} за {client.n_requests} запросов")
     return out
+
+
+def mathnet_names(env) -> dict[str, tuple[list[str], list[int]]]:
+    """document_id -> (titles, years) off Math-Net, both languages at once.
+
+    The identity anchor run 85 measured as worth 13 extra matches out of 69,
+    cached on the seed rows so the twin rule can use it offline afterwards.
+    The five documents Math-Net does not carry contribute nothing, which is a
+    fact about them, not a failure here.
+    """
+    rows = run_sql(
+        env,
+        "SELECT id, coalesce(source_url, '') FROM corpus.documents "
+        "WHERE source_dir = 'theory/iis' AND extraction_state <> 'metadata' ORDER BY id;",
+        extra_args=["-t", "-A", "-F", "\x1f"],
+    ).stdout.strip()
+    client = MathnetClient(cache_dir=default_mathnet_cache_dir())
+    names = {}
+    for line in rows.split("\n"):
+        if not line:
+            continue
+        document_id, _, url = line.partition("\x1f")
+        identifier = mathnet_id(url)
+        if not identifier:
+            continue
+        titles, years = client.titles(identifier)
+        if titles:
+            names[document_id] = (titles, years)
+    print(f"Math-Net: названий добыто для {len(names)} документов "
+          f"за {client.n_requests} запросов (из кэша: {client.n_cache_hits})")
+    if client.failures:
+        # Not a crash: the crawl runs without the anchor. But a silent gap
+        # here weakens the twin index invisibly, which already happened once.
+        print(f"Math-Net НЕ ОТДАЛ {len(client.failures)} страниц — "
+              f"индекс двойников неполон: {', '.join(client.failures[:10])}")
+    return names
 
 
 def make_embedder(model: str, dims: int):
@@ -103,6 +140,47 @@ def do_calibrate(env, snowball: Snowball, client, data_root: Path) -> int:
     return 0
 
 
+def do_hub_report(env, args, data_root: Path) -> int:
+    """Отрицательный результат про цену расширения вверх. Сети не требует."""
+    counts = hub_report.batch_counts(Path(args.cache_dir))
+    run_sql(env, hub_report.DDL)
+    run_id = threshold_store.upsert_run(env, hub_report.SPIKE,
+                                        hub_report.run_fields(counts, []))
+    run_sql(env, hub_report.POPULATE, variables={"run": str(run_id)})
+    rows = hub_report.stats(env, run_id)
+    # Второй проход по строке прогона: verify_query называет ожидаемые числа,
+    # а они известны только после заполнения таблицы.
+    run_id = threshold_store.upsert_run(env, hub_report.SPIKE,
+                                        hub_report.run_fields(counts, rows))
+    run_sql(env, hub_report.POPULATE, variables={"run": str(run_id)})
+    rows = hub_report.stats(env, run_id)
+    report = data_root / hub_report.REPORT_PATH
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(hub_report.report(counts, rows, hub_report.worst_nodes(env, run_id),
+                                        run_id, args.hub_cap), encoding="utf-8")
+    total = sum(int(r[1]) for r in rows)
+    print(f"run {run_id} ({hub_report.SPIKE}); узлов depth-1: {total}; отчёт: {report}")
+    for row in rows:
+        print("  " + " | ".join(row))
+    return 0
+
+
+def do_merge_twins(env, args) -> int:
+    merged = twin_pass.merge_twins(env, args.crawl_id or "merge-twins",
+                                   dry_run=args.dry_run)
+    for item in merged:
+        print(f"  {item['key']} -> {item['document_id']} [{item['rule']}] "
+              f"(семя {item['seed_key']}): {item['title'][:64]}")
+    print(f"склеено двойников наших работ: {len(merged)}"
+          + (" (--dry-run, ничего не записано)" if args.dry_run else ""))
+    if not args.dry_run and merged:
+        print("kind после склейки: " + twin_pass.kind_counts(env))
+        vertices, edges = project(env)
+        print(f"проекция графа: V={vertices} E={edges}")
+        return graph_check(env)
+    return 0
+
+
 def do_crawl(env, snowball: Snowball, client, args) -> int:
     summary = snowball.run(args.depth)
     for depth in sorted(summary):
@@ -124,18 +202,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--depth", type=int, default=2)
     parser.add_argument("--calibrate", action="store_true",
                         help="посчитать score всех кандидатов depth-1 и записать распределение")
+    parser.add_argument("--merge-twins", action="store_true",
+                        help="склеить с корпусом переводы наших же работ (сети не требует)")
+    parser.add_argument("--hub-report", action="store_true",
+                        help="замер цены расширения вверх по типу связи (сети не требует)")
+    parser.add_argument("--hub-cap", type=int, default=HUB_CAP,
+                        help="узел с cited_by_count больше этого не спрашивается вверх")
     parser.add_argument("--crawl-id", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true",
                         help="не раскрывать узлы, скачанные свежее --fresh-days")
     parser.add_argument("--fresh-days", type=int, default=7)
-    parser.add_argument("--cache-dir", default=None)
+    parser.add_argument("--cache-dir", default=str(default_cache_dir()),
+                        help="кэш ответов OpenAlex; по умолчанию corpus/cache/openalex "
+                             "в дереве данных — стёртый кэш стоит суток квоты")
     parser.add_argument("--quota-floor", type=int, default=30)
     parser.add_argument("--max-quota-wait", type=float, default=900.0)
     parser.add_argument("--pgenv", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    if not args.calibrate and args.tau is None:
+    offline = args.merge_twins or args.hub_report
+    if not offline and not args.calibrate and args.tau is None:
         parser.error("--tau обязателен для обхода (умолчания нет); сначала --calibrate")
 
     corpus_dir = default_corpus_dir()
@@ -145,6 +232,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Postgres недоступен: {exc}", file=sys.stderr)
         return 1
     init_schema(env)
+
+    # Оба режима ниже считают по уже записанному и кэшу: ни семян, ни сети.
+    if args.hub_report:
+        return do_hub_report(env, args, corpus_dir.parent)
+    if args.merge_twins:
+        return do_merge_twins(env, args)
 
     model, dims = embedding_model(env)
     documents = corpus_document_ids(env)
@@ -161,10 +254,10 @@ def main(argv: list[str] | None = None) -> int:
 
     snowball = Snowball(client, make_embedder(model, dims), writer,
                         tau=args.tau if args.tau is not None else float("inf"),
-                        crawl_id=crawl_id, skip_keys=skip)
+                        crawl_id=crawl_id, skip_keys=skip, hub_cap=args.hub_cap)
     try:
         abstracts = zbmath_abstracts(env, documents, matches)
-        snowball.seed(documents, matches, abstracts)
+        snowball.seed(documents, matches, abstracts, mathnet_names(env))
         print(f"семян: {len(snowball.seed_keys)}; "
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:

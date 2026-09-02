@@ -94,6 +94,16 @@ class Node:
     score: float | None = None
     embedding: list[float] | None = None
     zbmath_id: str | None = None
+    # Summed over the node's records, not maxed: twins carry separate
+    # counters (survey §7), and `cites:W1|W2` asks for both citer sets, so
+    # the sum is what expanding this node upward would actually cost.
+    cited_by_count: int = 0
+    # Every name the work is known by. For a seed these are the Russian and
+    # English citations off its Math-Net page, cached here so the twin rule
+    # (twins.py) has both languages without going back to the network.
+    titles: list[str] = field(default_factory=list)
+    years: list[int] = field(default_factory=list)
+    twin_of: str | None = None
 
     def openalex_ids(self) -> list[str]:
         return sorted(a.split(":", 1)[1] for a in self.aliases if a.startswith("openalex:"))
@@ -104,6 +114,10 @@ class Node:
             namespace, _, value = alias.partition(":")
             grouped.setdefault(namespace, []).append(value)
         grouped["aliases"] = sorted(self.aliases)
+        if self.titles:
+            grouped["titles"] = list(self.titles)
+        if self.years:
+            grouped["years"] = sorted(self.years)
         return grouped
 
     def absorb(self, record: dict) -> None:
@@ -118,6 +132,12 @@ class Node:
         self.doi = self.doi or (normalize_doi(record.get("doi")) or None)
         if not self.authors:
             self.authors = record_authors(record)
+        self.cited_by_count += int(record.get("cited_by_count") or 0)
+        if record.get("publication_year") and record["publication_year"] not in self.years:
+            self.years.append(int(record["publication_year"]))
+        for name in (record.get("title"), record.get("display_name")):
+            if name and str(name).strip() and str(name).strip() not in self.titles:
+                self.titles.append(str(name).strip())
         self.referenced_works |= {short_id(r) for r in (record.get("referenced_works") or [])}
 
 

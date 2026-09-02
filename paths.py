@@ -80,3 +80,25 @@ def try_default_corpus_dir() -> Path | None:
         return default_corpus_dir()
     except RuntimeError:
         return None
+
+
+def default_cache_dir() -> Path:
+    """Where the OpenAlex crawl caches raw responses.
+
+    Inside the data tree, not the checkout: these are third-party JSON bodies
+    and CODE_ONLY keeps every byte of them out of git. Not scratch either --
+    a wiped cache costs a day of OpenAlex quota to refill (measured: one
+    depth-2 attempt spent ~260 of a 1000-request window, which then took 23 h
+    to reset), so the cache is data the tree keeps, not a temp file.
+    """
+    return data_root() / "corpus" / "cache" / "openalex"
+
+
+def default_mathnet_cache_dir() -> Path:
+    """Math-Net pages, cached for the same reason as the OpenAlex responses.
+
+    The site starts timing out after a few dozen rapid requests, and the
+    titles it serves are the identity anchor the twin rule depends on -- a
+    re-seed must not have to earn them again.
+    """
+    return data_root() / "corpus" / "cache" / "mathnet"
