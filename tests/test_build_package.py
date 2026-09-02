@@ -18,6 +18,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import build_package
+import citation_profile
 from citation_profile import CitationUnclassified
 from legal_profile import Unclassified
 from pg_common import PostgresUnavailable
@@ -72,7 +73,7 @@ class MainHappyPathTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
                  mock.patch.object(build_package, "resolve_citation_mode",
-                                    return_value="full-skeleton"), \
+                                    return_value=("full-skeleton", "not-applicable")), \
                  mock.patch.object(build_package, "gather_manifest",
                                     return_value=_fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files",
@@ -130,7 +131,7 @@ class ProfileDispatchTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
                  mock.patch.object(build_package, "resolve_citation_mode",
-                                    return_value="full-skeleton"), \
+                                    return_value=("full-skeleton", "not-applicable")), \
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_schemas", side_effect=fake_full), \
@@ -162,7 +163,7 @@ class ProfileDispatchTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
                  mock.patch.object(build_package, "resolve_citation_mode",
-                                    return_value="topology-only"), \
+                                    return_value=("topology-only", "owner")), \
                  mock.patch.object(build_package, "gather_manifest",
                                     side_effect=Unclassified("2026_new: class=None")), \
                  mock.patch.object(build_package, "dump_public") as public_mock, \
@@ -217,7 +218,7 @@ class ProfileDispatchTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", side_effect=fake_load_pgenv), \
                  mock.patch.object(build_package, "resolve_citation_mode",
-                                    return_value="full-skeleton"), \
+                                    return_value=("full-skeleton", "not-applicable")), \
                  mock.patch.object(build_package, "gather_manifest", return_value=_fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_schemas",
@@ -268,7 +269,7 @@ class CitationPolicyOverrideTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
                  mock.patch.object(build_package, "resolve_citation_mode",
-                                    return_value="full-skeleton"), \
+                                    return_value=("full-skeleton", "owner")), \
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_public",
@@ -312,7 +313,7 @@ class CitationPolicyOverrideTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
                  mock.patch.object(build_package, "resolve_citation_mode",
-                                    return_value="topology-only") as resolve_mock, \
+                                    return_value=("topology-only", "override")) as resolve_mock, \
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_public", side_effect=fake_public), \
@@ -334,7 +335,7 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
     and not the other). main() resolves, both consumers receive.
     """
 
-    def _run(self, argv, resolved=None, resolve_error=None):
+    def _run(self, argv, resolved=None, resolve_error=None, resolve=None):
         with tempfile.TemporaryDirectory() as tmp:
             corpus_dir = Path(tmp)
             seen = {}
@@ -353,8 +354,9 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
                 seen["dump_mode"] = "<full writer>"
                 gz_path.write_bytes(b"full")
 
-            resolve = (mock.Mock(side_effect=resolve_error) if resolve_error
-                       else mock.Mock(return_value=resolved))
+            resolve = mock.Mock(
+                side_effect=resolve_error or resolve,
+                **({} if (resolve_error or resolve) else {"return_value": resolved}))
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "x"}), \
                  mock.patch.object(build_package, "resolve_citation_mode", resolve), \
@@ -370,11 +372,13 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
         return exit_code, seen
 
     def test_manifest_and_dump_receive_the_same_resolved_mode(self):
-        exit_code, seen = self._run(["--profile", "public"], resolved="topology-only")
+        exit_code, seen = self._run(["--profile", "public"],
+                                    resolved=("topology-only", "owner"))
         self.assertEqual(exit_code, 0)
         self.assertEqual(seen["resolve_calls"], 1, "политика прочитана не один раз")
         self.assertEqual(seen["manifest_mode"], "topology-only")
         self.assertEqual(seen["dump_mode"], "topology-only")
+        self.assertEqual(seen["policy_source"], "owner")
 
     def test_undecided_policy_is_a_refusal_message_not_a_traceback(self):
         exit_code, seen = self._run(
@@ -386,10 +390,40 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
         self.assertNotIn("dump_mode", seen, "дамп писался после отказа")
 
     def test_full_profile_also_resolves_exactly_once(self):
-        exit_code, seen = self._run([], resolved="full-skeleton")
+        exit_code, seen = self._run([], resolved=("full-skeleton", "not-applicable"))
         self.assertEqual(exit_code, 0)
         self.assertEqual(seen["resolve_calls"], 1)
         self.assertEqual(seen["manifest_mode"], "full-skeleton")
+        self.assertEqual(seen["policy_source"], "not-applicable")
+
+    def test_a_public_build_against_a_schemaless_database_claims_no_owner(self):
+        """The provenance comes out of the resolution, not out of the
+        arguments handed to it: there is nothing to carry, no owner row was
+        read, and naming the owner there would put a decision nobody made
+        into the one field designed to be unfabricable.
+        """
+        with mock.patch.object(citation_profile, "citation_schema_exists",
+                                return_value=False), \
+             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
+            exit_code, seen = self._run(["--profile", "public"],
+                                        resolve=citation_profile.resolve_citation_mode)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen["manifest_mode"], "none")
+        self.assertEqual(seen["policy_source"], "not-applicable")
+        require_mock.assert_not_called()
+
+    def test_an_override_against_a_schemaless_database_claims_no_override(self):
+        """Nothing was overridden either: the flag names a mode for a schema
+        that exists, and it cannot conjure one.
+        """
+        with mock.patch.object(citation_profile, "citation_schema_exists",
+                                return_value=False):
+            exit_code, seen = self._run(
+                ["--profile", "public", "--policy-override", "topology-only"],
+                resolve=citation_profile.resolve_citation_mode)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen["manifest_mode"], "none")
+        self.assertEqual(seen["policy_source"], "not-applicable")
 
 
 if __name__ == "__main__":

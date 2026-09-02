@@ -340,10 +340,16 @@ class CitationManifestTests(unittest.TestCase):
         self.assertEqual(counts_mock.call_args.kwargs, {"shipped_only": False})
 
     def test_none_mode_records_zero_counts_and_no_schema(self):
-        manifest, counts_mock = self._gather(profile="public", citation_mode="none")
+        """A public build whose database carries no citation schema: the
+        mode is "none" because nothing was decided, so the provenance is
+        "not-applicable" -- resolve_citation_mode() reads no owner row on
+        that path, and the manifest may not claim one on its behalf.
+        """
+        manifest, counts_mock = self._gather(profile="public", citation_mode="none",
+                                             policy_source="not-applicable")
         self.assertEqual(manifest["citation"],
-                          {"mode": "none", "policy_source": "owner", "work_count": 0,
-                           "cites_count": 0, "work_by_kind": {}})
+                          {"mode": "none", "policy_source": "not-applicable",
+                           "work_count": 0, "cites_count": 0, "work_by_kind": {}})
         self.assertEqual(manifest["schemas"], ["corpus"])
         counts_mock.assert_not_called()
 

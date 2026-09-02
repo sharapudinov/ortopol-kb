@@ -41,7 +41,7 @@ from deploy_pathfix import ensure_corpus_importable
 ensure_corpus_importable()
 
 from legal_profile import SHIPPED_SQL  # noqa: E402
-from manifest_contract import CitationMode, Profile  # noqa: E402
+from manifest_contract import CitationMode, PolicySource, Profile  # noqa: E402
 from pg_common import scalar  # noqa: E402
 from pg_graph_common import citation_schema_exists, kind_counts  # noqa: E402
 
@@ -186,29 +186,44 @@ def require_citation_mode(env: dict) -> str:
     return mode
 
 
-def resolve_citation_mode(env: dict, profile: str, override: str | None = None) -> str:
-    """The ONE reading of the citation policy per build.
+def resolve_citation_mode(
+    env: dict, profile: str, override: str | None = None
+) -> tuple[str, str]:
+    """The ONE reading of the citation policy per build: (mode, source).
 
-    Resolved once by build_package.main() and threaded to both consumers --
+    Resolved once by build_package.main() and threaded to every consumer --
     the manifest (manifest_probe.gather_manifest) and the dump
     (public_dump.dump_public). Neither re-derives it: two independent
     resolutions of the same policy can disagree, and the artifact would then
     describe a citation block its dump does not match, which is exactly what
     MANIFEST_DESCRIBES_ARTIFACT and profile_checks.py exist to prevent.
 
-    No citation schema in the database means there is nothing to carry, for
-    either profile and regardless of --policy-override: the override picks a
-    mode for a schema that exists, it cannot conjure one. Full always
-    carries the whole schema (build_package.py's own docstring: full applies
-    no legal or policy cut). Public defers to the owner's row, or to the
-    override (TEST ONLY, see build_package.py --help), and raises
-    CitationUnclassified when neither is available.
+    The PROVENANCE travels with the mode for that same reason, and it is the
+    stronger case of it: manifest.citation.policy_source is the one field
+    designed to be non-fabricable (PolicySource's own docstring), so it must
+    be an output of the branch that actually decided, never a second
+    derivation from the same arguments. The two disagree exactly where it
+    matters -- a public build against a database with no citation schema
+    decides nothing, reads no owner row and honours no override, and a
+    provenance computed from the profile alone would still call that the
+    owner's decision.
+
+    So: NOT_APPLICABLE whenever nothing was decided here (no schema, or a
+    profile that applies no policy -- full carries the whole schema whatever
+    citation.public_policy says, see build_package.py's own docstring),
+    OVERRIDE only where the override picked the mode (TEST ONLY, see
+    build_package.py --help), OWNER only where citation.public_policy was
+    actually read. An override cannot conjure a schema that is absent, and
+    a public build with neither row nor override raises
+    CitationUnclassified.
     """
     if not citation_schema_exists(env):
-        return CitationMode.NONE
+        return CitationMode.NONE, PolicySource.NOT_APPLICABLE
     if profile != Profile.PUBLIC:
-        return CitationMode.FULL_SKELETON
-    return override or require_citation_mode(env)
+        return CitationMode.FULL_SKELETON, PolicySource.NOT_APPLICABLE
+    if override:
+        return override, PolicySource.OVERRIDE
+    return require_citation_mode(env), PolicySource.OWNER
 
 
 def citation_counts(env: dict, *, shipped_only: bool = False) -> tuple[int, int, dict[str, int]]:
@@ -219,6 +234,13 @@ def citation_counts(env: dict, *, shipped_only: bool = False) -> tuple[int, int,
     holds -- MANIFEST_DESCRIBES_ARTIFACT: every number in manifest.json is
     about the package, and citation_content_checks.py compares these very
     counts against the dumped rows.
+
+    The work total is the census summed, not a count of its own:
+    citation.work.kind is NOT NULL (pg_schema_citation.sql), so the two are
+    the same number by construction, and asking twice costs a second psql
+    process AND -- under shipped_only -- a second evaluation of
+    shipped_work_sql(), the correlated EXISTS against corpus.documents that
+    is the expensive half of the whole reading.
     """
     if shipped_only:
         work_where = f" WHERE {shipped_work_sql('w')}"
@@ -227,6 +249,5 @@ def citation_counts(env: dict, *, shipped_only: bool = False) -> tuple[int, int,
     else:
         work_where = ""
         cites_sql = "SELECT count(*) FROM citation.cites;"
-    work_n = int(scalar(env, f"SELECT count(*) FROM citation.work w{work_where};"))
-    cites_n = int(scalar(env, cites_sql))
-    return work_n, cites_n, kind_counts(env, work_where)
+    by_kind = kind_counts(env, work_where)
+    return sum(by_kind.values()), int(scalar(env, cites_sql)), by_kind

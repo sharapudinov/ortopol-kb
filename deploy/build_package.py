@@ -141,25 +141,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Postgres unavailable: {exc}", file=sys.stderr)
         return 1
 
-    # Whose decision the citation mode is, decided here and carried INTO
-    # the package. The filename says it too, but a name is not part of the
-    # artifact: it survives neither a copy under another name nor a
-    # recipient who only ever reads manifest.json. profile_checks.py fails
-    # on PolicySource.OVERRIDE, so an override build cannot be certified as
+    # The filename says an override build is one, but a name is not part of
+    # the artifact: it survives neither a copy under another name nor a
+    # recipient who only ever reads manifest.json. What travels INSIDE the
+    # package is manifest.citation.policy_source, and profile_checks.py
+    # fails on PolicySource.OVERRIDE, so such a build cannot be certified as
     # publishable by any consumer, however it arrived.
-    #
-    # Only the public profile applies a policy at all: full carries the
-    # whole citation schema whatever citation.public_policy says, and
-    # resolve_citation_mode() short-circuits before reading that row. So a
-    # full artifact says "not-applicable" -- claiming the owner chose
-    # full-skeleton would be this module inventing the one provenance
-    # CITATION_POLICY_IS_DATA exists to keep unfabricable.
     profile_tag = args.profile
-    policy_source = (PolicySource.OWNER if args.profile == Profile.PUBLIC
-                     else PolicySource.NOT_APPLICABLE)
     if args.policy_override:
         profile_tag = f"{args.profile}-override"
-        policy_source = PolicySource.OVERRIDE
         print(
             f"ВНИМАНИЕ: --policy-override={args.policy_override} -- НЕ решение владельца. "
             f"Артефакт назван kb-{profile_tag}-..., несёт в манифесте "
@@ -170,10 +160,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # The citation policy is read ONCE per build, here, and the resolved
-    # literal is handed to both consumers below (manifest and dump). Two
-    # resolutions of the same policy can disagree; one cannot.
+    # pair is handed to every consumer below (manifest and dump). Two
+    # resolutions of the same policy can disagree; one cannot -- and that
+    # holds for WHOSE decision it was as strongly as for the mode itself,
+    # which is why the provenance comes out of the same call rather than
+    # being recomputed here from the profile and the flag. Those two
+    # arguments do not know whether the database carried a citation schema
+    # at all, and a build against one that does not decides nothing, reads
+    # no owner row and honours no override.
     try:
-        citation_mode = resolve_citation_mode(env, args.profile, args.policy_override)
+        citation_mode, policy_source = resolve_citation_mode(
+            env, args.profile, args.policy_override)
     except CitationUnclassified as exc:
         # Same refusal as an unclassified document, for the citation schema
         # as a whole (see citation_profile.py): the crawl's own record names

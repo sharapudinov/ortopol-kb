@@ -12,7 +12,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import citation_profile
-from manifest_contract import CitationMode
+from manifest_contract import CitationMode, PolicySource
 
 class SchemaAndPolicyReadTests(unittest.TestCase):
     def test_public_policy_returns_none_when_row_is_absent(self):
@@ -58,7 +58,7 @@ class RequireCitationModeTests(unittest.TestCase):
 class CitationCountsTests(unittest.TestCase):
     def test_reads_work_cites_and_kind_breakdown(self):
         counts = {"external-skeleton": 382, "our-document": 56}
-        with mock.patch.object(citation_profile, "scalar", side_effect=["438", "2425"]), \
+        with mock.patch.object(citation_profile, "scalar", side_effect=["2425"]), \
              mock.patch.object(citation_profile, "kind_counts", return_value=counts):
             work_n, cites_n, by_kind = citation_profile.citation_counts({})
         self.assertEqual(work_n, 438)
@@ -66,10 +66,29 @@ class CitationCountsTests(unittest.TestCase):
         self.assertEqual(by_kind, counts)
 
     def test_empty_kind_breakdown_is_an_empty_dict(self):
-        with mock.patch.object(citation_profile, "scalar", side_effect=["0", "0"]), \
+        with mock.patch.object(citation_profile, "scalar", side_effect=["0"]), \
              mock.patch.object(citation_profile, "kind_counts", return_value={}):
-            _work_n, _cites_n, by_kind = citation_profile.citation_counts({})
+            work_n, _cites_n, by_kind = citation_profile.citation_counts({})
         self.assertEqual(by_kind, {})
+        self.assertEqual(work_n, 0)
+
+    def test_the_work_total_costs_no_scan_of_its_own(self):
+        """kind is NOT NULL, so the census already IS the work count -- and
+        under shipped_only the duplicated predicate is the per-row EXISTS
+        against corpus.documents, evaluated twice in two psql processes.
+        """
+        seen = []
+        with mock.patch.object(citation_profile, "scalar",
+                                side_effect=lambda env, sql: seen.append(sql) or "7"), \
+             mock.patch.object(citation_profile, "kind_counts",
+                                return_value={"our-document": 3}) as census:
+            work_n, cites_n, _by_kind = citation_profile.citation_counts(
+                {}, shipped_only=True)
+        self.assertEqual((work_n, cites_n), (3, 7))
+        self.assertEqual(len(seen), 1, seen)
+        self.assertIn("citation.cites", seen[0])
+        self.assertNotIn("count(*) FROM citation.work", seen[0])
+        census.assert_called_once()
 
 
 class ResolveCitationModeTests(unittest.TestCase):
@@ -82,21 +101,22 @@ class ResolveCitationModeTests(unittest.TestCase):
              mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
             for profile in ("full", "public"):
                 self.assertEqual(
-                    citation_profile.resolve_citation_mode({}, profile), CitationMode.NONE)
+                    citation_profile.resolve_citation_mode({}, profile),
+                    (CitationMode.NONE, PolicySource.NOT_APPLICABLE))
         require_mock.assert_not_called()
 
     def test_an_override_cannot_conjure_a_schema_that_is_absent(self):
         with mock.patch.object(citation_profile, "citation_schema_exists", return_value=False):
             self.assertEqual(
                 citation_profile.resolve_citation_mode({}, "public", CitationMode.FULL_SKELETON),
-                CitationMode.NONE,
+                (CitationMode.NONE, PolicySource.NOT_APPLICABLE),
             )
 
     def test_full_profile_ships_the_whole_schema_whatever_the_policy_row_says(self):
         with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \
              mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
             self.assertEqual(citation_profile.resolve_citation_mode({}, "full"),
-                             CitationMode.FULL_SKELETON)
+                             (CitationMode.FULL_SKELETON, PolicySource.NOT_APPLICABLE))
         require_mock.assert_not_called()
 
     def test_public_profile_defers_to_the_owners_row(self):
@@ -104,7 +124,7 @@ class ResolveCitationModeTests(unittest.TestCase):
              mock.patch.object(citation_profile, "require_citation_mode",
                                 return_value=CitationMode.TOPOLOGY_ONLY) as require_mock:
             self.assertEqual(citation_profile.resolve_citation_mode({}, "public"),
-                             CitationMode.TOPOLOGY_ONLY)
+                             (CitationMode.TOPOLOGY_ONLY, PolicySource.OWNER))
         require_mock.assert_called_once()
 
     def test_override_bypasses_the_database_read(self):
@@ -112,7 +132,7 @@ class ResolveCitationModeTests(unittest.TestCase):
              mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
             self.assertEqual(
                 citation_profile.resolve_citation_mode({}, "public", CitationMode.FULL_SKELETON),
-                CitationMode.FULL_SKELETON,
+                (CitationMode.FULL_SKELETON, PolicySource.OVERRIDE),
             )
         require_mock.assert_not_called()
 
@@ -212,7 +232,7 @@ class ShippedOnlyCountsTests(unittest.TestCase):
     def test_shipped_only_counts_apply_the_predicate(self):
         seen, narrowed = self._counted(shipped_only=True)
         self.assertTrue(all("public_distribution IN (" in sql for sql in seen), seen)
-        self.assertIn("JOIN citation.work wa", seen[1])
+        self.assertIn("JOIN citation.work wa", seen[0])
         self.assertTrue(all("public_distribution IN (" in where for where in narrowed), narrowed)
 
     def test_default_counts_the_whole_schema(self):
