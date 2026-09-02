@@ -72,18 +72,22 @@ ensure_corpus_importable()
 import citation_dump  # noqa: E402
 import schema_catalog  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
-from manifest_contract import CitationMode, Profile, schemas_for  # noqa: E402
+from manifest_contract import Profile, base_schemas_for  # noqa: E402
 from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL, require_classified  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
 
 SCHEMA = "corpus"
 
-# What _dump_ddl() asks pg_dump for: the public profile's schemas MINUS
-# citation, which citation_dump.dump_citation() appends under its own mode
-# (and not at all under CitationMode.NONE). Derived from the one list
-# manifest.json declares rather than restated, so the dump cannot carry a
-# schema set the manifest does not.
-PUBLIC_SCHEMAS = tuple(schemas_for(Profile.PUBLIC, CitationMode.NONE))
+# What _dump_ddl() asks pg_dump for: the public profile's schemas before
+# the citation mode is applied, because citation_dump.dump_citation()
+# appends that schema's DDL itself, under the mode. Asked of
+# manifest_contract as THAT question rather than derived by naming a mode
+# that ships nothing: a policy value is not a mechanism, and the two sides
+# of the invariant were aligned only by accident -- pg_dump emitting the
+# citation DDL here as well would put duplicated CREATE statements into one
+# file, which aborts the restore and which no manifest check catches
+# (profile_checks compares schema NAMES, not statements).
+PUBLIC_SCHEMAS = base_schemas_for(Profile.PUBLIC)
 
 # pages.id is a BIGSERIAL nothing references (probes address a page by
 # document_id + page_number). Omitting it from the COPY lets the sequence

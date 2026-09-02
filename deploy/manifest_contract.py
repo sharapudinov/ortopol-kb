@@ -242,6 +242,28 @@ _PROFILE_BASE_SCHEMAS = {
 }
 
 
+def base_schemas_for(profile: str) -> tuple[str, ...]:
+    """The profile's schemas BEFORE the citation mode is applied.
+
+    Exported because one caller genuinely wants this and not the whole
+    list: public_dump._dump_ddl() asks pg_dump for the schemas whose DDL it
+    writes itself, and the citation schema's DDL is written separately by
+    citation_dump.dump_ddl() under the mode. Asked for by naming a mode
+    that happens to ship nothing, the dependency was invisible from this
+    side -- nothing here recorded that a caller relies on that mode never
+    adding `citation`, so a change to SHIPPED or to the map below would
+    have put the citation DDL into the file twice, and a dump with
+    duplicated CREATE statements aborts at the recipient's restore.
+
+    Same closed-vocabulary refusal schemas_for() makes, and for the same
+    reason: an unknown profile decided by omission is a schema set nobody
+    chose.
+    """
+    if profile not in Profile.ALL:
+        raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
+    return _PROFILE_BASE_SCHEMAS[profile]
+
+
 def schemas_for(profile: str, citation_mode: str) -> list[str]:
     """The schemas an artifact of this profile carries under this citation
     mode -- read by the dumpers (artifact_bundle.dump_schemas,
@@ -249,16 +271,18 @@ def schemas_for(profile: str, citation_mode: str) -> list[str]:
     manifest.json (manifest_probe.gather_manifest). One list, so the
     package and its manifest cannot describe different schema sets.
 
+    The base half is base_schemas_for()'s answer, so the relationship
+    "everything the profile carries anyway, plus citation when the mode
+    ships it" is written once and holds for both callers.
+
     Refuses an unknown profile or mode rather than defaulting: both
     vocabularies are closed (Profile.ALL, CitationMode.ALL), and guessing
     here would decide by omission what the owner decides by data.
     """
-    if profile not in Profile.ALL:
-        raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
+    schemas = list(base_schemas_for(profile))
     if citation_mode not in CitationMode.ALL:
         raise ValueError(
             f"unknown citation mode {citation_mode!r} -- expected one of {CitationMode.ALL}")
-    schemas = list(_PROFILE_BASE_SCHEMAS[profile])
     if citation_mode in CitationMode.SHIPPED:
         schemas.append("citation")
     return schemas

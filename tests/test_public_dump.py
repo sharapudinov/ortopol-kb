@@ -8,6 +8,7 @@ replaced by stubs that write known text.
 """
 from __future__ import annotations
 
+import ast
 import gzip
 import io
 import tempfile
@@ -23,7 +24,7 @@ import citation_profile
 import dump_scan
 import public_dump
 from legal_profile import Unclassified
-from manifest_contract import CitationMode, Profile, schemas_for
+from manifest_contract import CitationMode, Profile, base_schemas_for, schemas_for
 
 # The citation tables a dump writes today, in restore order -- the live
 # assertion that this is what the catalog and the foreign keys say lives in
@@ -118,6 +119,51 @@ class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
         source = Path(public_dump.__file__).read_text(encoding="utf-8")
         self.assertNotIn("pg_attribute", source)
         self.assertNotIn("pg_namespace", source)
+
+
+class BaseSchemasAreAskedForByNameTests(unittest.TestCase):
+    """_dump_ddl() must ask pg_dump for everything EXCEPT citation, whose
+    DDL citation_dump.dump_ddl() writes into the same file afterwards.
+
+    That is a mechanical fact about who writes what, and it used to be
+    spelled as a policy value -- schemas_for(PUBLIC, <a mode that ships
+    nothing>) -- so nothing on the contract's side recorded the dependency.
+    Both statements below would have been emitted for schema citation had
+    the mode ever started including it, and a dump with two CREATE SCHEMA
+    citation statements aborts the recipient's restore.
+    """
+
+    def test_the_public_dump_asks_pg_dump_for_the_base_schemas(self):
+        self.assertEqual(public_dump.PUBLIC_SCHEMAS, base_schemas_for(Profile.PUBLIC))
+        self.assertEqual(public_dump.PUBLIC_SCHEMAS, ("corpus",))
+
+    def test_the_whole_list_is_the_base_list_plus_citation_when_shipped(self):
+        """The one relationship between the two accessors, pinned where it
+        can be read: everything else in either list is the same fact.
+        """
+        for profile in Profile.ALL:
+            for mode in CitationMode.ALL:
+                with self.subTest(profile=profile, mode=mode):
+                    extra = ["citation"] if mode in CitationMode.SHIPPED else []
+                    self.assertEqual(schemas_for(profile, mode),
+                                     list(base_schemas_for(profile)) + extra)
+
+    def test_an_unknown_profile_is_refused_rather_than_defaulted(self):
+        with self.assertRaises(ValueError) as caught:
+            base_schemas_for("draft")
+        self.assertIn("draft", str(caught.exception))
+
+    def test_no_mode_reaches_the_ddl_schema_list_at_all(self):
+        """A mode named here would be a second place deciding what the
+        citation half of the file contains: this module decides WHETHER to
+        call citation_dump, and the mode it passes on is the one
+        build_package resolved.
+        """
+        source = Path(public_dump.__file__).read_text(encoding="utf-8")
+        called = {node.func.id for node in ast.walk(ast.parse(source))
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        self.assertIn("base_schemas_for", called)
+        self.assertNotIn("schemas_for", called)
 
 
 class CopySelectTests(unittest.TestCase):
