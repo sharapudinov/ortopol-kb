@@ -51,12 +51,39 @@ import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
 from manifest_contract import CitationMode, Key, PolicySource, Profile
 
+# How many offending rows the verdict quotes. The count is exact; the list
+# is a sample, because the scan that fills it runs over citation.crawl_step
+# too -- ~100k rows per depth-2 crawl, every one of them a candidate for a
+# formatted string held in memory and then interpolated into a single
+# message. Twenty names locate the breach; the total says how big it is.
+LEAK_SAMPLE = 20
+
 WORK_TABLE = "citation.work"
 CITES_TABLE = "citation.cites"
 ID_COLUMN = "id"
 DOCUMENT_ID_COLUMN = "document_id"
 CITING_COLUMN = "citing"
 CITED_COLUMN = "cited"
+
+
+class LeakSample:
+    """How many content values leaked, and the first few of them by name.
+
+    An unbounded list was a fact about the dump held entirely in memory and
+    then rendered entirely into one line: a topology-only artifact that
+    failed to strip crawl_step.reason would report the breach as a
+    hundred-thousand-element string nobody can read.
+    """
+
+    def __init__(self, limit: int = LEAK_SAMPLE):
+        self.limit = limit
+        self.total = 0
+        self.sample: list[str] = []
+
+    def add(self, item: str) -> None:
+        self.total += 1
+        if len(self.sample) < self.limit:
+            self.sample.append(item)
 
 
 def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
@@ -72,13 +99,13 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
     builds a dict(zip(columns, fields)) per row ONLY for tables that have
     one, and citation.crawl_step grows by ~100k rows per depth-2 crawl. So
     under any other mode the extra tables get no visitor at all and
-    `leaked` stays the empty list it would have ended as anyway.
+    `leaked` stays the empty sample it would have ended as anyway.
 
     work and cites keep their visitors either way: work_documents /
     work_ids / edge_endpoints feed the two checks that hold the citation
     cut to the document cut, and those run under every shipping mode.
     """
-    leaked: list[str] = []
+    leaked = LeakSample()
     work_documents: dict[str, str] = {}
     work_ids: set[str] = set()
     edge_endpoints: set[str] = set()
@@ -94,7 +121,7 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
         def visit(row: dict) -> None:
             for column in columns:
                 if row.get(column, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
-                    leaked.append(f"{table}.{column}:{name_of(row)}")
+                    leaked.add(f"{table}.{column}:{name_of(row)}")
         return visit
 
     def no_content_hunt(_row: dict) -> None:
@@ -259,6 +286,8 @@ def check_topology_only_strips_content(manifest: dict, facts: dict) -> tuple[boo
     citation = manifest.get(Key.CITATION, {})
     if citation.get(Key.CITATION_MODE) != CitationMode.TOPOLOGY_ONLY:
         return True, "mode is not topology-only -- nothing to strip"
-    leaked = facts.get("citation_leaked", [])
-    ok = not leaked
-    return ok, f"leaked column(s)/row(s): {leaked or 'none'}"
+    leaked = facts.get("citation_leaked") or LeakSample()
+    if not leaked.total:
+        return True, "leaked 0 row(s)"
+    return False, (f"leaked {leaked.total} row(s), first {len(leaked.sample)}: "
+                   f"{leaked.sample}")

@@ -93,17 +93,42 @@ class CheckCitationSchemaMatchesModeTests(unittest.TestCase):
 
 
 class CheckTopologyOnlyStripsTests(unittest.TestCase):
+    def _sample(self, items):
+        sample = citation_content_checks.LeakSample()
+        for item in items:
+            sample.add(item)
+        return {"citation_leaked": sample}
+
     def test_non_topology_only_mode_is_a_trivial_pass(self):
         ok, detail = citation_content_checks.check_topology_only_strips_content(
-            {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}}, {"citation_leaked": ["x"]},
+            {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}},
+            self._sample(["x"]),
         )
         self.assertTrue(ok, detail)
 
     def test_topology_only_passes_when_nothing_leaked(self):
         ok, detail = citation_content_checks.check_topology_only_strips_content(
-            {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}, {"citation_leaked": []},
+            {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}},
+            self._sample([]),
         )
         self.assertTrue(ok, detail)
+
+    def test_a_hundred_leaks_are_counted_in_full_and_quoted_in_part(self):
+        """citation.crawl_step grows by ~100k rows per depth-2 crawl and
+        every offending row used to be formatted into one string and then
+        interpolated into one message. The verdict needs the SIZE of the
+        breach and enough of it to find the rest.
+        """
+        ok, detail = citation_content_checks.check_topology_only_strips_content(
+            {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}},
+            self._sample([f"citation.crawl_step.reason:{i}" for i in range(100)]),
+        )
+        self.assertFalse(ok)
+        self.assertIn("leaked 100 row(s)", detail)
+        self.assertIn(f"first {citation_content_checks.LEAK_SAMPLE}", detail)
+        self.assertIn("citation.crawl_step.reason:0", detail)
+        self.assertNotIn("citation.crawl_step.reason:99", detail)
+        self.assertLess(len(detail), 2000)
 
     def test_topology_only_fails_when_a_work_abstract_leaked(self):
         dump = _copy_block("citation.work", ["id", "key", "abstract", "evidence"],
@@ -271,7 +296,7 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
                           [["1", "1", "{cited by p. 5}"]])
         )
         _scans, facts = _scan(dump, CitationMode.FULL_SKELETON)
-        self.assertEqual(facts["citation_leaked"], [])
+        self.assertEqual(facts["citation_leaked"].total, 0)
         self.assertEqual(facts["citation_work_ids"], {"1"})
         self.assertEqual(facts["citation_edge_endpoints"], {"1"})
 
@@ -280,7 +305,8 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
         dump = _copy_block("citation.work", ["id", "key", "abstract"],
                             [["1", "k1", "an abstract that must not ship"]])
         _scans, facts = _scan(dump, CitationMode.TOPOLOGY_ONLY)
-        self.assertEqual(facts["citation_leaked"], ["citation.work.abstract:k1"])
+        self.assertEqual(facts["citation_leaked"].sample, ["citation.work.abstract:k1"])
+        self.assertEqual(facts["citation_leaked"].total, 1)
 
 
 class PolicySourceTests(unittest.TestCase):
