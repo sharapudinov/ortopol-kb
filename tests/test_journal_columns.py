@@ -1,0 +1,252 @@
+"""The crawl journal's machine-readable columns, on the live instance.
+
+Split from test_pg_graph.py (kb/CLAUDE.md FILE_SIZE) along a real seam:
+that file is about the plumbing pg_graph.py drives and the AGE projection,
+this one is about citation.crawl_step's own columns -- the schema's
+one-time parse of the facts that used to live in `reason`, and the
+consumer that reads them back.
+
+JOURNAL_FACTS_ARE_COLUMNS is the invariant under test: what the pipeline
+reads is a column, `reason` is prose for a human. Everything here needs a
+live database (the parse is SQL, not Python) and skips when Postgres is
+unreachable; every write happens inside a rolled-back transaction, so the
+real journal is never touched.
+"""
+from __future__ import annotations
+
+import unittest
+
+import _pathfix  # noqa: F401
+import pg_graph_common
+from citations import hub_report, journal, store
+from paths import default_corpus_dir
+from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
+
+FIELD_SEP = "\x1f"
+
+
+def _live_env() -> dict[str, str]:
+    try:
+        env = load_pgenv(default_corpus_dir() / ".pgenv")
+    except PostgresUnavailable as exc:
+        raise unittest.SkipTest(f"Postgres not configured: {exc}")
+    if not check_postgres_available(env):
+        raise unittest.SkipTest("Postgres not reachable")
+    return env
+
+
+def _backfill_statements() -> list[str]:
+    """Every one-time journal backfill, taken from the schema file itself.
+
+    Read out of pg_schema_citation.sql rather than restated here: a copy
+    would let the test keep passing over statements the schema no longer
+    applies -- or miss one it has since grown.
+    """
+    schema = pg_graph_common.SCHEMA_PATH.read_text(encoding="utf-8")
+    found, at = [], 0
+    while (start := schema.find("UPDATE citation.crawl_step SET", at)) != -1:
+        at = schema.index(";", start) + 1
+        found.append(schema[start:at])
+    return found
+
+
+class JournalBackfillTests(unittest.TestCase):
+    """604 journal rows were written before node_key/score/tau -- and, later,
+    relation/cited_by_count -- existed, with those facts inside `reason`. The
+    schema parses them back into the columns: once, only into NULLs, and
+    inside a rolled-back transaction here so the live journal is untouched.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+
+    FIXTURE = """
+    INSERT INTO citation.crawl_step (crawl_id, depth, frontier_key, candidate_key,
+                                     action, reason)
+    VALUES ('test:backfill', 1, 'W_F', 'W_C', 'keep',
+            'kept; score=0.6123 tau=0.5000 relation=cites node=W_NODE'),
+           ('test:backfill', 1, 'W_F', 'W_D', 'drop',
+            'below-threshold; score=0.4001 tau=0.5000 relation=referenced'),
+           ('test:backfill', 0, '2019_rm9846', 'W_EN', 'keep',
+            'twin-of=2019_rm9846 seed=W_RU'),
+           ('test:backfill', 2, 'W_H', NULL, 'hub-skip',
+            'cited_by_count=5000 > cap 1000'),
+           ('test:backfill', 1, 'W_F', NULL, 'fetch', NULL);
+    """
+
+    def _backfilled(self, repeats: int = 1) -> list[str]:
+        out = run_sql(
+            self.env,
+            "BEGIN;\n" + self.FIXTURE + "".join(_backfill_statements()) * repeats + "\n"
+            "SELECT action, coalesce(node_key, '-'), coalesce(score::text, '-'), "
+            "coalesce(tau::text, '-'), coalesce(relation, '-'), "
+            "coalesce(cited_by_count::text, '-') FROM citation.crawl_step "
+            "WHERE crawl_id = 'test:backfill' ORDER BY id;\nROLLBACK;\n",
+            extra_args=["-t", "-A", "-F", FIELD_SEP],
+        ).stdout
+        return [line for line in out.splitlines() if line.strip()]
+
+    def test_prose_becomes_columns_row_by_row(self):
+        self.assertEqual(self._backfilled(), [
+            FIELD_SEP.join(["keep", "W_NODE", "0.6123", "0.5", "cites", "-"]),
+            FIELD_SEP.join(["drop", "-", "0.4001", "0.5", "referenced", "-"]),
+            FIELD_SEP.join(["keep", "W_RU", "-", "-", "-", "-"]),
+            FIELD_SEP.join(["hub-skip", "-", "-", "-", "-", "5000"]),
+            FIELD_SEP.join(["fetch", "-", "-", "-", "-", "-"]),
+        ])
+
+    def test_running_it_again_changes_nothing(self):
+        self.assertEqual(self._backfilled(repeats=2), self._backfilled())
+
+    def _rows_written(self, passes: int) -> list[int]:
+        """How many rows each successive pass of the backfill REWRITES.
+
+        Value-idempotent is not enough: the schema file is applied in full
+        on every `pg_graph.py init` and every non-dry-run crawl, so a guard
+        that keeps matching a row the parse cannot fill any further rewrites
+        it forever -- a new tuple version, WAL, and index maintenance on the
+        three key indexes, on a table that is otherwise append-only.
+        """
+        statements = _backfill_statements()
+        counted = "".join("WITH touched AS (" + statement.rstrip(";\n ")
+                          + " RETURNING 1) SELECT count(*) FROM touched;\n"
+                          for statement in statements)
+        out = run_sql(
+            self.env,
+            "BEGIN;\n" + self.FIXTURE + counted * passes + "ROLLBACK;\n",
+            extra_args=["-t", "-A"],
+        ).stdout
+        each = [int(line) for line in out.splitlines() if line.strip()]
+        step = len(statements)
+        return [sum(each[i:i + step]) for i in range(0, len(each), step)]
+
+    def test_the_second_pass_writes_no_row_at_all(self):
+        written = self._rows_written(3)
+        # The fixture's parseable rows, plus whatever the live journal still
+        # has to fill -- the first pass is the one allowed to write.
+        self.assertGreaterEqual(written[0], 6)
+        self.assertEqual(written[1:], [0, 0], "backfill переписывает те же строки заново")
+
+    def test_the_live_journal_has_no_unparsed_relation_left(self):
+        """Every keep/drop row names how its candidate reached the frontier.
+
+        A hub-skip row has no relation (nothing was kept), and neither has a
+        twin promotion, which is a statement about the corpus rather than
+        about a traversal edge: the record IS one of our own works, it did
+        not cite or get cited into the frontier. Those are the rows
+        legitimately without one -- measured on the live journal, they are
+        the only ones.
+        """
+        left = run_sql(
+            self.env,
+            "SELECT count(*) FROM citation.crawl_step WHERE relation IS NULL "
+            "AND action IN ('keep', 'drop') "
+            "AND reason NOT IN ('двойник нашей работы') AND reason !~ 'twin-of=';",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        self.assertEqual(left, "0")
+
+    def test_the_live_journal_has_no_unparsed_score_left(self):
+        """The columns are filled wherever the prose ever carried them --
+        the state the migration is supposed to leave the base in."""
+        left = run_sql(
+            self.env,
+            "SELECT count(*) FROM citation.crawl_step "
+            "WHERE reason ~ 'score=' AND score IS NULL;",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        self.assertEqual(left, "0")
+
+
+class StepColumnsTests(unittest.TestCase):
+    """The write seam between journal.py and the table, pinned at both ends.
+
+    store.STEP_COLUMNS is the column list the COPY names, and a step field
+    missing from it is dropped in silence -- the value is journalled by the
+    code and absent from the database, which is worse than not recording it
+    at all. The other end is the catalog: a column list naming something the
+    table does not have fails the whole batch, on a crawl, at the end.
+    """
+
+    STEPS = (
+        journal.seed("c", "doc", "W1"),
+        journal.seed_missing("c", "doc"),
+        journal.seed_error("c", "doc", "W1"),
+        journal.zbmath_error("c", "doc", "Z1", "HTTP 429"),
+        journal.keep("c", 2, "W1", "W_NODE", 0.61, 0.5, "cites", "W_F"),
+        journal.drop("c", 2, "W2", 0.40, 0.5, "referenced", "W_F"),
+        journal.fetch("c", 2, "W_F", 10, 3),
+        journal.hub_skip("c", 2, "W_H", 5000, 1000),
+        journal.twin("c", "W_EN", "2019_rm9846", "W_RU"),
+    )
+
+    def test_no_journal_field_is_dropped_by_the_writer(self):
+        fields = set().union(*(set(step) for step in self.STEPS))
+        self.assertEqual(fields - set(store.STEP_COLUMNS), set())
+
+    def test_the_writer_names_only_columns_the_table_has(self):
+        env = _live_env()
+        out = run_sql(
+            env,
+            "SELECT a.attname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'citation' AND c.relname = 'crawl_step' "
+            "AND a.attnum > 0 AND NOT a.attisdropped;",
+            extra_args=["-t", "-A"],
+        ).stdout
+        columns = {line.strip() for line in out.splitlines() if line.strip()}
+        self.assertEqual(set(store.STEP_COLUMNS) - columns, set())
+
+
+class HubReportRelationTests(unittest.TestCase):
+    """The hub measurement classifies every depth-1 node by how it entered.
+
+    It used to take that from citation.work.evidence -- a blob
+    registry.Node.absorb builds out of the source's own records -- with a
+    coalesce(..., 'unknown') for the rows where the key was missing. The
+    decision that classified the node is the journal's, so the journal is
+    where the measurement reads it: this test makes the two disagree and
+    checks which one the report believes.
+    """
+
+    KEY = "test:hubrel:W1"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+        run = run_sql(
+            cls.env,
+            "SELECT id FROM measurements.run WHERE spike = "
+            f"'{hub_report.SPIKE}' ORDER BY id DESC LIMIT 1;",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        if not run:
+            raise unittest.SkipTest("замера hub-expansion в базе ещё нет")
+        # An EXISTING run id, never a fresh one: measurements.run is a
+        # BIGSERIAL, a rollback does not give the number back, and the
+        # versioned dump next door carries its setval (kb/CLAUDE.md).
+        cls.run_id = run
+
+    def test_the_journal_outranks_the_evidence_blob(self):
+        out = run_sql(
+            self.env,
+            "BEGIN;\n"
+            "INSERT INTO citation.work (key, source, kind, evidence) VALUES "
+            f"('{self.KEY}', 'test', 'external-skeleton', "
+            """'{"relation": "referenced", "records": [{"cited_by_count": 7,
+                  "referenced_works_count": 3}]}'::jsonb);\n"""
+            "INSERT INTO citation.crawl_step (crawl_id, depth, action, node_key, relation) "
+            f"VALUES ('test:hubrel', 1, 'keep', '{self.KEY}', 'cites');\n"
+            + hub_report.POPULATE +
+            "\nSELECT relation, cited_by_count FROM measurements.citation_hub_expansion "
+            f"WHERE run_id = :run AND work_key = '{self.KEY}';\nROLLBACK;\n",
+            variables={"run": self.run_id},
+            extra_args=["-t", "-A", "-F", FIELD_SEP],
+        ).stdout
+        rows = [line for line in out.splitlines() if line.strip()]
+        self.assertEqual(rows, [FIELD_SEP.join(["cites", "7"])])
+
+
+if __name__ == "__main__":
+    unittest.main()

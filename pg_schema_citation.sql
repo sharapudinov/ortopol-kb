@@ -124,6 +124,23 @@ ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS node_key TEXT;
 ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION;
 ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS tau DOUBLE PRECISION;
 
+-- Two more of the same kind, promoted for the same reason.
+--
+-- relation ('cites' | 'referenced') is HOW the candidate reached the
+-- frontier, and the crawl acts on it: only a node reached by 'cites'
+-- expands at depth >= 2 (kb/CLAUDE.md SNOWBALL_FRONTIER), and the hub
+-- measurement groups its whole verdict by it. It lived in the prose, so
+-- citations/hub_report.py had to re-derive it from citation.work.evidence
+-- with a coalesce(..., 'unknown') -- reading a decision off a blob shaped
+-- by registry.Node.absorb instead of off the decision that made it.
+--
+-- cited_by_count is the measured quantity a hub-skip turned on. The cap it
+-- was compared against stays in the prose: it is the run's own --hub-cap,
+-- and nothing queries it. No index on either -- both are grouped over, not
+-- searched by; an index arrives with the query that needs one.
+ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS relation TEXT;
+ALTER TABLE citation.crawl_step ADD COLUMN IF NOT EXISTS cited_by_count BIGINT;
+
 -- The action vocabulary lives in a NAMED constraint applied separately, not
 -- inline in CREATE TABLE: the crawl grows new kinds of decision (hub-skip
 -- arrived when depth-2 turned out to pull >51k citers through a handful of
@@ -189,6 +206,19 @@ WHERE reason IS NOT NULL
   AND ((node_key IS NULL AND reason ~ '(node=|seed=)')
     OR (score IS NULL AND reason ~ 'score=')
     OR (tau IS NULL AND reason ~ 'tau='));
+
+-- The same one-time parse for relation and cited_by_count, guarded the same
+-- way: each NULL column paired with the marker its own parse needs, so a
+-- row the parse cannot fill any further stops matching. A hub-skip row
+-- carries no relation and a keep/drop row no citer count -- both keep their
+-- NULL, and neither is rewritten again.
+UPDATE citation.crawl_step SET
+    relation = coalesce(relation, nullif(substring(reason from 'relation=([a-z]+)'), '')),
+    cited_by_count = coalesce(cited_by_count,
+                              substring(reason from 'cited_by_count=([0-9]+)')::bigint)
+WHERE reason IS NOT NULL
+  AND ((relation IS NULL AND reason ~ 'relation=')
+    OR (cited_by_count IS NULL AND reason ~ 'cited_by_count='));
 
 -- Escapes a plain string for safe use inside a *Cypher* single-quoted string
 -- literal (backslash-style escaping, like Cypher/JSON -- NOT SQL's

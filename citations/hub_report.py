@@ -48,11 +48,17 @@ CREATE INDEX IF NOT EXISTS citation_hub_expansion_relation
 # а не на предположение «сейчас в базе только depth-1». Узел — это node_key,
 # отдельная колонка: кандидат и узел не одно и то же (два кандидата
 # сливаются в один узел), и разбор прозы reason этого не знал.
+#
+# relation берётся ОТТУДА ЖЕ — из колонки решения, а не из
+# citation.work.evidence с запасным 'unknown'. Evidence лепит
+# registry.Node.absorb из сырых записей источника; классифицировал же узел
+# обход, и его ответ лежит в журнале. DISTINCT ON (node_key) по возрастанию
+# id берёт первую строку keep для узла: реестр присваивает relation при
+# СОЗДАНИИ узла (registry.add), последующие записи его не меняют.
 POPULATE = """
 INSERT INTO measurements.citation_hub_expansion
     (run_id, work_key, relation, cited_by_count, n_references)
-SELECT :run, w.key,
-       coalesce(w.evidence->>'relation', 'unknown'),
+SELECT :run, w.key, j.relation,
        (SELECT coalesce(sum((r->>'cited_by_count')::bigint), 0)
           FROM jsonb_array_elements(w.evidence->'records') r),
        -- referenced_works_count, не length(referenced_works): сам список
@@ -62,9 +68,11 @@ SELECT :run, w.key,
        (SELECT coalesce(sum((r->>'referenced_works_count')::bigint), 0)
           FROM jsonb_array_elements(w.evidence->'records') r)
 FROM citation.work w
-WHERE w.key IN (SELECT DISTINCT node_key
-                FROM citation.crawl_step
-                WHERE action = 'keep' AND depth = 1 AND node_key IS NOT NULL)
+JOIN (SELECT DISTINCT ON (node_key) node_key, relation
+        FROM citation.crawl_step
+       WHERE action = 'keep' AND depth = 1
+         AND node_key IS NOT NULL AND relation IS NOT NULL
+       ORDER BY node_key, id) j ON j.node_key = w.key
 ON CONFLICT (run_id, work_key) DO UPDATE SET
     relation       = EXCLUDED.relation,
     cited_by_count = EXCLUDED.cited_by_count,

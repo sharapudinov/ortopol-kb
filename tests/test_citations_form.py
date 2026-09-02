@@ -102,7 +102,7 @@ class HubCapTests(unittest.TestCase):
                          "хаб всё-таки спросили вверх")
         skips = [s for s in writer.steps_seen if s["action"] == "hub-skip"]
         self.assertEqual([s["frontier_key"] for s in skips], ["W_HUB"])
-        self.assertEqual(skips[0]["reason"], "cited_by_count=5000 > cap 1000")
+        self.assertEqual(skips[0]["cited_by_count"], 5000)
 
     def test_a_hub_still_expands_downward(self):
         writer, client, snow = self._with_hub(1000)
@@ -141,18 +141,33 @@ class JournalFormatTests(unittest.TestCase):
         self.assertEqual(kept["node_key"], "W_NODE")
         self.assertNotIn("node_key", dropped, "у отброшенного кандидата узла нет")
 
+    def test_keep_and_drop_carry_the_relation_as_a_value(self):
+        """How a node entered the graph decides whether it expands at all
+        (SNOWBALL_FRONTIER: only relation='cites' opens depth >= 2), and the
+        hub measurement groups by it. A fact the pipeline acts on is a
+        column -- the alternative was re-deriving it from citation.work.
+        evidence with an 'unknown' fallback, one altitude down.
+        """
+        kept = journal.keep("c", 2, "W1", "W_NODE", 0.6123, 0.5, "cites")
+        dropped = journal.drop("c", 2, "W2", 0.4001, 0.5, "referenced")
+        self.assertEqual(kept["relation"], "cites")
+        self.assertEqual(dropped["relation"], "referenced")
+
     def test_no_step_hides_a_number_or_a_name_in_its_prose(self):
         steps = [journal.keep("c", 2, "W1", "W_NODE", 0.6123, 0.5, "cites"),
                  journal.drop("c", 2, "W2", 0.4001, 0.5, "referenced"),
+                 journal.hub_skip("c", 2, "W1", 5000, 1000),
                  journal.twin("c", "W_EN", "2019_rm9846", "W_RU")]
         for step in steps:
-            for marker in ("score=", "tau=", "node=", "twin-of=", "seed="):
+            for marker in ("score=", "tau=", "node=", "twin-of=", "seed=",
+                           "relation=", "cited_by_count="):
                 self.assertNotIn(marker, step["reason"], step)
 
     def test_hub_skip_names_the_node_it_declined_to_open(self):
         row = journal.hub_skip("c", 2, "W1", 5000, 1000)
         self.assertEqual(row["action"], "hub-skip")
         self.assertEqual(row["node_key"], "W1")
+        self.assertEqual(row["cited_by_count"], 5000)
 
     def test_a_twin_row_names_the_document_the_record_and_the_seed(self):
         row = journal.twin("c", "W_EN", "2019_rm9846", "W_RU")

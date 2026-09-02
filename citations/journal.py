@@ -6,18 +6,23 @@ a dropped candidate has no work row, a hub has no citer edges, a corpus
 document absent from OpenAlex has nothing at all. "Why is X in the graph" and
 "why isn't Y" are answerable only from here.
 
-Every fact the pipeline READS lands in a column -- node_key, score, tau
-beside frontier_key, candidate_key, n_found, n_kept -- and `reason` keeps
-only what a human reads. So the score distribution at depths the tau
-calibration never saw is a plain query over indexed, typed values:
+Every fact the pipeline READS lands in a column -- node_key, score, tau,
+relation, cited_by_count beside frontier_key, candidate_key, n_found,
+n_kept -- and `reason` keeps only what a human reads. So the score
+distribution at depths the tau calibration never saw is a plain query over
+indexed, typed values:
 
     SELECT depth, action, score
     FROM citation.crawl_step WHERE crawl_id = ...
 
-The three columns were prose once (`score=0.6123 tau=0.5000 node=W123`) and
-three separate consumers parsed them back out with substring() and
-split_part(); a number a query needs is not prose, and a name the public
-artifact's cut matches on cannot sit in the one column no index can serve.
+Those columns were prose once (`score=0.6123 tau=0.5000 node=W123`,
+`relation=cites`, `cited_by_count=5000 > cap 1000`) and separate consumers
+parsed them back out with substring() and split_part(); a number a query
+needs is not prose, and a name the public artifact's cut matches on cannot
+sit in the one column no index can serve. `relation` was the last one to
+leave: it decides whether a node expands at all (SNOWBALL_FRONTIER), and
+the hub measurement had been re-deriving it from citation.work.evidence
+with an 'unknown' fallback because the journal could not answer.
 
 Centralised because which column carries what is a contract with SQL written
 elsewhere: a step dict built inline at six call sites drifts at the first
@@ -67,7 +72,7 @@ def keep(crawl_id, depth, candidate_key, node_key, score, tau, relation,
     candidate's own key, and it is the name the graph actually carries."""
     return _step(crawl_id, depth, "keep", frontier_key=frontier_key or None,
                  candidate_key=candidate_key, node_key=node_key,
-                 score=score, tau=tau, reason=f"kept, relation={relation}")
+                 score=score, tau=tau, relation=relation, reason="kept")
 
 
 def drop(crawl_id, depth, candidate_key, score, tau, relation,
@@ -76,7 +81,7 @@ def drop(crawl_id, depth, candidate_key, score, tau, relation,
     what the empty column says about it."""
     return _step(crawl_id, depth, "drop", frontier_key=frontier_key or None,
                  candidate_key=candidate_key, score=score, tau=tau,
-                 reason=f"below-threshold, relation={relation}")
+                 relation=relation, reason="below-threshold")
 
 
 def fetch(crawl_id, depth, frontier_key, n_found, n_kept) -> dict:
@@ -85,10 +90,16 @@ def fetch(crawl_id, depth, frontier_key, n_found, n_kept) -> dict:
 
 
 def hub_skip(crawl_id, depth, frontier_key, cited_by_count, cap) -> dict:
-    """The node was not asked upward -- a decision, not a failure."""
+    """The node was not asked upward -- a decision, not a failure.
+
+    The citer count is the measured quantity the decision turned on, so it
+    is a column. The cap it was compared against stays in the prose: it is
+    the run's own `--hub-cap`, recorded for a human reading one row, and
+    nothing queries it.
+    """
     return _step(crawl_id, depth, "hub-skip", frontier_key=frontier_key,
-                 node_key=frontier_key,
-                 reason=f"cited_by_count={cited_by_count} > cap {cap}")
+                 node_key=frontier_key, cited_by_count=cited_by_count,
+                 reason=f"цитирующих больше порога хабов ({cap})")
 
 
 def twin(crawl_id, candidate_key, document_id, seed_key) -> dict:
