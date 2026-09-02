@@ -24,7 +24,7 @@ from .http_cache import cache_for
 from .spike_runs import NothingToMeasure, record_calibration, record_hub_report
 
 
-def do_hub_report(env, args, tree_root: Path, writer) -> int:
+def do_hub_report(args, tree_root: Path, writer) -> int:
     """Замер цены расширения вверх: что записано и что об этом сказано.
 
     Каталог кэша проверяется ЗДЕСЬ и до того, как объект кэша построен:
@@ -42,16 +42,16 @@ def do_hub_report(env, args, tree_root: Path, writer) -> int:
         return 1
     cache = cache_for(cache_path, read_only=args.dry_run)
     try:
-        record = record_hub_report(env, cache, tree_root, writer, args.hub_cap)
+        record = record_hub_report(cache, tree_root, writer, args.hub_cap)
     except NothingToMeasure as exc:
         print(f"{exc} (кэш {cache_path})", file=sys.stderr)
         return 1
     if writer.dry:
         print("--dry-run: ничего не записано. meta.count батчей cites: "
               + ", ".join(str(c) for c in record.counts)
-              + f" (сумма {sum(record.counts)}). Таблица узлов не заполнялась, "
-              "поэтому ни её статистик, ни отчёта в этом режиме нет: они "
-              "читаются из записанного.")
+              + f" (сумма {sum(record.counts)}); записались бы прогон "
+              f"{hub_report.SPIKE} и отчёт {record.report}. Статистику узлов "
+              "читают из заполненной таблицы, поэтому её здесь нет.")
         return 0
     total = sum(int(row[1]) for row in record.rows)
     print(f"run {record.run_id} ({hub_report.SPIKE}); узлов depth-1: {total}; "

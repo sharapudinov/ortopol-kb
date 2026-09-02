@@ -32,6 +32,19 @@ from pg_common import run_sql
 from . import calibration, hub_cache, hub_report, threshold_store
 
 
+class HubStats(NamedTuple):
+    """Статистика, вычитанная ОБРАТНО из заполненной таблицы узлов.
+
+    Единственный шаг замера, который зависит от режима: в живом прогоне это
+    два запроса по measurements.citation_hub_expansion, а под --dry-run
+    таблицу никто не заполнял — и ответ «пусто» даёт сам писатель, а не
+    ветка в процедуре.
+    """
+
+    rows: list
+    worst: list
+
+
 class MeasurementsWriter:
     """Живая база и диск: то, что режим записывает на самом деле."""
 
@@ -54,6 +67,10 @@ class MeasurementsWriter:
 
     def populate(self, sql: str, run_id: int) -> None:
         run_sql(self.env, sql, variables={"run": str(int(run_id))})
+
+    def hub_stats(self, run_id: int, hub_cap: int) -> HubStats:
+        return HubStats(hub_report.stats(self.env, run_id, hub_cap),
+                        hub_report.worst_nodes(self.env, run_id))
 
     def report(self, path: Path, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +108,10 @@ class DryRunMeasurementsWriter:
     def populate(self, sql: str, run_id: int) -> None:
         self.calls.append(("populate", run_id))
 
+    def hub_stats(self, run_id: int, hub_cap: int) -> HubStats:
+        self.calls.append(("hub_stats", run_id))
+        return HubStats([], [])
+
     def report(self, path: Path, text: str) -> None:
         self.calls.append(("report", str(path)))
 
@@ -117,15 +138,17 @@ class CalibrationRecord(NamedTuple):
 
 
 class HubRecord(NamedTuple):
-    """What the hub measurement wrote. Under a dry-run writer only `counts`
-    is a measurement: nothing was populated, so there are no statistics to
-    read back and no report to name.
+    """What the hub measurement wrote -- or, under a dry-run writer, what it
+    would have written: the same fields, filled by the same calls, with the
+    writer answering 0 for a run row nobody created and an empty HubStats
+    for a table nobody populated. `counts` is the measurement either way;
+    it is read from the cache, not from the database.
     """
 
     counts: list[int]
     run_id: int
     rows: list
-    report: Path | None
+    report: Path
 
 
 def record_calibration(snowball, data_root: Path, writer) -> CalibrationRecord:
@@ -143,7 +166,7 @@ def record_calibration(snowball, data_root: Path, writer) -> CalibrationRecord:
     return CalibrationRecord(run_id, tau_hint, written, report)
 
 
-def record_hub_report(env, cache, data_root: Path, writer, hub_cap: int) -> HubRecord:
+def record_hub_report(cache, data_root: Path, writer, hub_cap: int) -> HubRecord:
     """Отрицательный результат про цену расширения вверх. Сети не требует.
 
     Отказ вместо записи, как в record_calibration: пустой вход — это не
@@ -155,27 +178,34 @@ def record_hub_report(env, cache, data_root: Path, writer, hub_cap: int) -> HubR
     Кэш приходит объектом (citations/http_cache.py), а не путём: сайдкары,
     которые проход дописывает к страницам, — записи в дерево данных, и под
     --dry-run их не делает ReadOnlyCache, а не аккуратность этого модуля.
+
+    Ни одной ветки по режиму, как и в record_calibration: КАЖДЫЙ метод
+    писателя вызывается, а единственный режимозависимый шаг — чтение
+    статистики обратно из заполненной таблицы — тоже метод писателя.
+    Короткое замыкание на writer.dry возвращало флаг ровно туда, откуда шов
+    его убрал: .calls оставался пустым (то есть режим не мог сказать, ЧТО
+    он записал бы), сухая ветка режима больше не проходила через контракт,
+    и «есть метод у писателя ⇒ через него ходят оба режима» переставало
+    быть правдой.
     """
     counts = hub_cache.batch_counts(cache)
     if not counts:
         raise NothingToMeasure(
             "в кэше нет ни одного батча cites: — мерить нечего; это кэш "
             "другого прогона либо страницы направления «вниз»")
-    if writer.dry:
-        return HubRecord(counts, 0, [], None)
     writer.ddl(hub_report.DDL)
     run_id = writer.upsert_run(hub_report.SPIKE,
                                hub_report.run_fields(counts, [], hub_cap))
     writer.populate(hub_report.POPULATE, run_id)
-    rows = hub_report.stats(env, run_id, hub_cap)
+    stats = writer.hub_stats(run_id, hub_cap)
     # verify_query называет ожидаемые числа, а они известны только после
     # заполнения таблицы. Правка НА МЕСТЕ: перезапись строки прогона унесла
     # бы каскадом только что записанные строки, и заполнять пришлось бы
     # второй раз (см. threshold_store.update_run_fields).
     writer.update_run_fields(
         hub_report.SPIKE,
-        {"verify_query": hub_report.run_fields(counts, rows, hub_cap)["verify_query"]})
+        {"verify_query": hub_report.run_fields(counts, stats.rows, hub_cap)["verify_query"]})
     report = data_root / hub_report.REPORT_PATH
-    writer.report(report, hub_report.report(counts, rows, hub_report.worst_nodes(env, run_id),
+    writer.report(report, hub_report.report(counts, stats.rows, stats.worst,
                                             run_id, hub_cap))
-    return HubRecord(counts, run_id, rows, report)
+    return HubRecord(counts, run_id, stats.rows, report)

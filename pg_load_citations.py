@@ -199,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Оба режима ниже считают по уже записанному и кэшу: ни семян, ни сети.
     if args.hub_report:
-        return do_hub_report(env, args, data_root(), measurements)
+        return do_hub_report(args, data_root(), measurements)
     if args.merge_twins:
         return do_merge_twins(env, args.crawl_id or "merge-twins", writer)
 

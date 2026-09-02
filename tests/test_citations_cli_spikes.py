@@ -106,7 +106,7 @@ class HubReportCliTests(unittest.TestCase):
             stack.enter_context(redirect_stdout(io.StringIO()))
             code = pg_load_citations.main(["--hub-report", "--cache-dir", cache])
         self.assertEqual(code, 0)
-        self.assertEqual(report.call_args[0][2], paths.data_root())
+        self.assertEqual(report.call_args[0][1], paths.data_root())
 
     def test_a_real_run_prints_the_run_it_wrote(self):
         """Also the complement to the dry-run guard above: a run that is not

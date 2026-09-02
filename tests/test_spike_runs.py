@@ -15,6 +15,7 @@ reason update_run_fields() exists.
 """
 from __future__ import annotations
 
+import inspect
 import io
 import tempfile
 import unittest
@@ -42,21 +43,29 @@ class HubReportWriteOrderTests(unittest.TestCase):
     first pass produced -- deleted the run row and cascaded away its data.
     """
 
+    ROWS = [["cites", "384", "9000", "1200", "3", "15000"]]
+
     class _Writer(spike_runs.DryRunMeasurementsWriter):
-        dry = False  # exercise the writing branch without a database
+        """A writing writer with no database: the run id and the read-back
+        a populated table would have answered."""
+
+        dry = False
+        rows: list = []
 
         def upsert_run(self, spike, fields):
             super().upsert_run(spike, fields)
             return 7
 
+        def hub_stats(self, run_id, hub_cap):
+            super().hub_stats(run_id, hub_cap)
+            return spike_runs.HubStats(self.rows, [])
+
     def _run(self):
         writer = self._Writer()
-        rows = [["cites", "384", "9000", "1200", "3", "15000"]]
+        writer.rows = self.ROWS
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]), \
-             mock.patch.object(hub_report, "stats", return_value=rows), \
-             mock.patch.object(hub_report, "worst_nodes", return_value=[]):
-            record = spike_runs.record_hub_report(ENV, _cache(tmp), Path(tmp), writer, 1000)
+             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]):
+            record = spike_runs.record_hub_report(_cache(tmp), Path(tmp), writer, 1000)
         return record, writer
 
     def test_the_aggregation_pass_runs_once(self):
@@ -74,23 +83,28 @@ class HubReportWriteOrderTests(unittest.TestCase):
     def test_the_stamped_verify_query_names_the_measured_numbers(self):
         seen = {}
         writer = self._Writer()
+        writer.rows = self.ROWS
         writer.update_run_fields = lambda spike, fields: seen.update(fields)
-        rows = [["cites", "384", "9000", "1200", "3", "15000"]]
         with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]), \
-             mock.patch.object(hub_report, "stats", return_value=rows), \
-             mock.patch.object(hub_report, "worst_nodes", return_value=[]):
-            spike_runs.record_hub_report(ENV, _cache(tmp), Path(tmp), writer, 1000)
+             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]):
+            spike_runs.record_hub_report(_cache(tmp), Path(tmp), writer, 1000)
         self.assertIn("cites 384 узлов", seen["verify_query"])
 
     def test_a_dry_writer_reports_the_counts_and_writes_nothing(self):
+        """Every method is still called -- that is what makes .calls the
+        mode's answer to "what would you have written" -- and every one of
+        them is the writer that writes nothing.
+        """
         writer = spike_runs.DryRunMeasurementsWriter()
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(hub_cache, "batch_counts", return_value=[51652]):
-            record = spike_runs.record_hub_report(ENV, _cache(tmp), Path(tmp), writer, 1000)
+            record = spike_runs.record_hub_report(_cache(tmp), Path(tmp), writer, 1000)
         self.assertEqual(record.counts, [51652])
-        self.assertEqual((record.run_id, record.rows, record.report), (0, [], None))
-        self.assertEqual(writer.calls, [])
+        self.assertEqual((record.run_id, record.rows), (0, []))
+        self.assertEqual(record.report, Path(tmp) / hub_report.REPORT_PATH)
+        self.assertEqual([name for name, _payload in writer.calls],
+                         ["ddl", "upsert_run", "populate", "hub_stats",
+                          "update_run_fields", "report"])
 
 
 class CapIsTheRunsNotTheModulesTests(unittest.TestCase):
@@ -147,7 +161,7 @@ class RefusesAnEmptyMeasurementTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp, \
                  mock.patch.object(hub_cache, "batch_counts", return_value=[]):
                 with self.assertRaises(spike_runs.NothingToMeasure):
-                    spike_runs.record_hub_report(ENV, _cache(tmp), Path(tmp), writer, 1000)
+                    spike_runs.record_hub_report(_cache(tmp), Path(tmp), writer, 1000)
             self.assertEqual(writer.calls, [], f"dry={dry}")
 
     def test_a_calibration_with_no_candidates_is_refused_and_writes_nothing(self):
@@ -171,7 +185,7 @@ class TheSeamSaysNothingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(hub_cache, "batch_counts", return_value=[51652]), \
              redirect_stdout(out):
-            spike_runs.record_hub_report(ENV, _cache(tmp), Path(tmp), writer, 1000)
+            spike_runs.record_hub_report(_cache(tmp), Path(tmp), writer, 1000)
         self.assertEqual(out.getvalue(), "")
 
     def test_recording_a_calibration_prints_nothing_and_names_its_report(self):
@@ -185,6 +199,96 @@ class TheSeamSaysNothingTests(unittest.TestCase):
             self.assertEqual(record.report, Path(tmp) / spike_runs.calibration.REPORT_PATH)
         self.assertEqual(out.getvalue(), "")
         self.assertEqual(record.written, 1)
+
+
+class BothWritersSeeTheSameSequenceTests(unittest.TestCase):
+    """One procedure, one call sequence, two implementations behind it.
+
+    record_calibration() never branched: it calls every method and lets the
+    dry writer absorb them. record_hub_report() short-circuited on
+    writer.dry instead, so the dry path of that mode went round the seam
+    entirely -- .calls stayed empty (the CLI had to hand-write the caveat),
+    and "a writer method exists => both modes go through it" stopped being
+    something a reader could rely on. The one genuinely mode-dependent step
+    -- reading statistics back out of a table the dry writer never
+    populated -- is hub_stats(), i.e. the writer's own answer.
+    """
+
+    class _Recorder:
+        """The live implementation's contract with the database taken out:
+        what is recorded is which methods the procedure called, in order.
+        """
+
+        def __init__(self, dry: bool, stats):
+            self.dry, self._stats, self.calls = dry, stats, []
+
+        def __getattr__(self, name):
+            def method(*args, **kwargs):
+                self.calls.append(name)
+                if name == "upsert_run":
+                    return 7
+                if name == "hub_stats":
+                    return self._stats
+                if name == "threshold_rows":
+                    return len(list(args[1]))
+                return None
+            return method
+
+    ROWS = [["cites", "384", "9000", "1200", "3", "15000"]]
+
+    def _hub(self, writer):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(hub_cache, "batch_counts", return_value=[51652]):
+            spike_runs.record_hub_report(_cache(tmp), Path(tmp), writer, 1000)
+
+    def _calibration(self, writer):
+        rows = [{"candidate_key": "W1", "score": 0.5, "relation": "cites",
+                 "title": "Чебышёв", "year": 1997, "has_abstract": True}]
+        snowball = mock.Mock(calibrate=mock.Mock(return_value=rows), candidate_refs={})
+        with tempfile.TemporaryDirectory() as tmp:
+            spike_runs.record_calibration(snowball, Path(tmp), writer)
+
+    def _sequences(self, drive) -> list[list[str]]:
+        seen = []
+        for dry, stats in ((False, spike_runs.HubStats(self.ROWS, [])),
+                           (True, spike_runs.HubStats([], []))):
+            writer = self._Recorder(dry, stats)
+            drive(writer)
+            seen.append(writer.calls)
+        return seen
+
+    def test_the_hub_measurement_calls_the_same_methods_in_both_modes(self):
+        live, dry = self._sequences(self._hub)
+        self.assertEqual(live, ["ddl", "upsert_run", "populate", "hub_stats",
+                                "update_run_fields", "report"])
+        self.assertEqual(dry, live)
+
+    def test_the_calibration_does_too(self):
+        """The mode that never branched, asserted the same way, so the two
+        are held to one rule rather than to each other's history."""
+        live, dry = self._sequences(self._calibration)
+        self.assertEqual(live, ["ddl", "upsert_run", "threshold_rows", "report"])
+        self.assertEqual(dry, live)
+
+    def test_the_two_shipped_writers_answer_the_same_contract(self):
+        """Both directions: a method on one and not the other is a mode
+        that reaches the database through an AttributeError, or a dry mode
+        quietly skipping a step the live one takes.
+        """
+        live = {name for name in dir(spike_runs.MeasurementsWriter)
+                if not name.startswith("_")}
+        dry = {name for name in dir(spike_runs.DryRunMeasurementsWriter)
+               if not name.startswith("_") and name != "calls"}
+        self.assertEqual(live, dry)
+        for name in sorted(live - {"dry"}):
+            with self.subTest(method=name):
+                self.assertEqual(
+                    inspect.signature(getattr(spike_runs.MeasurementsWriter, name)),
+                    inspect.signature(getattr(spike_runs.DryRunMeasurementsWriter, name)))
+
+    def test_the_dry_read_back_is_empty_rather_than_absent(self):
+        stats = spike_runs.DryRunMeasurementsWriter().hub_stats(0, 1000)
+        self.assertEqual((stats.rows, stats.worst), ([], []))
 
 
 class RunRowUpdateLiveTests(unittest.TestCase):
