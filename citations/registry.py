@@ -18,6 +18,7 @@ carries the reference list is not predictable in advance.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from .openalex_client import restore_abstract, short_id
 
@@ -72,6 +73,30 @@ def record_authors(record: dict) -> list[str]:
         if name:
             names.append(str(name))
     return names
+
+
+class ScoringFields(NamedTuple):
+    """Everything the tau filter reads off a candidate record, and no more.
+
+    A candidate is not a Node until it has passed tau: absorb() namespaces
+    every id the record claims, lists its authors, normalises its DOI and
+    keeps a copy of the record itself, and at depth-2 candidate counts
+    (thousands per level, nine in ten dropped) that was built for every
+    candidate and then built AGAIN by registry.add() for the ones kept.
+    Scoring needs the title and the abstract; the key names the row it
+    belongs to.
+    """
+    key: str
+    title: str | None
+    abstract: str | None
+
+
+def scoring_fields(record: dict) -> ScoringFields:
+    return ScoringFields(
+        short_id(record.get("id")),
+        record_title(record),
+        restore_abstract(record.get("abstract_inverted_index")) or None,
+    )
 
 
 @dataclass

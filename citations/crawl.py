@@ -36,7 +36,7 @@ from . import edges as edges_mod
 from . import gathering, journal, seeding
 from .frontier import EMBED_BATCH, candidate_text, cosine_unit
 from .openalex_client import short_id
-from .registry import Node, WorkRegistry
+from .registry import WorkRegistry, scoring_fields
 
 # A node cited more than this is not asked "who cites you": the answer is
 # tens of thousands of works about the field, not about the node. Default
@@ -124,7 +124,9 @@ class Snowball:
         return gathering.gather(self.client, self.registry, frontier_keys, self.hub_cap)
 
     def scores_of(self, holders) -> dict[str, tuple[float, list[float] | None]]:
-        """{key: (score, vector)} for `holders`, embedded a batch at a time,
+        """{key: (score, vector)} for `holders` -- registry.ScoringFields
+        triples, or anything else carrying key/title/abstract -- embedded a
+        batch at a time,
         and the vector of anything below tau dropped as soon as its score is
         known.
 
@@ -151,7 +153,11 @@ class Snowball:
         A candidate with no title carries no semantic content (the predicate
         pg_embed.py applies to a page) and is scored -1.0 rather than
         embedded: an empty string would land somewhere arbitrary on the
-        sphere instead of being visibly unusable."""
+        sphere instead of being visibly unusable.
+
+        A candidate is scored as registry.ScoringFields (key, title,
+        abstract), never as a Node: it becomes a node in registry.add(),
+        after it has passed tau, and only then is its record absorbed."""
         fresh, seen = [], set()
         for record, relation, source_key in candidates:
             identity = short_id(record.get("id"))
@@ -160,13 +166,8 @@ class Snowball:
             seen.add(identity)
             fresh.append((record, relation, source_key))
 
-        holders = []
-        for record, _relation, _source in fresh:
-            holder = Node(key=short_id(record.get("id")), kind="external-skeleton", depth=0)
-            holder.absorb(record)
-            if holder.title:
-                holders.append(holder)
-        scored = self.scores_of(holders)
+        holders = [scoring_fields(record) for record, _relation, _source in fresh]
+        scored = self.scores_of([h for h in holders if h.title])
 
         out = []
         for record, relation, source_key in fresh:
