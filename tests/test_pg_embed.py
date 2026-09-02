@@ -192,7 +192,7 @@ class BlankRowsAreExcludedBySqlTests(unittest.TestCase):
 
     def test_the_fetch_asks_the_database_to_skip_blank_text(self):
         sql = self._sql("corpus.pages", "body", "btrim(body) <> ''")
-        self.assertIn("btrim(body) <> ''", sql)
+        self.assertIn("btrim(t.txt) <> ''", sql)
 
     def test_every_target_gets_the_same_exclusion_whatever_its_predicate(self):
         """`runs` is the case the classification cannot cover on its own:
@@ -203,7 +203,19 @@ class BlankRowsAreExcludedBySqlTests(unittest.TestCase):
         for name, (table, text_expr, content_pred) in pg_embed.TARGETS.items():
             with self.subTest(target=name):
                 sql = self._sql(table, text_expr, content_pred)
-                self.assertIn(f"btrim({text_expr}) <> ''", sql)
+                self.assertIn("btrim(t.txt) <> ''", sql)
+
+    def test_the_text_is_built_once_and_the_filter_reads_that_value(self):
+        """Interpolated twice, the expression was evaluated twice for every
+        scanned row -- in full for the filter and truncated for the
+        projection -- over a pending set the loop re-reads on every
+        iteration. The LATERAL computes it once and the filter reads the
+        computed column.
+        """
+        for name, (table, text_expr, content_pred) in pg_embed.TARGETS.items():
+            with self.subTest(target=name):
+                sql = self._sql(table, text_expr, content_pred)
+                self.assertEqual(sql.count(text_expr), 1, sql)
 
     def test_the_pending_count_still_names_what_has_no_key(self):
         """The count is not narrowed with it: a row that can never carry a

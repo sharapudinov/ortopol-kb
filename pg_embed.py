@@ -179,13 +179,24 @@ def fetch_page(env: dict[str, str], table: str, text_expr: str,
     содержания (TARGETS) для этого не годится: у цели `runs` он «true» —
     у measurements.run нет колонки body, и пустой прогон отличим только по
     самому выражению текста.
+
+    Выражение текста подставляется ОДИН раз, в LATERAL, и фильтр читает уже
+    вычисленное значение. Две подстановки (в проекцию и в фильтр) означали,
+    что каждая просмотренная строка склеивает и чистит своё тело дважды:
+    целиком ради фильтра и обрезанным ради проекции. Индекса под
+    `embedding is null` у corpus.pages нет, и цикл перечитывает хвост
+    ожидающих на каждой из N/FETCH_BATCH итераций, так что это удвоение — и
+    есть основная цена цели `pages` на стороне базы. Фильтр по
+    ОБРЕЗАННОМУ тексту, а не по полному: вектор считается именно с него,
+    и разбор ниже отбрасывал ровно этот случай.
     """
     out = run_sql(
         env,
-        f"select id, left({text_expr}, {MAX_CHARS}) from {table} "
-        f"where embedding is null and ({content_pred}) "
-        f"and btrim({text_expr}) <> '' "
-        f"order by id limit {FETCH_BATCH};",
+        f"select t.id, t.txt from {table} r "
+        f"cross join lateral (select r.id, left({text_expr}, {MAX_CHARS}) as txt) t "
+        f"where r.embedding is null and ({content_pred}) "
+        f"and btrim(t.txt) <> '' "
+        f"order by t.id limit {FETCH_BATCH};",
         extra_args=ROW_ARGS,
     ).stdout
     pairs = []
