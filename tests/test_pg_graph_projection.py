@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import io
+import textwrap
 import time
 import unittest
 from pathlib import Path
@@ -100,6 +101,96 @@ class ReadingSqlIsAboutContentTests(unittest.TestCase):
         self.assertEqual(self.SQL.count("md5("), 4)
 
 
+# What makes a statement AGE's: a cypher() call or an ag_catalog relation
+# (the label tables live under citation_graph, reached through one or the
+# other). Nothing else needs LOAD 'age'.
+_AGE_MARKERS = ("cypher(", "ag_catalog")
+
+
+class _Statements:
+    """The SQL text a call site actually hands the seam.
+
+    A name is resolved in the function it is assigned in and then at module
+    level, and a call is followed to what it returns -- because that is how
+    the two live call sites are written: `sql = build_citers_sql(...)` and
+    `sql = build_hybrid_sql(...)`, whose own returns reach the constants.
+    A statement built any way this cannot follow yields no text, and a call
+    site whose statement cannot be read is a fault of its own: an
+    unreadable one is exactly where the drift hid last time.
+    """
+
+    def __init__(self, tree: ast.AST):
+        self.functions = {node.name: node for node in ast.walk(tree)
+                          if isinstance(node, ast.FunctionDef)}
+        self.module = self._assignments(tree, nested=False)
+
+    @staticmethod
+    def _assignments(scope, nested: bool = True) -> dict[str, list[ast.AST]]:
+        found: dict[str, list[ast.AST]] = {}
+        walk = ast.walk(scope) if nested else ast.iter_child_nodes(scope)
+        for node in walk:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        found.setdefault(target.id, []).append(node.value)
+        return found
+
+    def texts(self, node, local: dict, seen=None) -> list[str]:
+        seen = seen if seen is not None else set()
+        if id(node) in seen:
+            return []
+        seen.add(id(node))
+        if isinstance(node, ast.Constant):
+            return [node.value] if isinstance(node.value, str) else []
+        if isinstance(node, ast.JoinedStr):
+            return [part.value for part in node.values
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str)]
+        if isinstance(node, ast.BinOp):
+            return (self.texts(node.left, local, seen)
+                    + self.texts(node.right, local, seen))
+        if isinstance(node, ast.IfExp):
+            return (self.texts(node.body, local, seen)
+                    + self.texts(node.orelse, local, seen))
+        if isinstance(node, ast.Name):
+            bound = local.get(node.id) or self.module.get(node.id) or []
+            return [text for value in bound for text in self.texts(value, local, seen)]
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                # `TEXT.format(...)`, `TEXT.replace(...)`: the string is the
+                # receiver, the call only fills it in.
+                return self.texts(node.func.value, local, seen)
+            name = getattr(node.func, "id", None)
+            called = self.functions.get(name)
+            if called is None:
+                return []
+            inner = self._assignments(called)
+            return [text for stmt in ast.walk(called)
+                    if isinstance(stmt, ast.Return) and stmt.value is not None
+                    for text in self.texts(stmt.value, inner, seen)]
+        return []
+
+
+def _seam_faults(source: str, module: str) -> list[str]:
+    """One line per graph_sql() call whose statement names no AGE at all."""
+    tree = ast.parse(source)
+    statements = _Statements(tree)
+    faults = []
+    for function in [node for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef)]:
+        local = _Statements._assignments(function)
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if name != "graph_sql" or not node.args:
+                continue
+            texts = statements.texts(node.args[-1], local)
+            if not any(marker in text for text in texts for marker in _AGE_MARKERS):
+                faults.append(f"{module}.{function.name}: реляционный запрос идёт "
+                              "через шов AGE -- ему нужен pg_common.run_sql()")
+    return faults
+
+
 class TheAgeSeamIsForAgeStatementsTests(unittest.TestCase):
     """graph_sql() prepends LOAD 'age' + search_path, and that is the whole
     of what it says about a statement. A purely relational query routed
@@ -107,40 +198,64 @@ class TheAgeSeamIsForAgeStatementsTests(unittest.TestCase):
     answer -- in the shipped artifact too, where the graph query modules
     travel and the recipient's role may not be able to load it -- and the
     seam stops meaning "this speaks Cypher".
+
+    Read per CALL, not per module: the rule used to be satisfied by the
+    file containing `cypher(` ANYWHERE, so a relational statement inside a
+    module that also speaks Cypher passed in silence -- which is precisely
+    where one was found.
     """
 
     ROOT = Path(pg_graph_common.__file__).resolve().parent
 
-    def _callers(self) -> dict[str, str]:
-        found = {}
-        for path in sorted(self.ROOT.glob("pg_*.py")):
-            source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                target = node.func
-                name = getattr(target, "attr", None) or getattr(target, "id", None)
-                if name == "graph_sql" and path.name != "pg_graph_common.py":
-                    found[path.name] = source
-        return found
+    def _sources(self) -> dict[str, str]:
+        return {path.name: path.read_text(encoding="utf-8")
+                for path in sorted(self.ROOT.glob("pg_*.py"))
+                if path.name != "pg_graph_common.py"}
 
-    def test_only_modules_that_speak_to_age_reach_for_the_preamble(self):
-        callers = self._callers()
-        self.assertTrue(callers, "шов не вызывается ниоткуда -- сканировать нечего")
-        for name, source in callers.items():
-            self.assertTrue(
-                "cypher(" in source or "ag_catalog" in source,
-                f"{name}: реляционный запрос идёт через шов AGE -- "
-                "ему нужен pg_common.run_sql()")
+    def test_every_statement_on_the_seam_speaks_to_age(self):
+        scanned = 0
+        for name, source in self._sources().items():
+            scanned += source.count("graph_sql(")
+            self.assertEqual(_seam_faults(source, name), [])
+        self.assertTrue(scanned, "шов не вызывается ниоткуда -- сканировать нечего")
 
-    def test_the_relational_consumers_are_off_the_seam(self):
-        """The control for the rule above: these two ask plain SQL over
+    def test_the_scan_catches_a_relational_statement_on_the_seam(self):
+        """The positive control: the rule must be able to fail."""
+        source = textwrap.dedent('''
+            _SEEDS = "SELECT key FROM citation.work ORDER BY embedding LIMIT 10;"
+
+            def read(env):
+                return pg_graph_common.graph_sql(env, _SEEDS)
+        ''')
+        self.assertEqual(len(_seam_faults(source, "synthetic.py")), 1)
+
+    def test_the_scan_passes_a_statement_that_does_speak_cypher(self):
+        source = textwrap.dedent('''
+            def build(seed):
+                return ("SELECT * FROM ag_catalog.cypher('citation_graph', $Q$ "
+                        "MATCH (w:Work) RETURN w.key $Q$) AS (k agtype);")
+
+            def read(env, seed):
+                sql = build(seed)
+                return pg_graph_common.graph_sql(env, sql)
+        ''')
+        self.assertEqual(_seam_faults(source, "synthetic.py"), [])
+
+    def test_a_statement_the_scan_cannot_read_is_a_fault_not_a_pass(self):
+        source = textwrap.dedent('''
+            def read(env, sql):
+                return pg_graph_common.graph_sql(env, sql)
+        ''')
+        self.assertEqual(len(_seam_faults(source, "synthetic.py")), 1)
+
+    def test_the_relational_consumers_do_not_call_the_seam_at_all(self):
+        """The other half of the rule: these two ask plain SQL over
         citation.work/citation.cites plus pgvector, and are named here so
-        the rule cannot pass by scanning nothing.
+        the scan cannot pass by finding no call site.
         """
-        self.assertNotIn("pg_graph_candidates.py", self._callers())
-        self.assertNotIn("pg_graph_cocitation.py", self._callers())
+        sources = self._sources()
+        for name in ("pg_graph_candidates.py", "pg_graph_cocitation.py"):
+            self.assertNotIn("graph_sql(", sources[name])
 
 
 class ProjectionReadTests(unittest.TestCase):

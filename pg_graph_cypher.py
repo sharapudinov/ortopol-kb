@@ -15,10 +15,13 @@ What they share, and why they live together:
   pg_schema_citation.sql defines, which this module trusts and never
   re-derives -- and both then check the assembled command for the
   $CYPHERQ$ delimiter, because nothing stops a key from containing it;
-- both reach Postgres exclusively through `pg_graph_common.graph_sql()`,
-  which applies AGE's session-local LOAD + search_path preamble once per
-  psql invocation (see that module's docstring for why it cannot be baked
-  into the server).
+- both send their Cypher-bearing statement through
+  `pg_graph_common.graph_sql()`, which applies AGE's session-local LOAD +
+  search_path preamble once per psql invocation (see that module's
+  docstring for why it cannot be baked into the server). Only that
+  statement: hybrid's seed scan is pgvector over citation.work and goes
+  through pg_common.run_sql(), because the seam means "needs AGE loaded"
+  and not "belongs to a module that speaks Cypher".
 
 Data functions only: CLI parsing, dispatch and table printing live in
 pg_graph.py, which imports this module directly -- the module that owns a
@@ -32,7 +35,7 @@ import sys
 import pg_graph_common
 import pg_search
 from citation_vocab import Relation
-from pg_common import scalar, sql_literal
+from pg_common import run_sql, scalar, sql_literal
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
 MIN_DEPTH, MAX_DEPTH = 1, 3
@@ -253,7 +256,14 @@ def hybrid(env, question: str, top: int = 10) -> list[dict]:
     if vec is None:
         print("эмбеддинги недоступны, hybrid недоступен", file=sys.stderr)
         return []
-    result = pg_graph_common.graph_sql(
+    # Plain relational read, and therefore NOT on the AGE seam: a pgvector
+    # scan over citation.work plus citation.cypher_literal(), which is an
+    # IMMUTABLE SQL escaping function the schema defines and the extension
+    # knows nothing about. Routed through graph_sql() it paid a LOAD 'age'
+    # per call and made `hybrid` fail wherever the extension cannot be
+    # loaded -- at the artifact's recipient, whose role may not be allowed
+    # to -- for a statement AGE has no part in.
+    result = run_sql(
         env, _NEAREST_SEEDS_SQL, variables={"vec": vec, "top": str(int(top))},
         extra_args=ROW_ARGS)
     seeds = [tuple(rec.split(FIELD_SEP, 2)) for rec in split_records(result.stdout)]

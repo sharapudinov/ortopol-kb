@@ -109,10 +109,27 @@ class HybridDecodingTests(unittest.TestCase):
                    ("W3", "", "Undated", "0.42", "cited-by", "W1", "Seed"))
 
     def _hybrid(self, answers: list[str], vec="[0.1]"):
+        """The two statements go through two different doors: the seed scan
+        is pgvector over citation.work (pg_common.run_sql), only the
+        Cypher-bearing one is on the AGE seam.
+        """
+        seeds, rest = answers[0], answers[1:]
         with mock.patch.object(pgc.pg_search, "embed_query", return_value=vec), \
+             mock.patch.object(pgc, "run_sql",
+                               side_effect=[_answer(seeds)]) as seed_sql, \
              mock.patch.object(pgc.pg_graph_common, "graph_sql",
-                               side_effect=[_answer(a) for a in answers]) as sql:
-            return pgc.hybrid(mock.sentinel.env, "вопрос"), sql
+                               side_effect=[_answer(a) for a in rest]) as sql:
+            rows = pgc.hybrid(mock.sentinel.env, "вопрос")
+        self.assertEqual(seed_sql.call_count, 1)
+        return rows, sql
+
+    def test_the_seed_scan_is_not_on_the_age_seam(self):
+        """It names no cypher() and no ag_catalog: routed through the seam
+        it would pay a LOAD 'age' per call and fail wherever the extension
+        cannot be loaded -- including at the artifact's recipient.
+        """
+        for marker in ("cypher(", "ag_catalog"):
+            self.assertNotIn(marker, pgc._NEAREST_SEEDS_SQL)
 
     def test_each_field_lands_in_its_own_column(self):
         rows, _sql = self._hybrid([self.SEEDS, self.ROWS])
@@ -127,16 +144,18 @@ class HybridDecodingTests(unittest.TestCase):
         """
         rows, sql = self._hybrid([""])
         self.assertEqual(rows, [])
-        self.assertEqual(sql.call_count, 1)
+        self.assertEqual(sql.call_count, 0)
 
     def test_a_question_nothing_can_embed_is_an_empty_answer_and_a_word(self):
         said = io.StringIO()
         with mock.patch.object(pgc.pg_search, "embed_query", return_value=None), \
              mock.patch.object(pgc.pg_graph_common, "graph_sql") as sql, \
+             mock.patch.object(pgc, "run_sql") as seed_sql, \
              redirect_stderr(said):
             rows = pgc.hybrid(mock.sentinel.env, "вопрос")
         self.assertEqual(rows, [])
         self.assertFalse(sql.called, "запрос ушёл в базу без вектора")
+        self.assertFalse(seed_sql.called, "векторный скан ушёл в базу без вектора")
         self.assertIn("hybrid недоступен", said.getvalue())
 
 
