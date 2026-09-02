@@ -89,14 +89,15 @@ def write_dump(profile: str, env: dict, gz_path: Path,
     a dict of function objects built at import time -- the dict captured the
     originals, so it silently ignored any later rebinding of these names
     (which is exactly how the tests substitute a stub for the real pg_dump).
-    citation_mode is meaningless for the full writer (dump_schemas always
-    carries the whole citation schema, like every other table) and is passed
-    only to dump_public.
+    Both writers take citation_mode: the full profile applies no cut to
+    the schema's CONTENT, but whether the schema exists to be dumped at all
+    is the same resolved fact the manifest declares
+    (manifest_contract.schemas_for).
     """
     if profile == Profile.PUBLIC:
         dump_public(env, gz_path, citation_mode=citation_mode)
     else:
-        dump_schemas(env, gz_path)
+        dump_schemas(env, gz_path, citation_mode=citation_mode)
 
 
 def main(argv: list[str] | None = None) -> int:

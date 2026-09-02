@@ -189,7 +189,7 @@ class ProfileAwarenessTests(unittest.TestCase):
         manifest, row_mock, classified_mock = self._gather("full")
         self.assertEqual(manifest["profile"], "full")
         # citation appended: the resolved mode this build was handed is a
-        # shipping one, so the schema is declared (declared_schemas()).
+        # shipping one, so the schema is declared (schemas_for()).
         self.assertEqual(manifest["schemas"], ["corpus", "measurements", "citation"])
         self.assertEqual(manifest["citation"]["mode"], "full-skeleton")
         self.assertEqual(manifest["measurements_run_count"], int(_GOOD_ROW[4]))

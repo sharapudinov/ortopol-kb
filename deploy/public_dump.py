@@ -62,12 +62,17 @@ ensure_corpus_importable()
 
 import citation_dump  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
-from manifest_contract import CitationMode  # noqa: E402
+from manifest_contract import CitationMode, Profile, schemas_for  # noqa: E402
 from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL, require_classified  # noqa: E402
 from pg_common import run_sql  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
 
-PUBLIC_SCHEMAS = ("corpus",)
+# What _dump_ddl() asks pg_dump for: the public profile's schemas MINUS
+# citation, which citation_dump.dump_citation() appends under its own mode
+# (and not at all under CitationMode.NONE). Derived from the one list
+# manifest.json declares rather than restated, so the dump cannot carry a
+# schema set the manifest does not.
+PUBLIC_SCHEMAS = tuple(schemas_for(Profile.PUBLIC, CitationMode.NONE))
 
 # pages.id is a BIGSERIAL nothing references (probes address a page by
 # document_id + page_number). Omitting it from the COPY lets the sequence

@@ -10,8 +10,18 @@ dragging in pg_rank_probe/pg_search/blob_integrity_checks/ollama_registry
 just to read one int. VECTOR_PROBE_QUERY was independently duplicated
 verbatim as drift_probe.DEFAULT_QUERY, kept in sync only by a comment.
 
-This module holds no logic and imports nothing else, so every one of its
-three importers can depend on it without pulling anything else along.
+schemas_for() joined them for the same reason: "which schemas does this
+profile ship" was answered independently by the dumper (a tuple in
+artifact_bundle.py, and another in public_dump.py) and by the manifest (a
+dict plus a function in manifest_probe.py), with different conditionality
+on the citation mode. They agreed only because both happened to key off
+the same external fact by different routes, and pg_dump tolerates a
+--schema pattern that matches nothing -- so a divergence would have
+produced a manifest describing a schema set its own dump lacks, which is
+what MANIFEST_DESCRIBES_ARTIFACT exists to forbid.
+
+Beyond that one function this module holds no logic and imports nothing
+else, so every importer can depend on it without pulling anything along.
 """
 from __future__ import annotations
 
@@ -158,6 +168,37 @@ class CitationMode:
     # Modes whose citation.work/cites rows carry abstract/evidence.
     FULL_CONTENT = (FULL_SKELETON,)
 
+
+# Schemas each profile's dump carries BEFORE the citation mode is applied.
+# The public profile leaves measurements behind entirely (it is the record
+# of our own research, not of the corpus); the full profile is the owner's
+# own backup and carries both.
+_PROFILE_BASE_SCHEMAS = {
+    Profile.FULL: ("corpus", "measurements"),
+    Profile.PUBLIC: ("corpus",),
+}
+
+
+def schemas_for(profile: str, citation_mode: str) -> list[str]:
+    """The schemas an artifact of this profile carries under this citation
+    mode -- read by the dumpers (artifact_bundle.dump_schemas,
+    public_dump._dump_ddl + citation_dump) and declared verbatim in
+    manifest.json (manifest_probe.gather_manifest). One list, so the
+    package and its manifest cannot describe different schema sets.
+
+    Refuses an unknown profile or mode rather than defaulting: both
+    vocabularies are closed (Profile.ALL, CitationMode.ALL), and guessing
+    here would decide by omission what the owner decides by data.
+    """
+    if profile not in Profile.ALL:
+        raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
+    if citation_mode not in CitationMode.ALL:
+        raise ValueError(
+            f"unknown citation mode {citation_mode!r} -- expected one of {CitationMode.ALL}")
+    schemas = list(_PROFILE_BASE_SCHEMAS[profile])
+    if citation_mode in CitationMode.SHIPPED:
+        schemas.append("citation")
+    return schemas
 
 # 4: added profile/schemas/legal to the manifest (two-profile packager). A
 # profile-unaware artifact cannot be verified by profile_checks.py at all,

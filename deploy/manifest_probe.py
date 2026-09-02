@@ -32,6 +32,7 @@ from manifest_contract import (  # noqa: E402
     CitationMode,
     Key,
     Profile,
+    schemas_for,
 )
 from ollama_registry import served_model_digest  # noqa: E402
 from pg_common import scalar, scalar_row  # noqa: E402
@@ -48,15 +49,6 @@ FULLTEXT_PROBE_QUERY = "повторные средние"
 # rather than producing a manifest nothing can satisfy.
 BLOB_PROBE_DOC = "1997_sm280"
 PUBLIC_BLOB_PROBE_DOC = "2009_isu34"
-
-# Schemas each profile's dump carries; consumed by profile_checks.py
-# (statically, against the dump itself) and by smoke_test.py, which skips
-# the measurements check when the artifact declares no measurements schema.
-PROFILE_SCHEMAS = {
-    Profile.FULL: ["corpus", "measurements"],
-    Profile.PUBLIC: ["corpus"],
-}
-
 
 def blob_probe_doc(profile: str) -> str:
     return PUBLIC_BLOB_PROBE_DOC if profile == Profile.PUBLIC else BLOB_PROBE_DOC
@@ -79,12 +71,6 @@ def _citation_block(env: dict, mode: str, public: bool) -> dict:
     return {Key.CITATION_MODE: mode, Key.WORK_COUNT: work_n, Key.CITES_COUNT: cites_n,
             Key.WORK_BY_KIND: by_kind}
 
-
-def declared_schemas(profile: str, citation_mode: str) -> list[str]:
-    schemas = list(PROFILE_SCHEMAS[profile])
-    if citation_mode != CitationMode.NONE:
-        schemas = schemas + ["citation"]
-    return schemas
 
 # One round trip for the six independent scalar reads gather_manifest()
 # needs before the (necessarily sequential) vector probe: each is a scalar
@@ -256,7 +242,12 @@ def gather_manifest(
     return {
         Key.SCHEMA_VERSION: MANIFEST_SCHEMA_VERSION,
         Key.PROFILE: profile,
-        Key.SCHEMAS: declared_schemas(profile, citation_mode),
+        # The dumpers read the same list (manifest_contract.schemas_for),
+        # so this is what the package carries, not a parallel claim about
+        # it; consumed by profile_checks.py against the dump itself and by
+        # smoke_test.py, which skips the measurements check when the
+        # artifact declares no measurements schema.
+        Key.SCHEMAS: schemas_for(profile, citation_mode),
         Key.CITATION: _citation_block(env, citation_mode, public),
         Key.CREATED_AT: datetime.now(timezone.utc).isoformat(),
         Key.DOCUMENTS_COUNT: documents_count,

@@ -19,6 +19,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import artifact_bundle
+from manifest_contract import CitationMode, Profile, schemas_for
 
 
 class BundleRuntimeFilesTests(unittest.TestCase):
@@ -64,17 +65,33 @@ class FakeProc:
 
 
 class DumpSchemasTests(unittest.TestCase):
-    def test_full_schemas_include_citation(self):
-        # The full profile is the owner's own backup -- it carries the whole
-        # citation schema unconditionally, the same as corpus/measurements.
-        self.assertEqual(artifact_bundle.FULL_SCHEMAS, ("corpus", "measurements", "citation"))
+    def test_the_dump_asks_for_exactly_what_the_manifest_declares(self):
+        """One source of truth for "which schemas does this profile ship":
+        manifest.json's schemas[] and pg_dump's --schema arguments are the
+        same list from schemas_for(), not two lists kept equal by hand.
+        """
+        for mode in CitationMode.ALL:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                gz_path = Path(tmp) / "dump.sql.gz"
+                with mock.patch.object(artifact_bundle.subprocess, "Popen",
+                                        return_value=FakeProc(b"-- fake\n")) as popen_mock:
+                    artifact_bundle.dump_schemas({}, gz_path, citation_mode=mode)
+                (argv,), _kwargs = popen_mock.call_args
+                asked = [a.split("=", 1)[1] for a in argv if a.startswith("--schema=")]
+                self.assertEqual(asked, schemas_for(Profile.FULL, mode))
+
+    def test_the_owners_own_backup_carries_the_citation_schema(self):
+        # The full profile applies no legal or policy cut: whenever the
+        # schema exists at all (i.e. the mode is not NONE) it ships whole.
+        self.assertIn("citation", schemas_for(Profile.FULL, CitationMode.FULL_SKELETON))
+        self.assertNotIn("citation", schemas_for(Profile.FULL, CitationMode.NONE))
 
     def test_dumps_never_carry_age_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "dump.sql.gz"
             with mock.patch.object(artifact_bundle.subprocess, "Popen",
                                     return_value=FakeProc(b"-- fake\n")) as popen_mock:
-                artifact_bundle.dump_schemas({}, gz_path)
+                artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
             (argv,), _kwargs = popen_mock.call_args
         self.assertIn("--exclude-schema=citation_graph", argv)
         self.assertIn("--exclude-schema=ag_catalog", argv)
@@ -86,7 +103,7 @@ class DumpSchemasTests(unittest.TestCase):
             gz_path = Path(tmp) / "dump.sql.gz"
             with mock.patch.object(artifact_bundle.subprocess, "Popen",
                                     return_value=FakeProc(payload)):
-                artifact_bundle.dump_schemas({}, gz_path)
+                artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
             self.assertTrue(gz_path.is_file())
             with gzip.open(gz_path, "rb") as f:
                 self.assertEqual(f.read(), payload)
@@ -99,7 +116,7 @@ class DumpSchemasTests(unittest.TestCase):
                 return_value=FakeProc(b"partial", stderr=b"connection refused", returncode=1),
             ):
                 with self.assertRaises(RuntimeError) as ctx:
-                    artifact_bundle.dump_schemas({}, gz_path)
+                    artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
             self.assertIn("connection refused", str(ctx.exception))
             self.assertFalse(gz_path.exists())
 
@@ -139,7 +156,8 @@ class DumpSchemasTests(unittest.TestCase):
             done = threading.Event()
             with mock.patch.object(artifact_bundle.subprocess, "Popen", side_effect=fake_popen):
                 worker = threading.Thread(
-                    target=lambda: (artifact_bundle.dump_schemas({}, gz_path), done.set()),
+                    target=lambda: (artifact_bundle.dump_schemas(
+                        {}, gz_path, CitationMode.FULL_SKELETON), done.set()),
                 )
                 worker.start()
                 worker.join(timeout=10)

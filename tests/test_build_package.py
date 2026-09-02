@@ -62,7 +62,7 @@ class MainHappyPathTests(unittest.TestCase):
             out_dir = corpus_dir / "deploy"
             captured = {}
 
-            def fake_dump_schemas(env, gz_path):
+            def fake_dump_schemas(env, gz_path, citation_mode="none"):
                 gz_path.write_bytes(b"\x1f\x8b\x08\x00fake-gzip")
 
             def fake_package(workdir, out_path):
@@ -103,7 +103,7 @@ class ProfileDispatchTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_full(env, gz_path):
+            def fake_full(env, gz_path, citation_mode="none"):
                 seen["writer"] = "full"
                 gz_path.write_bytes(b"full")
 
@@ -219,7 +219,7 @@ class ProfileDispatchTests(unittest.TestCase):
                  mock.patch.object(build_package, "gather_manifest", return_value=_fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_schemas",
-                                    side_effect=lambda env, gz: gz.write_bytes(b"x")), \
+                                    side_effect=lambda env, gz, citation_mode="none": gz.write_bytes(b"x")), \
                  mock.patch.object(build_package, "sha256_file", return_value="a" * 64), \
                  mock.patch.object(build_package, "package", side_effect=fake_package):
                 exit_code = build_package.main(["--pgenv", str(explicit_pgenv), "--out-dir", str(out_dir)])
@@ -305,7 +305,7 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
                 seen["dump_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
 
-            def fake_full(env, gz_path):
+            def fake_full(env, gz_path, citation_mode="none"):
                 seen["dump_mode"] = "<full writer>"
                 gz_path.write_bytes(b"full")
 

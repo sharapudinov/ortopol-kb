@@ -23,7 +23,7 @@ import citation_profile
 import dump_scan
 import public_dump
 from legal_profile import Unclassified
-from manifest_contract import CitationMode
+from manifest_contract import CitationMode, Profile, schemas_for
 
 
 class TableColumnsTests(unittest.TestCase):
@@ -229,6 +229,16 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = self._run(tmp, CitationMode.FULL_SKELETON)
             self.assertEqual(dump_scan.schema_names(gz_path), {"corpus", "citation"})
+
+    def test_every_mode_dumps_exactly_what_the_manifest_will_declare(self):
+        """MANIFEST_DESCRIBES_ARTIFACT, checked against the dump's own bytes:
+        manifest.json's schemas[] is schemas_for(), and so is this.
+        """
+        for mode in CitationMode.ALL:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                gz_path = self._run(tmp, mode)
+                self.assertEqual(dump_scan.schema_names(gz_path),
+                                 set(schemas_for(Profile.PUBLIC, mode)))
 
     def test_topology_only_blanks_abstracts_and_evidence(self):
         # End-to-end through dump_public() -- the column-level SQL itself is

@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from dump_integrity import sha256_file
+from manifest_contract import Profile, schemas_for
 from pg_stream import CommandFailed, stream_stdout
 
 # Paths are relative to this file's own directory (deploy/).
@@ -77,8 +78,6 @@ CORPUS_LIB_FILES = [
 ]
 
 
-FULL_SCHEMAS = ("corpus", "measurements", "citation")
-
 # gzip.open()'s default compresslevel is 9 (max), not the level 6 the gzip
 # CLI itself defaults to. Level 9 buys ~1-2% smaller output for 2-4x slower
 # deflate, and since compression runs single-threaded and in-line with
@@ -89,10 +88,11 @@ FULL_SCHEMAS = ("corpus", "measurements", "citation")
 DUMP_COMPRESSLEVEL = 6
 
 
-def dump_schemas(env: dict, gz_path: Path) -> None:
-    """The FULL profile's dump: pg_dump of both schemas, streamed straight
-    through gzip into gz_path -- one pass, no uncompressed intermediate
-    file. The dump embeds every source PDF/djvu blob in the corpus (hundreds
+def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> None:
+    """The FULL profile's dump: pg_dump of every schema the profile carries
+    (manifest_contract.schemas_for -- the same list manifest.json declares),
+    streamed straight through gzip into gz_path -- one pass, no
+    uncompressed intermediate file. The dump embeds every source PDF/djvu blob in the corpus (hundreds
     of MB to several GB compressed), so writing it out uncompressed first
     and re-reading it to compress would roughly double both wall-clock and
     peak disk usage for no benefit.
@@ -102,7 +102,7 @@ def dump_schemas(env: dict, gz_path: Path) -> None:
     through pg_stream.stream_stdout (see that module on why stderr must be
     drained concurrently).
     """
-    schema_args = [f"--schema={name}" for name in FULL_SCHEMAS]
+    schema_args = [f"--schema={name}" for name in schemas_for(Profile.FULL, citation_mode)]
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             stream_stdout(
