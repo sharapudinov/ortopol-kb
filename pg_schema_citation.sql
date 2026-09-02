@@ -240,6 +240,13 @@ CREATE INDEX IF NOT EXISTS crawl_step_node_key_idx ON citation.crawl_step (node_
 -- means to a public build, and deploy/citation_dump.py for how it is
 -- applied to the dump).
 --
+-- The three values are declared once on the Python side, in
+-- citation_vocab.PublicPolicyMode -- the same one-declaration discipline
+-- work.kind and crawl_step.action follow, and the same live comparison
+-- against pg_get_constraintdef() holds the two halves together
+-- (tests/test_citation_vocab.py). deploy/manifest_contract.CitationMode
+-- extends that class rather than restating its values.
+--
 -- No default row is inserted here, and none may be inserted anywhere but by
 -- the owner: absence of a row is the same UNCLASSIFIED_FAILS_BUILD refusal
 -- corpus.documents applies per-document (deploy/legal_profile.py) -- a

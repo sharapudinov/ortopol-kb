@@ -1,27 +1,30 @@
-"""The two closed vocabularies of the citation schema, declared once.
+"""The closed vocabularies of the citation schema, declared once.
 
-citation.work.kind and citation.crawl_step.action are CHECK-constrained
-columns, so every value the crawl writes is a contract with SQL written
-elsewhere (pg_schema_citation.sql). Spelled as bare literals on the Python
-side -- and they were, across the journal, the writer, the completeness
-checks and the query modules -- the two halves can drift apart silently in
-one direction and loudly in the worst possible place in the other: a new
-action reaches the journal's bulk COPY, the CHECK rejects it, and the COPY
-is all-or-nothing, so a whole level's audit record is lost AFTER its work
-rows and edges were written.
+citation.work.kind, citation.crawl_step.action and citation.public_policy.
+mode are CHECK-constrained columns, so every value written to them is a
+contract with SQL written elsewhere (pg_schema_citation.sql). Spelled as
+bare literals on the Python side -- and they were, across the journal, the
+writer, the completeness checks and the query modules -- the two halves can
+drift apart silently in one direction and loudly in the worst possible
+place in the other: a new action reaches the journal's bulk COPY, the CHECK
+rejects it, and the COPY is all-or-nothing, so a whole level's audit record
+is lost AFTER its work rows and edges were written.
 
-So the vocabulary lives here, the SQL mirrors it, and a live test compares
+So each vocabulary lives here, the SQL mirrors it, and a live test compares
 the two in BOTH directions against pg_get_constraintdef() -- the same
 holding-test discipline test_embedding_text.py applies to the works text in
 its two dialects. This is the pattern deploy/manifest_contract.py already
-uses for the artifact's own closed vocabularies (CitationMode,
-PolicySource, Distribution); it is applied to the crawl's side here.
+uses for the artifact's own closed vocabularies (PolicySource,
+Distribution); it is applied to the schema's own columns here.
 
 A ROOT module, not part of the citations/ package: DEPENDENCY_DIRECTION
 (kb/CLAUDE.md) forbids the corpus-wide tools from importing the crawl, and
 citation_checks.py and the graph query modules need these names as much as
 the crawl does -- pg_graph_candidates.py even ships in the artifact, where
-citations/ deliberately does not.
+citations/ deliberately does not. deploy/manifest_contract.CitationMode
+reaches here for the third vocabulary rather than restating it: the
+packager's view of a mode (which ones ship, which carry content) is the
+artifact's business, but WHICH modes exist is the column's.
 """
 from __future__ import annotations
 
@@ -78,3 +81,27 @@ class CrawlAction:
     HUB_SKIP = "hub-skip"
     ERROR = "error"
     ALL = (SEED, SEED_MISSING, FETCH, KEEP, DROP, HUB_SKIP, ERROR)
+
+
+class PublicPolicyMode:
+    """citation.public_policy.mode -- how much of the citation schema a
+    PUBLIC artifact carries, decided by the corpus owner as a row and never
+    by code (CITATION_POLICY_IS_DATA).
+
+    FULL_SKELETON: every table, with abstracts and evidence.
+    TOPOLOGY_ONLY: every table, with the content columns blanked -- keys,
+    kinds, years, edges and the journal's machine-readable columns.
+    NONE: the schema does not travel at all.
+
+    Declared here rather than in deploy/manifest_contract.py, where the
+    packager's reading of it lives, for the reason the other two are here:
+    the SQL CHECK is the other half of the contract, and only a Python
+    declaration in a module the live test can compare against
+    pg_get_constraintdef() keeps the halves from drifting. What each mode
+    MEANS to a build is deploy/citation_profile.py's docstring.
+    """
+
+    FULL_SKELETON = "full-skeleton"
+    TOPOLOGY_ONLY = "topology-only"
+    NONE = "none"
+    ALL = (FULL_SKELETON, TOPOLOGY_ONLY, NONE)

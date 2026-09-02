@@ -34,11 +34,11 @@ ensure_corpus_importable()
 
 import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
-from manifest_contract import VECTOR_PROBE_QUERY as DEFAULT_QUERY  # noqa: E402
+from probe_query import VECTOR_PROBE_QUERY as DEFAULT_QUERY  # noqa: E402
 from manifest_contract import Key  # noqa: E402
 from pg_common import PostgresUnavailable, load_pgenv  # noqa: E402
 
-# DEFAULT_QUERY is manifest_contract.VECTOR_PROBE_QUERY under a name that
+# DEFAULT_QUERY is probe_query.VECTOR_PROBE_QUERY under a name that
 # reads right as this standalone CLI's own --query default (`python3
 # drift_probe.py --pgenv ...` needs no manifest.json at all, only a running
 # instance) -- previously this was a second, hand-copied literal kept in

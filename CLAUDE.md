@@ -80,12 +80,16 @@ CITATION_POLICY_IS_DATA [HARD, 2026-09-02]: режим схемы citation в п
   настоящего артефакта той же даты. Схему он тоже не заменяет: override
   называет режим для схемы, которая ЕСТЬ.
 VOCABULARY_ONE_DECLARATION [HARD, 2026-09-02]: закрытый словарь колонки
-  (citation.work.kind, citation.crawl_step.action) объявлен ОДИН раз на
-  Python-стороне (citation_vocab.WorkKind / CrawlAction), SQL CHECK его
-  зеркалит, а держит их вместе живой тест (tests/test_citation_vocab.py,
-  сравнение с pg_get_constraintdef в ОБЕ стороны) плюс AST-скан: строковый
-  литерал словаря запрещён во всех модулях, называющих схему citation
-  (в позиции значения или внутри SQL-строки; проза в docstring — можно).
+  (citation.work.kind, citation.crawl_step.action, citation.public_policy.mode)
+  объявлен ОДИН раз на Python-стороне (citation_vocab.WorkKind / CrawlAction /
+  PublicPolicyMode), SQL CHECK его зеркалит, а держит их вместе живой тест
+  (tests/test_citation_vocab.py, сравнение с pg_get_constraintdef в ОБЕ
+  стороны) плюс AST-скан: строковый литерал словаря запрещён во всех модулях,
+  называющих схему citation (в позиции значения или внутри SQL-строки; проза
+  в docstring — можно). Скан НЕ ходит в deploy/ (там «excluded» — словарь
+  corpus.documents, а «none» не отличимо от обычного слова), поэтому третий
+  словарь держат живой тест и то, что deploy/manifest_contract.CitationMode
+  НАСЛЕДУЕТ PublicPolicyMode, а не повторяет значения.
   Причина: журнал уезжает bulk COPY «всё или ничего», поэтому новое значение
   action, не добавленное в CHECK, теряет ВЕСЬ журнал уровня уже после того,
   как записаны work-строки и рёбра. Новое значение = строка в citation_vocab

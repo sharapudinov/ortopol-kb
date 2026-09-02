@@ -28,7 +28,6 @@ import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
 from manifest_contract import (  # noqa: E402
     MANIFEST_SCHEMA_VERSION,
-    VECTOR_PROBE_QUERY,
     CitationMode,
     Key,
     PolicySource,
@@ -37,6 +36,7 @@ from manifest_contract import (  # noqa: E402
 )
 from ollama_registry import served_model_digest  # noqa: E402
 from pg_common import FIELD_SEP, scalar, scalar_row  # noqa: E402
+from probe_query import VECTOR_PROBE_QUERY  # noqa: E402
 
 FULLTEXT_PROBE_QUERY = "повторные средние"
 

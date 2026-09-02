@@ -41,6 +41,8 @@ DEPLOY_FILES = [
     "ollama_registry.py",
     "drift_probe.py",
     "manifest_contract.py",
+    # The probe question itself, which drift_probe.py defaults to.
+    "probe_query.py",
     "pg_rank_probe.py",
     # The static profile/legal verification, and the dump reader it uses:
     # bundled so the recipient of an artifact can re-answer "does this

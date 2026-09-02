@@ -1,9 +1,9 @@
-"""The two closed DB vocabularies, held to one declaration.
+"""The closed DB vocabularies, held to one declaration.
 
-citation_vocab.py spells citation.work.kind and citation.crawl_step.action
-once on the Python side; pg_schema_citation.sql spells them once on the SQL
-side. Two spellings in two languages hold together only if something
-compares them, so:
+citation_vocab.py spells citation.work.kind, citation.crawl_step.action and
+citation.public_policy.mode once on the Python side; pg_schema_citation.sql
+spells them once on the SQL side. Two spellings in two languages hold
+together only if something compares them, so:
 
 - an AST scan over every module that talks to the citation schema refuses a
   bare literal from either vocabulary (docstrings excepted -- prose about a
@@ -14,6 +14,15 @@ compares them, so:
 The comparison is over the VOCABULARY, not the constraint text: the server
 renders `x = ANY (ARRAY[...])` however its version likes, and only the
 literals inside are ours.
+
+The AST half covers the first two only. The mode vocabulary is read by the
+packager (deploy/), which _schema_modules() does not walk -- there the word
+"excluded" belongs to corpus.documents.public_distribution and "none" is
+not a distinctive literal at all, so a scan over those modules would fail
+on vocabularies that merely share a word. What holds the third one is the
+live comparison below, plus the single Python declaration itself:
+manifest_contract.CitationMode extends PublicPolicyMode rather than
+restating its values.
 """
 from __future__ import annotations
 
@@ -23,9 +32,11 @@ import unittest
 from pathlib import Path
 
 import _pathfix  # noqa: F401
+import _pathfix_deploy  # noqa: F401
 import citation_vocab
-from citation_vocab import CrawlAction, WorkKind
+from citation_vocab import CrawlAction, PublicPolicyMode, WorkKind
 from citations import journal
+from manifest_contract import CitationMode
 from paths import default_corpus_dir, kb_root
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, scalar
 
@@ -146,6 +157,25 @@ class JournalActionsAreTheVocabularyTests(unittest.TestCase):
         self.assertIn("hub-skipped", str(ctx.exception))
 
 
+class PackagerSharesTheDeclarationTests(unittest.TestCase):
+    """The one consumer outside the modules the AST scan walks.
+
+    deploy/manifest_contract.CitationMode is where the packager reads the
+    mode, and it used to spell the three values itself -- a second
+    declaration of a CHECK-constrained column, in a module no scan covers
+    and no live test compared. It now EXTENDS the vocabulary, adding only
+    what a build makes of each mode.
+    """
+
+    def test_the_packager_reads_the_column_vocabulary_rather_than_its_own(self):
+        self.assertTrue(issubclass(CitationMode, PublicPolicyMode))
+        self.assertEqual(CitationMode.ALL, PublicPolicyMode.ALL)
+
+    def test_what_it_adds_is_about_builds_not_about_the_column(self):
+        for mode in CitationMode.SHIPPED + CitationMode.FULL_CONTENT:
+            self.assertIn(mode, PublicPolicyMode.ALL)
+
+
 class VocabularyMatchesTheSchemaLiveTests(unittest.TestCase):
     """Both directions, against the constraint the database actually has."""
 
@@ -171,6 +201,16 @@ class VocabularyMatchesTheSchemaLiveTests(unittest.TestCase):
         self.assertEqual(
             self._check_vocabulary("citation.crawl_step", "crawl_step_action_check"),
             set(CrawlAction.ALL))
+
+    def test_the_public_policy_modes_are_the_ones_the_check_allows(self):
+        """The vocabulary the OWNER writes into, and the packager reads out
+        of: a mode the CHECK rejects cannot be recorded, and a mode the
+        Python side does not know is refused by the build
+        (deploy/citation_profile.resolve_citation_mode).
+        """
+        self.assertEqual(
+            self._check_vocabulary("citation.public_policy", "public_policy_mode_check"),
+            set(PublicPolicyMode.ALL))
 
 
 if __name__ == "__main__":

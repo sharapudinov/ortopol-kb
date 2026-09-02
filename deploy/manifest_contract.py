@@ -1,14 +1,14 @@
 """Shared build/verify contract for the deploy artifact.
 
-MANIFEST_SCHEMA_VERSION and VECTOR_PROBE_QUERY are read by both the
-producer of manifest.json (manifest_probe.py, build-time only, deliberately
-NOT bundled into the artifact -- see artifact_bundle.DEPLOY_FILES) and its
-two verifiers (smoke_checks.py, drift_probe.py, both bundled). Previously
-smoke_checks.py defined MANIFEST_SCHEMA_VERSION and manifest_probe.py
-imported it from there -- the producer depending on its own verifier, and
-dragging in pg_rank_probe/pg_search/blob_integrity_checks/ollama_registry
-just to read one int. VECTOR_PROBE_QUERY was independently duplicated
-verbatim as drift_probe.DEFAULT_QUERY, kept in sync only by a comment.
+MANIFEST_SCHEMA_VERSION and the key names are read by both the producer of
+manifest.json (manifest_probe.py, build-time only, deliberately NOT bundled
+into the artifact -- see artifact_bundle.DEPLOY_FILES) and its verifiers
+(smoke_checks.py, profile_checks.py, drift_probe.py, all bundled).
+Previously smoke_checks.py defined MANIFEST_SCHEMA_VERSION and
+manifest_probe.py imported it from there -- the producer depending on its
+own verifier, and dragging in pg_rank_probe/pg_search/
+blob_integrity_checks/ollama_registry just to read one int. The probe's
+query had the same problem and the same answer, in probe_query.py.
 
 schemas_for() joined them for the same reason: "which schemas does this
 profile ship" was answered independently by the dumper (a tuple in
@@ -22,10 +22,18 @@ what MANIFEST_DESCRIBES_ARTIFACT exists to forbid.
 
 Beyond schemas_for() and strips_content() -- each of them a question two
 sides of the build would otherwise answer independently -- this module holds
-no logic and imports nothing else, so every importer can depend on it
-without pulling anything along.
+no logic, and imports only citation_vocab (which imports nothing at all):
+the citation mode is a DB column's closed vocabulary, and
+VOCABULARY_ONE_DECLARATION puts every such vocabulary in that one root
+module. Importers still pull nothing along.
 """
 from __future__ import annotations
+
+from deploy_pathfix import ensure_corpus_importable
+
+ensure_corpus_importable()
+
+from citation_vocab import PublicPolicyMode  # noqa: E402
 
 
 class Key:
@@ -184,26 +192,25 @@ class Distribution:
     SHIPPED = (FULL_TEXT, METADATA_ONLY, INTERNAL)
 
 
-class CitationMode:
-    """citation.public_policy.mode's vocabulary (pg_schema_citation.sql's own
-    CHECK carries the same three values) -- the DATA that decides whether/how
-    much of the citation schema a public artifact ships. Its meaning (and the
-    refusal to guess about anything outside ALL) lives in
-    deploy/citation_profile.py; deploy/citation_dump.py applies it to the
-    dump, deploy/citation_content_checks.py verifies it statically against
-    the dump's own bytes.
+class CitationMode(PublicPolicyMode):
+    """The packager's view of citation.public_policy.mode. WHICH modes exist
+    is the column's own vocabulary (citation_vocab.PublicPolicyMode, which
+    the SQL CHECK mirrors and a live test holds it to); this class adds only
+    what a BUILD makes of each. Restated here it would have been a third
+    spelling of a closed DB vocabulary, outside the one mechanism that
+    compares such a spelling with the database's.
+
+    The refusal to guess about anything outside ALL lives in
+    deploy/citation_profile.py; citation_dump.py applies the mode to the
+    dump, citation_content_checks.py verifies it against the dump's bytes.
     """
 
-    FULL_SKELETON = "full-skeleton"
-    TOPOLOGY_ONLY = "topology-only"
-    NONE = "none"
-    ALL = (FULL_SKELETON, TOPOLOGY_ONLY, NONE)
     # Modes whose dump carries the citation schema at all.
-    SHIPPED = (FULL_SKELETON, TOPOLOGY_ONLY)
+    SHIPPED = (PublicPolicyMode.FULL_SKELETON, PublicPolicyMode.TOPOLOGY_ONLY)
     # Modes whose citation.work/cites rows carry abstract/evidence. The
     # dump and the artifact-side hunt both read it through strips_content()
     # below rather than testing a mode by name.
-    FULL_CONTENT = (FULL_SKELETON,)
+    FULL_CONTENT = (PublicPolicyMode.FULL_SKELETON,)
 
 
 def strips_content(mode: str | None) -> bool:
@@ -278,22 +285,3 @@ def schemas_for(profile: str, citation_mode: str) -> list[str]:
 # would refuse the honest value as unknown, so the two must not meet: the
 # version gate separates them instead of either side guessing.
 MANIFEST_SCHEMA_VERSION = 8
-
-# A paraphrase of "an algebraic polynomial bounded from its values on a
-# uniform grid" (the recurring theme of 1997_sm280 and related papers) with
-# genuinely ZERO shared stemmed lexeme against its own nearest page's
-# wording -- not merely zero shared surface forms, and not excusing the
-# domain noun either: earlier wordings that kept "полином"/"величина"/
-# "оценить" etc. kept landing on pages that use the exact same word, which
-# the stemmed check (manifest_probe._stemmed_token_overlap) correctly
-# rejected. This wording was accepted only after gather_manifest ran clean
-# against the live corpus (verified: phraseto_tsquery also finds "no
-# matches" for it). Nearest page can legitimately drift as the corpus/model
-# change -- gather_manifest() re-checks the invariant against whatever page
-# is actually nearest on every build and refuses to record a pair that
-# overlaps, rather than trusting this comment to still hold.
-VECTOR_PROBE_QUERY = (
-    "какое предельное значение по абсолютной величине допускает "
-    "рациональная форма, заданная своими данными на равноотстоящих "
-    "узлах отрезка"
-)
