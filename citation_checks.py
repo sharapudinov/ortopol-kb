@@ -39,12 +39,13 @@ extra a completeness run can be indifferent to.
 """
 from __future__ import annotations
 
+import json
 from typing import NamedTuple
 
 import pg_graph_common
 from paths import EXTERNAL_SOURCE_DIR, IIS_SOURCE_DIR
-from pg_common import FIELD_SEP, run_sql
-from pg_graph_common import citation_schema_exists, kind_counts
+from pg_common import scalar
+from pg_graph_common import citation_schema_exists, kind_counts_expression
 
 
 _UNPLACED_SQL = f"""
@@ -62,8 +63,7 @@ ORDER BY d.id;
 
 def unplaced_documents(env: dict) -> list[str]:
     """ISU corpus documents the crawl never recorded a decision about."""
-    out = run_sql(env, _UNPLACED_SQL, extra_args=["-t", "-A"]).stdout
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    return citation_reading(env).unplaced
 
 
 _NO_EVIDENCE_SQL = """
@@ -74,21 +74,14 @@ ORDER BY key;
 
 
 def works_without_evidence(env: dict) -> list[tuple[str, str]]:
-    out = run_sql(env, _NO_EVIDENCE_SQL, extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
-    rows = []
-    for line in out.splitlines():
-        if line.strip():
-            key, kind = line.split(FIELD_SEP)
-            rows.append((key, kind))
-    return rows
+    return citation_reading(env).no_evidence
 
 
 _SELF_LOOP_SQL = "SELECT DISTINCT citing FROM citation.cites WHERE citing = cited ORDER BY citing;"
 
 
 def self_loop_work_ids(env: dict) -> list[str]:
-    out = run_sql(env, _SELF_LOOP_SQL, extra_args=["-t", "-A"]).stdout
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    return citation_reading(env).self_loops
 
 
 def _projection_stale(seen) -> list[str]:
@@ -120,8 +113,7 @@ def works_without_semantic_key(env: dict) -> list[str]:
     (pg_embedding_text, corpus.embedding_model), which is what makes the
     top-up safe to run beside the crawl at all.
     """
-    out = run_sql(env, _NO_SEMANTIC_KEY_SQL, extra_args=["-t", "-A"]).stdout
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    return citation_reading(env).no_semantic_key
 
 
 _INDEXED_WITHOUT_EXTERNAL_SQL = f"""
@@ -135,8 +127,80 @@ ORDER BY w.key;
 
 
 def indexed_without_external_document(env: dict) -> list[str]:
-    out = run_sql(env, _INDEXED_WITHOUT_EXTERNAL_SQL, extra_args=["-t", "-A"]).stdout
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    return citation_reading(env).indexed_without_external
+
+
+# The five problem queries and the kind census, as ONE psql script.
+#
+# Each is independent, read-only and answers in a handful of rows, and each
+# used to cost a psql fork, a temp script and a connection of its own --
+# the price pg_graph_common._READING_SQL was collapsed for ("five of them
+# for 13 ms of work was five process startups"). A completeness run made
+# nine such trips; it now makes three readings: the schema question (a
+# script naming citation.work must not be the thing that discovers the
+# schema is absent), projection_diff(), and this.
+#
+# json_build_object rather than result blocks separated by RECORD_SEP: one
+# statement, one row, and nesting that survives a title carrying a newline
+# or a separator byte, which json escapes. A second result set in the same
+# script, by contrast, is indistinguishable from another row of the first.
+#
+# The columns each check is read back by are named beside its SQL and
+# projected ::text: a row comes back as an array in that order, so no
+# reader has to know a field name, a bigint id reads the way psql's own
+# -t -A printed it, and a column renamed in the SQL fails loudly here
+# rather than silently returning nothing. json_agg's own ORDER BY, not the
+# subquery's -- an aggregate does not inherit its input's ordering.
+_CHECKS = (
+    ("unplaced", _UNPLACED_SQL, ("id",)),
+    ("no_evidence", _NO_EVIDENCE_SQL, ("key", "kind")),
+    ("self_loops", _SELF_LOOP_SQL, ("citing",)),
+    ("no_semantic_key", _NO_SEMANTIC_KEY_SQL, ("key",)),
+    ("indexed_without_external", _INDEXED_WITHOUT_EXTERNAL_SQL, ("key",)),
+)
+
+
+def _rows_json(sql: str, columns: tuple[str, ...]) -> str:
+    """`sql`'s rows as a json array of arrays -- [] when it matches nothing."""
+    projection = ", ".join(f"r.{column}::text" for column in columns)
+    return (f"(SELECT coalesce(json_agg(json_build_array({projection}) "
+            f"ORDER BY r.{columns[0]}), '[]'::json) "
+            f"FROM ({sql.strip().rstrip(';')}) r)")
+
+
+_READING_SQL = "SELECT json_build_object(\n" + ",\n".join(
+    [f"  'by_kind', {kind_counts_expression()}"]
+    + [f"  '{name}', {_rows_json(sql, columns)}" for name, sql, columns in _CHECKS]
+) + ");"
+
+
+class CitationReading(NamedTuple):
+    """Everything the citation TABLES are asked during a completeness run.
+
+    One answer, because the questions are independent of each other but not
+    of the run: they are all asked, always, and asking them separately buys
+    nothing but process startups.
+    """
+
+    unplaced: list[str]
+    no_evidence: list[tuple[str, str]]
+    self_loops: list[str]
+    no_semantic_key: list[str]
+    indexed_without_external: list[str]
+    by_kind: dict[str, int]
+
+
+def citation_reading(env: dict) -> CitationReading:
+    """The one reading, parsed. Assumes schema citation exists."""
+    seen = json.loads(scalar(env, _READING_SQL))
+    return CitationReading(
+        unplaced=[row[0] for row in seen["unplaced"]],
+        no_evidence=[(row[0], row[1]) for row in seen["no_evidence"]],
+        self_loops=[row[0] for row in seen["self_loops"]],
+        no_semantic_key=[row[0] for row in seen["no_semantic_key"]],
+        indexed_without_external=[row[0] for row in seen["indexed_without_external"]],
+        by_kind=seen["by_kind"],
+    )
 
 
 class CitationState(NamedTuple):
@@ -156,13 +220,17 @@ class CitationState(NamedTuple):
 
 
 def citation_state(env: dict) -> CitationState:
+    """Three readings, and no more: the schema question, the projection,
+    and everything the tables are asked (citation_reading).
+    """
     if not citation_schema_exists(env):
         return CitationState(
             ["CITATION SCHEMA MISSING: the citation graph is part of the knowledge "
              "base, not optional (python3 pg_graph.py init)"],
             "citation: schema absent")
     seen = pg_graph_common.projection_diff(env)
-    return CitationState(_problems(env, seen), _summary(env, seen))
+    read = citation_reading(env)
+    return CitationState(_problems(read, seen), _summary(read, seen))
 
 
 def citation_problems(env: dict) -> list[str]:
@@ -170,44 +238,44 @@ def citation_problems(env: dict) -> list[str]:
     return citation_state(env).problems
 
 
-def _summary(env: dict, seen) -> str:
+def _summary(read: CitationReading, seen) -> str:
     """One line for corpus_completeness.py's опись report -- purely
     informational, never a source of pass/fail (that is the problems).
 
-    The kind breakdown is a census this reading does not carry; the totals
-    beside it come from the reading rather than from a count of their own.
+    Both halves come from readings already made: the census travels in the
+    same answer as the problems, and the totals beside it come from the
+    projection reading rather than from a count of their own.
     """
-    by_kind = kind_counts(env)
-    kinds = ", ".join(f"{k}={n}" for k, n in sorted(by_kind.items()))
+    kinds = ", ".join(f"{k}={n}" for k, n in sorted(read.by_kind.items()))
     if seen is None:
-        return f"citation: {sum(by_kind.values())} work ({kinds}), проекции нет"
+        return f"citation: {sum(read.by_kind.values())} work ({kinds}), проекции нет"
     return f"citation: {seen.work_n} work ({kinds}), {seen.cites_n} cites"
 
 
-def _problems(env: dict, seen) -> list[str]:
+def _problems(read: CitationReading, seen) -> list[str]:
     problems: list[str] = []
     problems += [
         f"UNPLACED DOCUMENT: {doc_id} -- neither citation.work(kind='our-document') "
         "nor citation.crawl_step(action='seed-missing') accounts for it"
-        for doc_id in unplaced_documents(env)
+        for doc_id in read.unplaced
     ]
     problems += [
         f"NO EVIDENCE: citation.work {key!r} (kind={kind}) has no evidence"
-        for key, kind in works_without_evidence(env)
+        for key, kind in read.no_evidence
     ]
     problems += [
         f"SELF LOOP: citation.cites has an edge {work_id} -> {work_id} "
         "(violates CHECK citing <> cited -- manual integrity check needed)"
-        for work_id in self_loop_work_ids(env)
+        for work_id in read.self_loops
     ]
     problems += _projection_stale(seen)
     problems += [
         f"NO SEMANTIC KEY: citation.work {key!r} has a non-empty title and no embedding"
-        for key in works_without_semantic_key(env)
+        for key in read.no_semantic_key
     ]
     problems += [
         f"INDEXED WITHOUT EXTERNAL DOCUMENT: citation.work {key!r} (kind='indexed') has "
         f"no corpus.documents row under source_dir='{EXTERNAL_SOURCE_DIR}'"
-        for key in indexed_without_external_document(env)
+        for key in read.indexed_without_external
     ]
     return problems

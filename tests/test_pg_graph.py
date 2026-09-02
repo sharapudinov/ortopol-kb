@@ -171,18 +171,32 @@ class SharedCitationPlumbingTests(unittest.TestCase):
         with mock.patch.object(pg_graph_common, "scalar", return_value="f"):
             self.assertFalse(pg_graph_common.citation_schema_exists({}))
 
-    def test_kind_census_parses_the_separated_rows(self):
-        text = FIELD_SEP.join(("external-skeleton", "382")) + "\n" \
-            + FIELD_SEP.join(("our-document", "56")) + "\n"
-        with mock.patch.object(pg_graph_common, "run_sql", return_value=mock.Mock(stdout=text)):
+    def test_kind_census_parses_the_json_object(self):
+        text = '{"external-skeleton": 382, "our-document": 56}'
+        with mock.patch.object(pg_graph_common, "scalar", return_value=text):
             self.assertEqual(pg_graph_common.kind_counts({}),
                              {"external-skeleton": 382, "our-document": 56})
 
+    def test_an_empty_table_censuses_as_an_empty_object(self):
+        with mock.patch.object(pg_graph_common, "scalar", return_value="{}"):
+            self.assertEqual(pg_graph_common.kind_counts({}), {})
+
     def test_kind_census_takes_the_callers_narrowing_clause(self):
-        with mock.patch.object(pg_graph_common, "run_sql",
-                                return_value=mock.Mock(stdout="")) as run_mock:
+        with mock.patch.object(pg_graph_common, "scalar",
+                                return_value="{}") as scalar_mock:
             self.assertEqual(pg_graph_common.kind_counts({}, " WHERE w.year > 2000"), {})
-        self.assertIn(" WHERE w.year > 2000", run_mock.call_args[0][1])
+        self.assertIn(" WHERE w.year > 2000", scalar_mock.call_args[0][1])
+
+    def test_the_census_expression_is_what_the_statement_is_built_from(self):
+        """A third caller reads the census inside a script of its own
+        (citation_checks.py), so the expression is the shared thing and the
+        one-statement form is built out of it.
+        """
+        with mock.patch.object(pg_graph_common, "scalar",
+                                return_value="{}") as scalar_mock:
+            pg_graph_common.kind_counts({})
+        self.assertIn(pg_graph_common.kind_counts_expression(),
+                      scalar_mock.call_args[0][1])
 
     def _definitions(self, path: Path) -> tuple[set[str], set[str]]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -204,7 +218,7 @@ class SharedCitationPlumbingTests(unittest.TestCase):
         for path in self.CONSUMERS:
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("to_regclass('citation.work')", text, path.name)
-            self.assertNotIn("count(*) FROM citation.work w{where}", text, path.name)
+            self.assertNotIn("count(*) AS n FROM citation.work w", text, path.name)
 
     def test_both_consumers_reach_the_shared_layer(self):
         for path in self.CONSUMERS:
@@ -215,7 +229,8 @@ class SharedCitationPlumbingTests(unittest.TestCase):
                 for alias in node.names
             }
             self.assertIn("citation_schema_exists", imported, path.name)
-            self.assertIn("kind_counts", imported, path.name)
+            self.assertTrue({"kind_counts", "kind_counts_expression"} & imported,
+                            f"{path.name}: {imported}")
 
 
 class ProjectionDiffTests(unittest.TestCase):

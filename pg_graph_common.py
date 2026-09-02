@@ -27,6 +27,7 @@ dispatch code no recipient calls as a library.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -48,7 +49,6 @@ GRAPH_NAME = "citation_graph"
 AGE_PREAMBLE = "LOAD 'age';\nSET search_path = ag_catalog, \"$user\", public;\n"
 
 _SCHEMA_EXISTS_SQL = "SELECT to_regclass('citation.work') IS NOT NULL;"
-_KIND_COUNTS_SQL = "SELECT w.kind, count(*) FROM citation.work w{where} GROUP BY 1 ORDER BY 1;"
 
 
 def citation_schema_exists(env: dict[str, str]) -> bool:
@@ -64,23 +64,29 @@ def citation_schema_exists(env: dict[str, str]) -> bool:
     return scalar(env, _SCHEMA_EXISTS_SQL) == "t"
 
 
+def kind_counts_expression(where: str = "") -> str:
+    """The census as ONE scalar SQL expression: {kind: rows} as a json object.
+
+    An expression rather than a statement because a third caller reads it
+    inside a script of its own (citation_checks.py folds it into the one
+    reading a completeness run makes), and a census spelled twice is a
+    census that drifts. json rather than separated rows for the same reason
+    the caller batches at all: an object nests inside json_build_object,
+    while row-per-line output cannot be told apart from the next result set
+    in the same script.
+    """
+    return ("(SELECT coalesce(json_object_agg(t.kind, t.n), '{}'::json) FROM "
+            f"(SELECT w.kind, count(*) AS n FROM citation.work w{where} GROUP BY 1) t)")
+
+
 def kind_counts(env: dict[str, str], where: str = "") -> dict[str, int]:
     """{kind: rows} over citation.work, optionally narrowed by `where`.
 
     The census two callers need in two shapes -- the whole table for the
     completeness summary, and the shipped-rows-only subset for the public
-    artifact's manifest (`where` carries that predicate, alias `w`). One
-    query and one parse: the parse is the FIELD_SEP contract above, and a
-    second copy of it drifts the moment one caller's separator changes.
+    artifact's manifest (`where` carries that predicate, alias `w`).
     """
-    out = run_sql(env, _KIND_COUNTS_SQL.format(where=where),
-                  extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
-    counts: dict[str, int] = {}
-    for line in out.splitlines():
-        if line.strip():
-            kind, n = line.split(FIELD_SEP)
-            counts[kind] = int(n)
-    return counts
+    return json.loads(scalar(env, f"SELECT {kind_counts_expression(where)};"))
 
 
 def graph_sql(env: dict[str, str], sql: str, **kwargs):
