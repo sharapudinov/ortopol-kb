@@ -117,6 +117,7 @@ class Snowball:
 
     def write_seeds(self) -> None:
         self.writer.works([self.registry.nodes[k] for k in self.seed_keys])
+        self.registry.release_written(self.seed_keys)
 
     # -- one level -------------------------------------------------------
     def expandable(self, keys: list[str], depth: int) -> list[str]:
@@ -255,6 +256,7 @@ class Snowball:
         references = {key: refs for key, refs in references.items()
                       if self.registry.resolve_openalex(key) is not None}
         self.writer.works([self.registry.nodes[k] for k in kept_keys])
+        self.registry.release_written(kept_keys)
         edges = edges_mod.among_known(self.registry, frontier_keys, candidates, references)
         self.writer.edges(edges)
         self.writer.journal(steps)

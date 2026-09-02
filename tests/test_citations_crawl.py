@@ -327,17 +327,6 @@ class ScoringMemoryTests(unittest.TestCase):
         self.assertEqual(snowball.registry.nodes["W_NEAR"].referenced_works, {"W_SEED"},
                          "оставленный узел потерял свои ссылки — depth+1 их не увидит")
 
-    def test_a_kept_candidate_still_reaches_its_node_with_its_vector(self):
-        writer = DryRunWriter()
-        seed = work("W_SEED", title="Seed Chebyshev")
-        near = work("W_NEAR", title="Near Chebyshev", refs=["W_SEED"])
-        client = FakeClient([seed, near], citers={"W_SEED": [near]})
-        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0), "Near": unit(0)}),
-                            writer, tau=0.5, crawl_id="c", log=lambda *_: None)
-        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
-        snowball.expand(["W_SEED"], 1)
-        self.assertEqual(snowball.registry.nodes["W_NEAR"].embedding, unit(0))
-
     def test_a_record_is_absorbed_only_once_it_has_passed_tau(self):
         """The filter reads three fields; absorbing a record builds the
         namespaced id set, the author list, the DOI and a copy of the record

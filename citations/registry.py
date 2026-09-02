@@ -249,6 +249,26 @@ class WorkRegistry:
         self._reindex(node)
         return node, True
 
+    def release_written(self, keys) -> None:
+        """Drops the payload the WRITE consumed, on nodes just written.
+
+        A node outlives its row: the next level reads its ids, its relation
+        and its reference list off this registry, so it cannot be forgotten
+        when it is written. Two of its fields cannot be read again, though
+        -- store's works() takes the vector and the raw source records once,
+        and nothing else ever asks for either. Held to the end of the crawl
+        they are 1024 floats plus a record list that grows on every
+        re-sighting, multiplied by every node ever kept, which is exactly
+        the peak the level-at-a-time scoring was built to bound.
+
+        A key with no node is ignored: the caller names what it wrote, and
+        the registry is the one that knows what is still there.
+        """
+        for key in keys:
+            node = self.nodes.get(key)
+            if node is not None:
+                node.embedding, node.records = None, []
+
     def _reindex(self, node: Node) -> None:
         for identifier in node.aliases:
             self._by_id[identifier] = node.key
