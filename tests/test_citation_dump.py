@@ -161,14 +161,16 @@ class DumpCitationTests(unittest.TestCase):
 
     def test_shipping_mode_writes_ddl_then_every_table(self):
         buffer = io.BytesIO()
-        with mock.patch.object(citation_dump, "table_columns",
+        with mock.patch.object(citation_dump, "citation_tables",
+                                return_value=list(citation_dump.TABLE_DUMP_ORDER)), \
+             mock.patch.object(citation_dump, "table_columns",
                                 side_effect=lambda env, table: self.COLUMNS[table]), \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
             citation_dump.dump_citation({}, buffer, CitationMode.FULL_SKELETON)
         text = buffer.getvalue().decode()
         self.assertIn("-- DDL", text)
         self.assertLess(text.index("-- DDL"), text.index("COPY citation.work"))
-        for table in citation_dump.CITATION_TABLES:
+        for table in citation_dump.TABLE_DUMP_ORDER:
             self.assertIn(f"COPY citation.{table}", text)
 
     def test_ddl_excludes_age_owned_schemas(self):
@@ -183,25 +185,59 @@ class DumpCitationTests(unittest.TestCase):
 class ClassificationCoversTheCatalogTests(unittest.TestCase):
     """The map is complete against the DATABASE, not against itself.
 
-    table_columns() reads pg_attribute, so the artifact's column list grows
-    with the schema; the classification has to grow with it in the same
-    commit or the build stops. Asserted as set equality both ways: a column
-    added to the schema and not to the map is the leak this whole mechanism
-    exists to prevent, and a column in the map the table no longer has is a
-    classification of nothing, quietly rotting.
+    table_columns() reads pg_attribute and citation_tables() reads pg_class,
+    so the artifact's shape grows with the schema; the classification has to
+    grow with it in the same commit or the build stops. Asserted as set
+    equality both ways, tables and columns alike: something in the schema
+    and not in the map is the leak this whole mechanism exists to prevent,
+    and something in the map the schema no longer has is a classification of
+    nothing, quietly rotting.
     """
 
     @classmethod
     def setUpClass(cls):
         cls.env = _live_env()
 
+    def test_every_table_in_the_schema_is_classified_and_nothing_else_is(self):
+        self.assertEqual(
+            set(citation_dump.citation_tables(self.env)),
+            set(citation_columns.CITATION_COLUMN_CLASS),
+            "каталог схемы citation и классификация таблиц разошлись",
+        )
+
     def test_every_dumped_column_is_classified_and_nothing_else_is(self):
-        for table in citation_dump.CITATION_TABLES:
+        for table in citation_dump.citation_tables(self.env):
             self.assertEqual(
                 set(citation_dump.table_columns(self.env, table)),
                 set(citation_columns.CITATION_COLUMN_CLASS[table]),
                 f"citation.{table}: каталог и классификация разошлись",
             )
+
+    def test_a_table_nobody_classified_stops_the_build(self):
+        """Asked of the real catalog: the extra table is created inside a
+        transaction that is rolled back, and the refusal names it.
+
+        Without this the failure mode is silent -- pg_dump --schema-only
+        emits the new table's DDL, no COPY block follows it, and the
+        recipient restores a correctly-created empty table.
+        """
+        seen = run_sql(
+            self.env,
+            "BEGIN;\n"
+            "CREATE TABLE citation.test_unclassified_probe (id BIGINT);\n"
+            + citation_dump._TABLES_SQL
+            + "ROLLBACK;",
+            extra_args=["-t", "-A"],
+        ).stdout
+        present = [line.strip() for line in seen.splitlines() if line.strip()]
+        self.assertIn("test_unclassified_probe", present)
+        with self.assertRaises(citation_dump.TableUnclassified) as caught:
+            citation_dump.classified_tables(present)
+        self.assertIn("citation.test_unclassified_probe", str(caught.exception))
+
+    def test_the_probe_table_did_not_survive_the_rollback(self):
+        self.assertNotIn("test_unclassified_probe",
+                         citation_dump.citation_tables(self.env))
 
 
 class LegalCutSqlTests(unittest.TestCase):

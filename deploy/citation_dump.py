@@ -20,6 +20,13 @@ names it. Not a second policy invented here: it is corpus.documents.
 public_distribution, the same column public_dump.py cuts by, reaching the
 rows that reference it across a foreign key.
 
+WHICH tables travel is the catalog's answer, not a tuple's: pg_dump
+--schema-only emits DDL for every table in schema citation, so a table
+added later and forgotten here would ship as a correctly-created, silently
+EMPTY one. citation_tables() reads pg_class and refuses to build when a
+relation is not in the classification -- the same polarity, and the same
+refusal, that citation_columns.py applies per column.
+
 id is preserved (never re-sequenced the way corpus.pages.id is excluded and
 left to the restore-side sequence): citation.cites references
 citation.work.id BY VALUE, and a column-list COPY has no id-remapping
@@ -32,13 +39,18 @@ from __future__ import annotations
 
 from typing import IO
 
-from citation_columns import blanked_cast
+from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import CitationMode
 from pg_common import run_sql
 from pg_stream import stream_stdout
 
-CITATION_TABLES = ("work", "cites", "crawl_step", "public_policy", "schema_backfill")
+# The ORDER the dumped tables are written in, and nothing else -- WHICH
+# tables are dumped comes from the catalog (citation_tables), the same
+# polarity table_columns() gives the column list. Order is still declared
+# here because the restore replays COPY blocks against live foreign keys:
+# citation.cites references citation.work by value, so work goes first.
+TABLE_DUMP_ORDER = ("work", "cites", "crawl_step", "public_policy", "schema_backfill")
 
 # One alias per dumped table (the same discipline public_dump.TABLE_ALIASES
 # follows): an unlisted table raises KeyError instead of quietly producing
@@ -73,6 +85,17 @@ _SOURCE = {
 # reuse an id already taken.
 _SERIAL_TABLES = ("work", "crawl_step")
 
+# Every ordinary table the schema actually holds. 'r' and 'p' only:
+# views, sequences and indexes are recreated by the DDL and carry no rows
+# of their own to copy.
+_TABLES_SQL = """
+SELECT c.relname
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'citation' AND c.relkind IN ('r', 'p')
+ORDER BY c.relname;
+"""
+
 _COLUMNS_SQL = """
 SELECT a.attname
 FROM pg_attribute a
@@ -82,6 +105,44 @@ WHERE n.nspname = 'citation' AND c.relname = '{table}'
   AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
 ORDER BY a.attnum;
 """
+
+
+class TableUnclassified(RuntimeError):
+    """A table in schema citation nobody has said how to dump."""
+
+
+def classified_tables(present: list[str]) -> list[str]:
+    """`present` in dump order, or a refusal naming what is unclassified.
+
+    The column list has been catalog-driven from the start, so a new column
+    could not vanish silently; the TABLE list was a tuple, and the guard
+    test iterated that same tuple, so a table added to the schema later
+    would have shipped its DDL with no COPY block at all -- a restore that
+    succeeds with an empty table, which no manifest number and no smoke
+    check would have contradicted. Being unclassified is now the build's
+    problem, the same answer UNCLASSIFIED_FAILS_BUILD gives a document.
+    """
+    unknown = [name for name in present
+               if name not in CITATION_COLUMN_CLASS or name not in TABLE_ALIASES
+               or name not in _SOURCE or name not in TABLE_DUMP_ORDER]
+    if unknown:
+        raise TableUnclassified(
+            "таблица citation." + ", citation.".join(sorted(unknown))
+            + " не классифицирована: дополните CITATION_COLUMN_CLASS "
+            "(deploy/citation_columns.py), TABLE_ALIASES, _SOURCE и "
+            "TABLE_DUMP_ORDER (deploy/citation_dump.py); сборка отказывается "
+            "угадывать, уезжает ли новая таблица в public-артефакт"
+        )
+    return sorted(present, key=TABLE_DUMP_ORDER.index)
+
+
+def citation_tables(env: dict) -> list[str]:
+    """The tables to dump, read from the catalog and held to the map."""
+    rows = run_sql(env, _TABLES_SQL, extra_args=["-t", "-A"]).stdout
+    present = [line.strip() for line in rows.splitlines() if line.strip()]
+    if not present:
+        raise RuntimeError("schema citation carries no tables -- wrong database?")
+    return classified_tables(present)
 
 
 def table_columns(env: dict, table: str) -> list[str]:
@@ -167,5 +228,5 @@ def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
         return
     dump_ddl(env, dst)
     dst.write(b"\n")
-    for table in CITATION_TABLES:
+    for table in citation_tables(env):
         write_copy_block(env, dst, table, table_columns(env, table), mode)

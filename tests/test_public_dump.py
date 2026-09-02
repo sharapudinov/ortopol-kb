@@ -215,6 +215,8 @@ class CitationDumpIntegrationTests(unittest.TestCase):
              mock.patch.object(public_dump, "table_columns",
                                 side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=self._fake_stream), \
+             mock.patch.object(citation_dump, "citation_tables",
+                                return_value=list(citation_dump.TABLE_DUMP_ORDER)), \
              mock.patch.object(citation_dump, "table_columns",
                                 side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
@@ -259,6 +261,8 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                  mock.patch.object(public_dump, "table_columns",
                                     side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capturing_stream), \
+                 mock.patch.object(citation_dump, "citation_tables",
+                                    return_value=list(citation_dump.TABLE_DUMP_ORDER)), \
                  mock.patch.object(citation_dump, "table_columns",
                                     side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
@@ -299,6 +303,8 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                  mock.patch.object(public_dump, "table_columns",
                                     side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capture), \
+                 mock.patch.object(citation_dump, "citation_tables",
+                                    return_value=list(citation_dump.TABLE_DUMP_ORDER)), \
                  mock.patch.object(citation_dump, "table_columns",
                                     side_effect=lambda env, table: self.CITATION_COLUMNS[table]), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
