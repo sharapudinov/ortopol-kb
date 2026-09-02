@@ -119,7 +119,13 @@ class HubCacheReader:
             try:
                 return json.loads(stored)
             except ValueError:
-                return None
+                # Битый сайдкар — не «страницы нет»: сама страница на месте
+                # и читается тем же путём, что у страницы без сайдкара
+                # (внизу он же и перепишется). Обрыв записи оставляет
+                # непустой огрызок, то есть попадание, и ранний None
+                # отчитался бы тихим нулём о полном кэше — ровно тем, против
+                # чего этот читатель и написан.
+                pass
         head = self.cache.read(name, limit=HEAD_BYTES)
         if head is None:
             return None

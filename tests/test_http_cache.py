@@ -13,9 +13,11 @@ into two behaviours, which is exactly what a subclass hid.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
 from citations import hub_cache, http_cache, openalex_client
@@ -114,6 +116,45 @@ class WriteHalfTests(unittest.TestCase):
             cache = http_cache.ReadOnlyCache(directory)
             cache.write("a.json", "dropped")
             self.assertFalse(directory.exists())
+            self.assertIsNone(cache.read("a.json"))
+
+
+class TheWriteLandsWholeOrNotAtAllTests(unittest.TestCase):
+    """An entry is the whole body or is absent -- never half of it.
+
+    A cached OpenAlex batch page runs to tens of megabytes, so a process
+    killed while one is being written lands in the middle of it (this
+    machine runs earlyoom, and a crawl is exactly the kind of job it picks).
+    A plain write leaves a TRUNCATED file, which is still non-empty and
+    therefore still a hit for every later run.
+    """
+
+    def test_the_body_is_written_beside_the_entry_and_then_moved_onto_it(self):
+        real, moves = os.replace, []
+
+        def watched(source, target):
+            moves.append((Path(source).name, Path(target).name))
+            self.assertEqual(Path(source).read_text(encoding="utf-8"), "whole",
+                             "переименовано раньше, чем тело дописано")
+            real(source, target)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = http_cache.DiskCache(Path(tmp))
+            with mock.patch("os.replace", watched):
+                cache.write("a.json", "whole")
+            self.assertEqual(cache.read("a.json"), "whole")
+            self.assertEqual(cache.names(), ["a.json"], "временное имя осталось в кэше")
+        self.assertEqual(len(moves), 1)
+        self.assertNotEqual(moves[0][0], "a.json", "тело писалось прямо в запись")
+        self.assertEqual(moves[0][1], "a.json")
+
+    def test_a_write_that_dies_in_the_middle_leaves_no_entry_at_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = http_cache.DiskCache(Path(tmp))
+            with mock.patch("os.replace", side_effect=OSError("killed")):
+                with self.assertRaises(OSError):
+                    cache.write("a.json", "half")
+            self.assertEqual(cache.names(), [], "обрыв записи оставил огрызок")
             self.assertIsNone(cache.read("a.json"))
 
 

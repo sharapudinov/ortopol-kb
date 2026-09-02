@@ -89,9 +89,18 @@ class ZbmathClient:
         # separator would otherwise make a directory out of it.
         return zbmath_id.replace("/", "_") + ".json"
 
-    def _failed(self, zbmath_id: str, what: str) -> ZbmathUnavailable:
+    def _note(self, zbmath_id: str, what: str) -> str:
+        """Names what went wrong in .failures and returns the same text.
+
+        The list is the channel this client reports through, and everything
+        that reaches it is "we did not learn anything" -- whether the
+        request failed or the answer we had kept turned out unreadable.
+        """
         self.failures.append(f"{zbmath_id}: {what}")
-        return ZbmathUnavailable(f"{zbmath_id}: {what}")
+        return f"{zbmath_id}: {what}"
+
+    def _failed(self, zbmath_id: str, what: str) -> ZbmathUnavailable:
+        return ZbmathUnavailable(self._note(zbmath_id, what))
 
     def document(self, zbmath_id: str) -> dict | None:
         """One record, or None when zbMATH answered and does not have it.
@@ -107,7 +116,16 @@ class ZbmathClient:
         name = self._cached(zbmath_id)
         hit = self._session.cached(name)
         if hit is not None:
-            return json.loads(hit)
+            try:
+                return json.loads(hit)
+            except json.JSONDecodeError as err:
+                # An entry cut short by a killed process is non-empty, so
+                # the cache serves it as a hit. A bare JSONDecodeError here
+                # is neither of the two outcomes this client keeps apart:
+                # it is not in .failures and no caller catches it. The entry
+                # is disposable -- named, then asked for again, and the
+                # answer below overwrites it.
+                self._note(zbmath_id, f"запись кэша нечитаема ({err}), перезапрошено")
         record = self._fetch(zbmath_id)
         self._session.store(name, json.dumps(record, ensure_ascii=False))
         return record

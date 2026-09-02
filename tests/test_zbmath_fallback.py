@@ -15,6 +15,7 @@ a temporary directory.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import urllib.error
@@ -131,6 +132,33 @@ class ZbmathFailureVsAbsenceTests(unittest.TestCase):
             self.assertEqual(abstract_of(second.document("1234.56789"))[0], "разбор")
         self.assertEqual(calls, ["https://api.zbmath.org/v1/document/1234.56789"])
         self.assertEqual((second.n_requests, second.n_cache_hits), (0, 1))
+
+    def test_a_truncated_cache_entry_is_asked_again_and_named(self):
+        """An entry cut short by a killed process is non-empty, so it is
+        served as a hit. Parsed without a guard it raised a bare
+        JSONDecodeError -- not a ZbmathUnavailable, so not in .failures and
+        not caught by the caller: the one outcome this client exists to
+        keep apart from "zbMATH has no record".
+        """
+        calls = []
+
+        def opener(request, timeout=None):
+            calls.append(request.full_url)
+            return self._Response(self.REVIEWED)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = Path(tmp) / "1234.56789.json"
+            entry.write_text('{"result": {"editorial_cont', encoding="utf-8")
+            client = ZbmathClient(opener=opener, sleep=lambda _s: None,
+                                  cache=DiskCache(Path(tmp)))
+            self.assertEqual(abstract_of(client.document("1234.56789"))[0], "разбор")
+            self.assertEqual(len(calls), 1, "битая запись не перезапрошена")
+            self.assertEqual(json.loads(entry.read_text(encoding="utf-8"))
+                             ["editorial_contributions"][0]["text"], "разбор",
+                             "битая запись осталась в кэше")
+        self.assertEqual(len(client.failures), 1,
+                         "нечитаемая запись кэша не названа")
+        self.assertIn("1234.56789", client.failures[0])
 
     def test_a_failure_is_never_cached(self):
         """A cached blank would turn one 429 into a permanent "no review" --

@@ -236,6 +236,36 @@ class OpenAlexSidecarTests(unittest.TestCase):
         self.assertIsNone(note_direction({"filter": "ids.openalex:W1", "direction": None}))
 
 
+class ACorruptedCacheEntryIsAMissTests(unittest.TestCase):
+    """A cache entry truncated by a killed process is non-empty, so the
+    cache serves it as a hit. Parsed without a guard, it raised
+    json.JSONDecodeError out of get_json past every handler the crawl
+    has -- on this run and on every later one, until somebody found the
+    file and deleted it by hand.
+    """
+
+    BODY = json.dumps({"meta": {"count": 3, "x_query": {"oql": "", "url": ""}},
+                       "results": []}).encode()
+    URL = "https://api.openalex.org/works?filter=cites:W1"
+
+    def test_a_truncated_page_is_paid_for_again_and_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            client = OpenAlexClient(opener=_Sequence([_Response(self.BODY)]),
+                                    sleep=lambda _s: None, pause=0.0,
+                                    cache=http_cache.DiskCache(directory))
+            entry = directory / client._cache_name(self.URL)
+            entry.write_text('{"meta": {"cou', encoding="utf-8")
+            said = io.StringIO()
+            with mock.patch("sys.stderr", said):
+                body = client.get_json(self.URL)
+            self.assertEqual(body["meta"]["count"], 3)
+            self.assertEqual(client.n_requests, 1, "битая запись не перезапрошена")
+            self.assertEqual(json.loads(entry.read_text(encoding="utf-8")), body,
+                             "битая запись осталась в кэше")
+        self.assertIn("кэш", said.getvalue().lower())
+
+
 class NoClientHoldsAPathTests(unittest.TestCase):
     """DRY_RUN_WRITES_NOTHING holds for the response cache BY CONSTRUCTION,
     like store.Writer does for the graph -- which means no client may hold

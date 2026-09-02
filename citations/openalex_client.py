@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -160,7 +161,17 @@ class OpenAlexClient:
         cached = self._cache_name(url)
         hit = self._session.cached(cached)
         if hit is not None:
-            return json.loads(hit)
+            try:
+                return json.loads(hit)
+            except json.JSONDecodeError as err:
+                # A cache entry is disposable scratch, and one cut short by
+                # a killed process is still non-empty -- so it is served as
+                # a hit, and parsing it unguarded threw out of the crawl
+                # past every handler, identically on every later run. An
+                # unreadable entry is a MISS: the request is paid again and
+                # the answer below overwrites it.
+                print(f"кэш OpenAlex: запись {cached} нечитаема ({err}); "
+                      "запрашиваю заново", file=sys.stderr)
 
         answer = self._session.fetch(url)
         self.last_rate = {

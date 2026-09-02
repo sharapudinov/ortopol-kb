@@ -50,6 +50,7 @@ cache".
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -124,7 +125,24 @@ class DiskCache:
         return text
 
     def write(self, name: str, text: str) -> None:
-        (self.directory / name).write_text(text, encoding="utf-8")
+        """The whole entry or none of it: a temporary neighbour, renamed.
+
+        A cached batch page runs to tens of megabytes, so a process killed
+        while one is being written dies in the MIDDLE of it, and a plain
+        write leaves the stump behind under the entry's own name. The stump
+        is not empty, so _read() serves it as a hit and every later run
+        reads a body that stops mid-token. os.replace is atomic within one
+        filesystem, which a neighbour in the same directory guarantees; the
+        name is `.part`-suffixed rather than `.json`, so a stump this
+        process cannot clean up (its own kill) is not a cache entry either.
+        """
+        temporary = self.directory / f".{name}.{os.getpid()}.part"
+        try:
+            temporary.write_text(text, encoding="utf-8")
+            os.replace(temporary, self.directory / name)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
 
 class ReadOnlyCache:

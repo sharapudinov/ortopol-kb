@@ -189,6 +189,25 @@ class BatchCountTests(unittest.TestCase):
             self.assertTrue((directory / "a.meta.json").is_file())
             self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [18904])
 
+    def test_a_truncated_sidecar_is_recovered_from_the_page_and_rewritten(self):
+        """Битый сайдкар — не «страницы нет».
+
+        Сайдкар пишется в дерево данных и переживает обрыв процесса
+        огрызком: непустым, а значит попаданием. Страница при этом цела, и
+        путь голова/тело её разбирает — иначе полный кэш молча отчитался бы
+        нулём (или NothingToMeasure), то есть ровно тем тихим нулём, против
+        которого этот читатель и написан.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._page(directory, "a.json", ["W1"], 18904, "AAA")
+            sidecar = directory / "a.meta.json"
+            sidecar.write_text('{"filter": "referenced_wo', encoding="utf-8")
+            self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)),
+                             [18904])
+            self.assertEqual(json.loads(sidecar.read_text(encoding="utf-8"))["count"],
+                             18904, "восстановленный сайдкар не переписан")
+
     def test_openalex_id_batches_are_not_counted_as_cites(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = pathlib.Path(tmp)
