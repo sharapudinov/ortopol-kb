@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from typing import Protocol, runtime_checkable
 
 from pg_common import copy_csv_into, run_sql, scalar_row, sql_literal
 
@@ -160,6 +161,32 @@ def fresh_keys(env, days: int) -> set[str]:
 
 
 # -- writes --------------------------------------------------------------
+@runtime_checkable
+class Writer(Protocol):
+    """The seam crawl.py writes through, and the counting convention both
+    implementations follow.
+
+    Every method takes the rows produced by ONE step of the crawl and
+    returns how many of them IT accepted -- not the running total. counts
+    accumulates those same per-call numbers under 'work' / 'cites' /
+    'step'. Spelled out here because the two implementations had drifted
+    into three conventions between them, and the dry run's numbers are what
+    the decision to spend a real quota window is made on.
+
+    A Protocol rather than a base class: neither writer inherits anything,
+    and the point is to pin the contract the crawl depends on, not to share
+    code between a database and a list.
+    """
+
+    counts: dict[str, int]
+
+    def works(self, nodes) -> int: ...
+
+    def edges(self, edges) -> int: ...
+
+    def journal(self, steps) -> int: ...
+
+
 class PostgresWriter:
     """The live-database implementation of what crawl.py needs written."""
 
@@ -235,7 +262,12 @@ class PostgresWriter:
 
 
 class DryRunWriter:
-    """Collects what a real run would write, and writes nothing."""
+    """Collects what a real run would write, and writes nothing.
+
+    Same Writer contract as PostgresWriter, per-call counts included: this
+    is the estimate a crawl is authorised against, so its numbers have to
+    be the numbers the real writer would report.
+    """
 
     def __init__(self, source: str = "openalex"):
         self.source = source
@@ -243,16 +275,19 @@ class DryRunWriter:
         self.counts = {"work": 0, "cites": 0, "step": 0}
 
     def works(self, nodes) -> int:
-        self.works_seen += list(nodes)
-        self.counts["work"] += len(self.works_seen)
-        return len(self.works_seen)
+        accepted = list(nodes)
+        self.works_seen += accepted
+        self.counts["work"] += len(accepted)
+        return len(accepted)
 
     def edges(self, edges) -> int:
-        self.edges_seen += list(edges)
-        self.counts["cites"] = len(self.edges_seen)
-        return len(self.edges_seen)
+        accepted = list(edges)
+        self.edges_seen += accepted
+        self.counts["cites"] += len(accepted)
+        return len(accepted)
 
     def journal(self, steps) -> int:
-        self.steps_seen += list(steps)
-        self.counts["step"] = len(self.steps_seen)
-        return len(self.steps_seen)
+        accepted = list(steps)
+        self.steps_seen += accepted
+        self.counts["step"] += len(accepted)
+        return len(accepted)
