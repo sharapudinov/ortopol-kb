@@ -97,15 +97,20 @@ class Snowball:
         The seeds are the same 56 works on every run and their vectors are
         already in citation.work, so the stored one stands in and only a
         genuinely new (or never-embedded) seed reaches ollama.
+
+        The one caller that legitimately holds every vector at once: the
+        centroid is the mean over all of them, and 56 seeds is not a level.
         """
-        vectors = self.vectors_for(nodes)
-        for node, vector in zip(nodes, vectors):
+        vectors = []
+        for node, vector in self.vectors_for(nodes):
             node.embedding = vector
+            vectors.append(vector)
         return vectors
 
-    def vectors_for(self, holders) -> list[list[float]]:
-        """Vectors for `holders` (anything carrying key/title/abstract), in
-        order -- frontier.vectors_for() with this crawl's two seams bound.
+    def vectors_for(self, holders):
+        """(holder, vector) pairs for `holders` (anything carrying key/
+        title/abstract), in order, a chunk at a time -- frontier.
+        vectors_for() with this crawl's two seams bound.
         """
         return frontier_vectors(self.embed, self.known_vectors, holders)
 
@@ -154,13 +159,13 @@ class Snowball:
         Batched by vectors_for(), because the vector is the expensive thing
         here: 1024 floats per candidate, and a depth-2 level is thousands of
         candidates (~4262 distinct references measured at tau=0.50) of which
-        the filter keeps a fraction. Holding every level's vectors until
-        expand() finished made peak memory a function of the CANDIDATE set;
-        dropping below-tau vectors on the spot makes it a function of the
-        KEPT set.
+        the filter keeps a fraction. vectors_for() yields a chunk at a time
+        and this loop scores each pair as it arrives, so the vectors alive
+        at once are one chunk plus what passed tau -- a function of the KEPT
+        set, not of the candidate set.
         """
         scored: dict[str, tuple[float, list[float] | None]] = {}
-        for holder, vector in zip(holders, self.vectors_for(holders)):
+        for holder, vector in self.vectors_for(holders):
             score = cosine_unit(vector, self.centroid)
             scored[holder.key] = (score, vector if score >= self.tau else None)
         return scored

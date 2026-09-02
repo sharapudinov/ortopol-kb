@@ -54,34 +54,43 @@ def embed_texts(
     return embed_batch(model, dims, texts, ollama_url=url, batch=batch, opener=opener)
 
 
-def vectors_for(embed, known_vectors, holders) -> list[list[float]]:
-    """Vectors for `holders` (anything carrying key/title/abstract), in
-    order: read from the store where already known, embedded where not.
+def vectors_for(embed, known_vectors, holders):
+    """(holder, vector) pairs for `holders` (anything carrying key/title/
+    abstract), in order, a chunk at a time: read from the store where
+    already known, embedded where not.
 
     Two seams, both bound by the caller -- `embed` is the model-bound
     embedder above, `known_vectors` is list[str] -> {key: vector} over what
-    the database already holds (citations/inputs.known_embeddings). One read
-    for the whole set, then only the misses reach ollama, a batch at a time.
+    the database already holds (citations/inputs.known_embeddings).
 
-    The duplication this removes is not hypothetical: --calibrate embeds
-    every depth-1 candidate and writes no node, the crawl that follows meets
-    the same candidates, and a re-crawl without --resume meets every node it
-    ever wrote. At a depth-2 level (~4262 distinct candidates measured) that
-    is thousands of bge-m3 inferences and hundreds of round trips paid for
+    The read is not free either: --calibrate embeds every depth-1
+    candidate and writes no node, the crawl that follows meets the same
+    candidates, and a re-crawl without --resume meets every node it ever
+    wrote. At a depth-2 level (~4262 distinct candidates measured) that is
+    thousands of bge-m3 inferences and hundreds of round trips paid for
     vectors already in Postgres.
 
-    Batching stays here rather than inside embed_texts(): a batch is also
-    the granularity at which the caller's memory grows, and the scoring pass
-    drops every below-tau vector as soon as its score is known.
+    A GENERATOR, and chunked end to end -- the store read included. A
+    vector is 1024 floats (~32 KB as a Python list), so the returned list
+    alone was ~130 MB at that level, plus as much again in the dict the
+    whole-set read built: peak memory was a function of the CANDIDATE set
+    however promptly the consumer dropped what it did not want. Yielding
+    per chunk is what lets scores_of() make it a function of the KEPT set,
+    which is what its own docstring always claimed. Nothing survives a
+    chunk but what the consumer chose to keep, which is why `fresh` is
+    cleared before the next chunk's embed call rather than after it.
     """
-    known = known_vectors([h.key for h in holders])
-    missing = [h for h in holders if h.key not in known]
-    fresh: dict[str, list[float]] = {}
-    for start in range(0, len(missing), EMBED_BATCH):
-        chunk = missing[start:start + EMBED_BATCH]
-        vectors = embed([candidate_text(h.title, h.abstract) for h in chunk])
-        fresh.update({h.key: vector for h, vector in zip(chunk, vectors)})
-    return [known[h.key] if h.key in known else fresh[h.key] for h in holders]
+    for start in range(0, len(holders), EMBED_BATCH):
+        chunk = holders[start:start + EMBED_BATCH]
+        fresh: dict[str, list[float]] = {}
+        known = known_vectors([h.key for h in chunk])
+        missing = [h for h in chunk if h.key not in known]
+        if missing:
+            vectors = embed([candidate_text(h.title, h.abstract) for h in missing])
+            fresh = {h.key: vector for h, vector in zip(missing, vectors)}
+        for holder in chunk:
+            yield holder, (known[holder.key] if holder.key in known
+                           else fresh[holder.key])
 
 
 def l2_normalize(vector: list[float]) -> list[float]:
