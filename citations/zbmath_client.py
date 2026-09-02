@@ -21,11 +21,10 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .http_cache import cache_for
+from .http_session import HttpSession
 
 API = "https://api.zbmath.org/v1/document"
 USER_AGENT = "ortopol-kb-citations/1.0 (mailto:tooba.mexico@gmail.com)"
@@ -68,18 +67,25 @@ class ZbmathClient:
     def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
                  pause=PAUSE, cache_dir: Path | None = None,
                  read_only_cache: bool = False):
-        self._opener = opener
-        self._sleep = sleep
+        # No retry policy: what this client owes the caller is the
+        # distinction between an answer and a failure, and a silent second
+        # attempt at a 429 does not change which of the two arrived.
+        self._session = HttpSession(
+            user_agent=USER_AGENT, accept="application/json", opener=opener,
+            sleep=sleep, pause=pause, cache_dir=cache_dir,
+            read_only_cache=read_only_cache)
         self.pause = pause
-        self._cache = cache_for(cache_dir, read_only=read_only_cache)
-        self.n_requests = 0
         # Mirrors MathnetClient.failures in the same call chain: counted and
         # named, never swallowed.
         self.failures: list[str] = []
 
     @property
+    def n_requests(self) -> int:
+        return self._session.n_requests
+
+    @property
     def n_cache_hits(self) -> int:
-        return self._cache.hits if self._cache is not None else 0
+        return self._session.n_cache_hits
 
     def _cached(self, zbmath_id: str) -> str:
         # The id is a zbMATH document number ('1234.56789'), not a path: the
@@ -99,36 +105,26 @@ class ZbmathClient:
         anything about this work, and saying "no abstract" would be a claim
         the request never supported.
         """
-        if self._cache is None:
+        if self._session.cache is None:
             return self._fetch(zbmath_id)
         name = self._cached(zbmath_id)
-        hit = self._cache.read(name)
+        hit = self._session.cached(name)
         if hit is not None:
             return json.loads(hit)
         record = self._fetch(zbmath_id)
-        self._cache.write(name, json.dumps(record, ensure_ascii=False))
+        self._session.store(name, json.dumps(record, ensure_ascii=False))
         return record
 
     def _fetch(self, zbmath_id: str) -> dict | None:
-        url = f"{API}/{zbmath_id}"
-        request = urllib.request.Request(
-            url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
-        )
+        answer = self._session.fetch(f"{API}/{zbmath_id}")
+        if answer.error is not None:
+            raise self._failed(zbmath_id, answer.detail()) from answer.error
+        if answer.code == 404:
+            return None
+        if answer.code != 200:
+            raise self._failed(zbmath_id, answer.problem())
         try:
-            with self._opener(request, timeout=60) as response:
-                raw = response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as err:
-            self.n_requests += 1
-            if err.code == 404:
-                return None
-            raise self._failed(zbmath_id, f"HTTP {err.code} {err.reason}") from err
-        except Exception as err:
-            self.n_requests += 1
-            raise self._failed(zbmath_id, f"{type(err).__name__}: {err}") from err
-        self.n_requests += 1
-        self._sleep(self.pause)
-        try:
-            body = json.loads(raw)
+            body = json.loads(answer.body)
         except json.JSONDecodeError as err:
             raise self._failed(zbmath_id, f"ответ не JSON: {err}") from err
         result = body.get("result")

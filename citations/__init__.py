@@ -2,8 +2,16 @@
 
 Split by responsibility rather than by line count:
 
-- openalex_client -- HTTP, quota, pagination, batching, abstract recovery;
-- http_cache      -- the disk cache all three clients hold, as an object the
+- openalex_client -- OpenAlex's own policy: url, quota, retry set, pagination
+                     and batching; openalex_records -- what the JSON MEANS
+                     (abstract recovery, id shortening, a cached page's index),
+                     pure and testable without a network;
+- http_session    -- the request layer all three clients share: headers,
+                     timeout, the polite pause, the request counter and the
+                     retry policy handed in. Each client keeps only what a
+                     failure MEANS to it, which is the half that genuinely
+                     differs;
+- http_cache      -- the disk cache the session holds, as an object the
                      mode picks: read-write for a real run, read-only under
                      --dry-run, which writes nothing into the data tree;
 - zbmath_client   -- the one thing zbMATH is the source of here: abstracts

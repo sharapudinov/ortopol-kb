@@ -31,13 +31,19 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
-from .http_cache import cache_for
+from .http_session import HttpSession, Retry
+from .openalex_records import (  # noqa: F401  (re-exported: one import site per name)
+    SIDECAR_SUFFIX,
+    page_index,
+    restore_abstract,
+    short_id,
+    sidecar_name,
+)
 
 API = "https://api.openalex.org"
 MAILTO = "tooba.mexico@gmail.com"
@@ -72,25 +78,6 @@ class OpenAlexError(RuntimeError):
     """A request failed after every retry, or came back unparseable."""
 
 
-def restore_abstract(inverted: dict | None) -> str | None:
-    """`abstract_inverted_index` (word -> [positions]) back into text.
-
-    Gaps in the position sequence are left alone rather than padded: the
-    index is what the source published, and inventing filler words would
-    put text we made up into work.abstract.
-    """
-    if not inverted:
-        return None
-    placed: list[tuple[int, str]] = []
-    for word, positions in inverted.items():
-        for position in positions or []:
-            placed.append((int(position), word))
-    if not placed:
-        return None
-    placed.sort()
-    return " ".join(word for _, word in placed).strip() or None
-
-
 def batched(items, size: int = ID_BATCH):
     """Chunks of at most `size` ids, with the measured cap enforced."""
     if size > ID_BATCH:
@@ -102,41 +89,15 @@ def batched(items, size: int = ID_BATCH):
         yield seq[start:start + size]
 
 
-SIDECAR_SUFFIX = ".meta.json"
-
-
-def sidecar_name(page: str) -> str:
-    """The name of one cached page's index, beside the page itself."""
-    return (page[: -len(".json")] if page.endswith(".json") else page) + SIDECAR_SUFFIX
-
-
-def page_index(body: dict) -> dict:
-    """{filter, oql, count}: what a cached page says about the BATCH it is a
-    page OF -- a few hundred bytes standing in for a body of up to 200 works
-    with their referenced_works lists.
-
-    The batch's identity is the `filter=` value, NOT the request url: the url
-    carries the cursor in its tail, so eight batches wear 253 distinct urls
-    (one per page) and a reader keyed on the url counts the same meta.count
-    once per page -- measured: 3 392 521 promised citers instead of 51 652.
-    The `filter=` value is the same on every page of a batch.
-    """
-    meta = body.get("meta") or {}
-    query = meta.get("x_query") or {}
-    url = query.get("url") or ""
-    oql = query.get("oql") or ""
-    identity = url.split("filter=", 1)[1].split("&", 1)[0] if "filter=" in url else (oql or url)
-    return {"filter": identity, "oql": oql, "count": meta.get("count") or 0}
-
-
-def short_id(value: str | None) -> str:
-    """'https://openalex.org/W123' -> 'W123'; already-short ids pass through."""
-    if not value:
-        return ""
-    return str(value).rstrip("/").rsplit("/", 1)[-1]
-
-
 class OpenAlexClient:
+    """The quota policy on top of the shared request layer (http_session).
+
+    What is this client's and not the session's: the retry SET (429, the
+    5xx family and a transport failure are the answers a shared public API
+    gives under load; a 404 is not), the quota headers read off every
+    answer, and the refusal to sleep out a reset window that is hours away.
+    """
+
     def __init__(
         self,
         *,
@@ -149,19 +110,26 @@ class OpenAlexClient:
         pause: float = PAUSE,
         tries: int = 5,
     ):
-        self._opener = opener
         self._sleep = sleep
-        self._cache = cache_for(cache_dir, read_only=read_only_cache)
+        self._session = HttpSession(
+            user_agent=USER_AGENT, accept="application/json", opener=opener,
+            sleep=sleep, pause=pause, timeout=120, cache_dir=cache_dir,
+            read_only_cache=read_only_cache,
+            retry=Retry(tries=tries, codes=RETRY_CODES),
+        )
         self.quota_floor = quota_floor
         self.max_quota_wait = max_quota_wait
         self.pause = pause
         self.tries = tries
-        self.n_requests = 0
         self.last_rate: dict[str, str] = {}
 
     @property
+    def n_requests(self) -> int:
+        return self._session.n_requests
+
+    @property
     def n_cache_hits(self) -> int:
-        return self._cache.hits if self._cache is not None else 0
+        return self._session.n_cache_hits
 
     # -- HTTP ------------------------------------------------------------
     def url(self, path: str, **params) -> str:
@@ -169,7 +137,7 @@ class OpenAlexClient:
         return f"{API}/{path}?" + urllib.parse.urlencode(params, safe="|:.,-")
 
     def _cache_name(self, url: str) -> str | None:
-        if self._cache is None:
+        if self._session.cache is None:
             return None
         return hashlib.sha1(url.encode()).hexdigest() + ".json"
 
@@ -192,48 +160,27 @@ class OpenAlexClient:
 
     def get_json(self, url: str) -> dict:
         cached = self._cache_name(url)
-        hit = self._cache.read(cached) if cached is not None else None
+        hit = self._session.cached(cached)
         if hit is not None:
             return json.loads(hit)
 
-        delay = 2.0
-        for attempt in range(1, self.tries + 1):
-            request = urllib.request.Request(
-                url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
-            )
-            try:
-                with self._opener(request, timeout=120) as response:
-                    raw = response.read().decode("utf-8", "replace")
-                    headers = response.headers
-                    code = getattr(response, "status", 200)
-            except urllib.error.HTTPError as err:
-                raw, headers, code = err.read().decode("utf-8", "replace"), err.headers, err.code
-            except Exception as err:  # transport: DNS, timeout, reset
-                raw, headers, code = json.dumps({"_transport_error": str(err)}), {}, 0
-            self.n_requests += 1
-            self.last_rate = {
-                name: headers.get(name)
-                for name in RATE_HEADERS
-                if hasattr(headers, "get") and headers.get(name) is not None
-            }
-            if code in RETRY_CODES and attempt < self.tries:
-                pause = float(self.last_rate.get("retry-after") or delay)
-                self._sleep(min(pause, 120.0))
-                delay = min(delay * 2, 120.0)
-                continue
-            if code != 200:
-                raise OpenAlexError(f"HTTP {code} от {url}: {raw[:300]}")
-            self._sleep(self.pause)
-            self._honour_quota()
-            try:
-                body = json.loads(raw)
-            except json.JSONDecodeError as err:
-                raise OpenAlexError(f"не JSON от {url}: {err}") from err
-            if cached is not None:
-                self._cache.write(cached, raw)
-                self._write_sidecar(cached, body)
-            return body
-        raise OpenAlexError(f"исчерпаны {self.tries} попытки: {url}")
+        answer = self._session.fetch(url)
+        self.last_rate = {
+            name: answer.headers.get(name)
+            for name in RATE_HEADERS
+            if hasattr(answer.headers, "get") and answer.headers.get(name) is not None
+        }
+        if answer.code != 200:
+            raise OpenAlexError(f"HTTP {answer.code} от {url}: {answer.detail()[:300]}")
+        self._honour_quota()
+        try:
+            body = json.loads(answer.body)
+        except json.JSONDecodeError as err:
+            raise OpenAlexError(f"не JSON от {url}: {err}") from err
+        if cached is not None:
+            self._session.store(cached, answer.body)
+            self._write_sidecar(cached, body)
+        return body
 
     def _write_sidecar(self, cached: str, body: dict) -> None:
         """The page's own index, written the moment the page is cached.
@@ -246,8 +193,8 @@ class OpenAlexClient:
         caller's problem, not a failed request's.
         """
         try:
-            self._cache.write(sidecar_name(cached),
-                              json.dumps(page_index(body), ensure_ascii=False))
+            self._session.store(sidecar_name(cached),
+                                json.dumps(page_index(body), ensure_ascii=False))
         except OSError:
             pass
 

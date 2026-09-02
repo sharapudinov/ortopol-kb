@@ -27,7 +27,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .http_cache import cache_for
+from .http_session import HttpSession
 
 BASE = "https://www.mathnet.ru/rus/"
 USER_AGENT = "Mozilla/5.0 (ortopol-kb-citations; mailto:tooba.mexico@gmail.com)"
@@ -75,16 +75,23 @@ class MathnetClient:
     def __init__(self, *, opener=urllib.request.urlopen, sleep=time.sleep,
                  pause=0.6, cache_dir: Path | None = None,
                  read_only_cache: bool = False):
-        self._opener = opener
-        self._sleep = sleep
+        # windows-1251, not UTF-8 (module docstring), and no retry: a page
+        # that did not arrive is COUNTED, and a silent second attempt is
+        # exactly the thing that made the gap invisible for 2019_rm9846.
+        self._session = HttpSession(
+            user_agent=USER_AGENT, opener=opener, sleep=sleep, pause=pause,
+            timeout=90, encoding="windows-1251", cache_dir=cache_dir,
+            read_only_cache=read_only_cache)
         self.pause = pause
-        self._cache = cache_for(cache_dir, read_only=read_only_cache)
-        self.n_requests = 0
         self.failures: list[str] = []
 
     @property
+    def n_requests(self) -> int:
+        return self._session.n_requests
+
+    @property
     def n_cache_hits(self) -> int:
-        return self._cache.hits if self._cache is not None else 0
+        return self._session.n_cache_hits
 
     # A body shorter than this is a truncated page, not the page: it must
     # not stand in for one, and the cache enforces the floor on the read.
@@ -111,30 +118,22 @@ class MathnetClient:
         """([titles], [years]); ([], []) with the id recorded in .failures."""
         page = self._cached(identifier)
         negative = self._no_citation_line(identifier)
-        if self._cache is not None:
-            hit = self._cache.read(page, floor=self.PAGE_FLOOR)
-            if hit is not None:
-                return parse_titles(hit)
-            if self._cache.read(negative) is not None:
-                self.failures.append(f"{identifier}: страница без цитат в <title>")
-                return [], []
-        request = urllib.request.Request(BASE + identifier,
-                                         headers={"User-Agent": USER_AGENT})
-        try:
-            with self._opener(request, timeout=90) as response:
-                raw = response.read().decode("windows-1251", "replace")
-        except Exception as err:
-            self.n_requests += 1
-            self.failures.append(f"{identifier}: {type(err).__name__}")
+        hit = self._session.cached(page, floor=self.PAGE_FLOOR)
+        if hit is not None:
+            return parse_titles(hit)
+        if self._session.cached(negative) is not None:
+            self.failures.append(f"{identifier}: страница без цитат в <title>")
             return [], []
-        self.n_requests += 1
-        self._sleep(self.pause)
-        titles, years = parse_titles(raw)
-        if self._cache is not None:
-            self._cache.write(page, raw)
+        answer = self._session.fetch(BASE + identifier)
+        if answer.problem():
+            # Never cached: a blank stored here would turn one timeout (or
+            # one 503) into a permanent verdict about this document.
+            self.failures.append(f"{identifier}: {answer.problem()}")
+            return [], []
+        titles, years = parse_titles(answer.body)
+        self._session.store(page, answer.body)
         if not titles:
-            if self._cache is not None:
-                self._cache.write(negative, '{"titles": []}')
+            self._session.store(negative, '{"titles": []}')
             self.failures.append(f"{identifier}: страница без цитат в <title>")
             return [], []
         return titles, years

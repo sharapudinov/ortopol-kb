@@ -49,8 +49,13 @@ class ZbmathFailureVsAbsenceTests(unittest.TestCase):
     """
 
     class _Response:
+        """urlopen stand-in: a body and the headers a real answer carries."""
+
+        status = 200
+
         def __init__(self, body):
             self._body = body.encode()
+            self.headers = {}
 
         def read(self):
             return self._body
