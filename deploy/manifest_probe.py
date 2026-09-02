@@ -30,7 +30,6 @@ from manifest_contract import (  # noqa: E402
     MANIFEST_SCHEMA_VERSION,
     CitationMode,
     Key,
-    PolicySource,
     Profile,
     schemas_for,
 )
@@ -150,9 +149,22 @@ def _stemmed_token_overlap(env: dict, query: str, document_id: str, page_number:
 
 def gather_manifest(
     env: dict, ollama_url: str, profile: str = Profile.FULL,
-    citation_mode: str = CitationMode.NONE,
-    policy_source: str = PolicySource.OWNER,
+    *, citation_mode: str, policy_source: str,
 ) -> dict:
+    """The manifest for `profile`, read against the live instance.
+
+    citation_mode and policy_source are required and keyword-only: they are
+    the two halves of ONE resolution (citation_profile.resolve_citation_mode),
+    and this function has no way to arrive at either of them. A default
+    would make omission indistinguishable from a decision -- and the
+    decision it would fabricate is the owner's own: mode `none` with
+    provenance `owner` is a fully self-consistent package asserting that the
+    owner said the citation graph does not travel, which every
+    recipient-side gate would then certify. Refusing the call is the only
+    answer a producer can give about a fact it does not hold, the same
+    polarity legal_profile.require_classified and
+    citation_profile.require_citation_mode apply to theirs.
+    """
     if profile not in Profile.ALL:
         raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
     public = profile == Profile.PUBLIC

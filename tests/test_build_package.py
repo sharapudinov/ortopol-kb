@@ -8,6 +8,7 @@ manifest['files']/manifest['dump'] before writing manifest.json.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import tempfile
 import unittest
@@ -17,8 +18,10 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import artifact_bundle
 import build_package
 import citation_profile
+import public_dump
 from citation_profile import CitationUnclassified
 from legal_profile import Unclassified
 from pg_common import PostgresUnavailable
@@ -63,7 +66,7 @@ class MainHappyPathTests(unittest.TestCase):
             out_dir = corpus_dir / "deploy"
             captured = {}
 
-            def fake_dump_schemas(env, gz_path, citation_mode="none"):
+            def fake_dump_schemas(env, gz_path, *, citation_mode):
                 gz_path.write_bytes(b"\x1f\x8b\x08\x00fake-gzip")
 
             def fake_package(workdir, out_path):
@@ -104,11 +107,11 @@ class ProfileDispatchTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_full(env, gz_path, citation_mode="none"):
+            def fake_full(env, gz_path, *, citation_mode):
                 seen["writer"] = "full"
                 gz_path.write_bytes(b"full")
 
-            def fake_public(env, gz_path, citation_mode="none"):
+            def fake_public(env, gz_path, *, citation_mode):
                 seen["writer"] = "public"
                 seen["dump_citation_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
@@ -117,8 +120,8 @@ class ProfileDispatchTests(unittest.TestCase):
                 seen["manifest"] = json.loads((workdir / "manifest.json").read_text())
                 out_path.write_bytes(b"fake-tar-zst")
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
-                            policy_source="owner"):
+            def fake_gather(env, ollama_url, profile="full", *,
+                            citation_mode, policy_source):
                 seen["gathered_profile"] = profile
                 seen["manifest_citation_mode"] = citation_mode
                 seen["policy_source"] = policy_source
@@ -261,8 +264,8 @@ class CitationPolicyOverrideTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
-                            policy_source="owner"):
+            def fake_gather(env, ollama_url, profile="full", *,
+                            citation_mode, policy_source):
                 seen["policy_source"] = policy_source
                 return _fake_manifest(profile="public", schemas=["corpus", "citation"])
 
@@ -308,13 +311,13 @@ class CitationPolicyOverrideTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
-                            policy_source="owner"):
+            def fake_gather(env, ollama_url, profile="full", *,
+                            citation_mode, policy_source):
                 seen["manifest_mode"] = citation_mode
                 seen["policy_source"] = policy_source
                 return _fake_manifest(profile="public", schemas=["corpus", "citation"])
 
-            def fake_public(env, gz_path, citation_mode="none"):
+            def fake_public(env, gz_path, *, citation_mode):
                 seen["dump_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
 
@@ -351,17 +354,17 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
-                            policy_source="owner"):
+            def fake_gather(env, ollama_url, profile="full", *,
+                            citation_mode, policy_source):
                 seen["manifest_mode"] = citation_mode
                 seen["policy_source"] = policy_source
                 return _fake_manifest(profile=profile, schemas=["corpus"])
 
-            def fake_public(env, gz_path, citation_mode="none"):
+            def fake_public(env, gz_path, *, citation_mode):
                 seen["dump_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
 
-            def fake_full(env, gz_path, citation_mode="none"):
+            def fake_full(env, gz_path, *, citation_mode):
                 seen["dump_mode"] = "<full writer>"
                 gz_path.write_bytes(b"full")
 
@@ -447,6 +450,26 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
         self.assertEqual(seen["manifest_mode"], "none")
         self.assertEqual(seen["policy_source"], "not-applicable")
         require_mock.assert_not_called()
+
+
+class TheDumpSeamHasNoDefaultModeTests(unittest.TestCase):
+    """dump_schemas() always required the resolved mode; its two siblings on
+    the same seam defaulted to `none`, so a caller that said nothing got the
+    cut that ships nothing -- a decision taken by omission on the one
+    question only the owner answers.
+    """
+
+    def test_no_writer_on_the_seam_supplies_a_mode_of_its_own(self):
+        for fn in (build_package.write_dump, public_dump.dump_public,
+                   artifact_bundle.dump_schemas):
+            with self.subTest(writer=fn.__name__):
+                parameter = inspect.signature(fn).parameters["citation_mode"]
+                self.assertIs(parameter.default, inspect.Parameter.empty)
+
+    def test_write_dump_refuses_a_call_that_names_no_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(TypeError):
+                build_package.write_dump("full", {}, Path(tmp) / "01_dump.sql.gz")
 
 
 if __name__ == "__main__":

@@ -64,6 +64,12 @@ _LEGAL_SUMMARY = {
 }
 
 
+# The resolution's output, spelled at every call site: gather_manifest()
+# takes the pair as required keywords, so there is no shape of the call
+# that leaves either half to a default.
+_RESOLVED = {"citation_mode": "full-skeleton", "policy_source": "owner"}
+
+
 def _patch_citation_defaults(test_case: unittest.TestCase) -> None:
     """Mocks citation_profile.citation_counts so gather_manifest() never
     touches the database for its citation-graph half. The MODE is no longer
@@ -100,7 +106,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
         with scalar_row_p, digest_p, legal_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("unreachable", str(ctx.exception))
 
     def test_no_embedded_pages_raises(self):
@@ -109,7 +115,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("no embedded rows", str(ctx.exception))
 
     def test_lexical_overlap_raises(self):
@@ -120,7 +126,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
              mock.patch.object(manifest_probe, "scalar", return_value="модуль"):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("token", str(ctx.exception))
         self.assertIn("модуль", str(ctx.exception))
 
@@ -129,7 +135,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
         scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
         with scalar_row_p, digest_p, legal_p:
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("embedding_model is empty", str(ctx.exception))
 
     def test_missing_blob_probe_document_raises_informative_error(self):
@@ -137,7 +143,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
         scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
         with scalar_row_p, digest_p, legal_p:
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn(manifest_probe.BLOB_PROBE_DOC, str(ctx.exception))
 
     def test_happy_path_records_digest_in_manifest(self):
@@ -148,7 +154,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.55), \
              mock.patch.object(manifest_probe, "scalar", return_value=""):
-            manifest = manifest_probe.gather_manifest({}, "http://x/api/embed")
+            manifest = manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertEqual(manifest["embedding_model"]["digest"], "sha256:deadbeef")
         self.assertEqual(manifest["embedding_model"]["size_bytes"], 1157672605)
         self.assertEqual(manifest["vector_probe"]["token_overlap"], [])
@@ -171,7 +177,7 @@ class ProfileAwarenessTests(unittest.TestCase):
     def setUp(self):
         _patch_citation_defaults(self)
 
-    def _gather(self, profile, citation_mode="full-skeleton"):
+    def _gather(self, profile, citation_mode="full-skeleton", policy_source="owner"):
         with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)) as row_mock, \
              mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
              mock.patch.object(manifest_probe.legal_profile, "legal_summary",
@@ -182,7 +188,8 @@ class ProfileAwarenessTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
              mock.patch.object(manifest_probe, "scalar", return_value=""):
             manifest = manifest_probe.gather_manifest(
-                {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode)
+                {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
+                policy_source=policy_source)
         return manifest, row_mock, classified_mock
 
     def test_full_profile_is_the_default_and_keeps_both_schemas(self):
@@ -254,17 +261,19 @@ class ProfileAwarenessTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=excluded), \
              mock.patch.object(manifest_probe, "scalar", return_value=""):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed", profile="public")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", profile="public",
+                                               **_RESOLVED)
             self.assertIn("2016_vmj598", str(ctx.exception))
             # The same probe is fine for the full profile, which ships it.
             with mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance",
                                     return_value=0.5):
-                manifest = manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest = manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertEqual(manifest["vector_probe"]["document_id"], "2016_vmj598")
 
     def test_unknown_profile_refused(self):
         with self.assertRaises(ValueError) as ctx:
-            manifest_probe.gather_manifest({}, "http://x/api/embed", profile="sort-of-public")
+            manifest_probe.gather_manifest({}, "http://x/api/embed",
+                                           profile="sort-of-public", **_RESOLVED)
         self.assertIn("sort-of-public", str(ctx.exception))
 
     def test_legal_block_is_carried_into_the_manifest(self):
@@ -282,7 +291,7 @@ class CitationManifestTests(unittest.TestCase):
     NEAREST = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
 
     def _gather(self, profile="public", citation_mode="topology-only",
-                policy_source=None):
+                policy_source="owner"):
         with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)), \
              mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
              mock.patch.object(manifest_probe.legal_profile, "legal_summary",
@@ -297,7 +306,7 @@ class CitationManifestTests(unittest.TestCase):
                                               {"external-skeleton": 382, "our-document": 56})) as counts_mock:
             manifest = manifest_probe.gather_manifest(
                 {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
-                **({} if policy_source is None else {"policy_source": policy_source}),
+                policy_source=policy_source,
             )
         return manifest, counts_mock
 
@@ -318,14 +327,16 @@ class CitationManifestTests(unittest.TestCase):
         manifest, _counts = self._gather(policy_source="override")
         self.assertEqual(manifest["citation"]["policy_source"], "override")
 
-    def test_the_default_is_not_a_silent_owner_claim(self):
-        """gather_manifest defaults to owner, and build_package always
-        passes the value explicitly -- pinned so the default can never be
-        the thing that certifies an override build.
+    def test_neither_half_of_the_pair_can_be_omitted(self):
+        """A call that names no mode and no provenance does not produce a
+        manifest at all. Both are the resolution's output, and a default
+        would let a second entry point certify "the owner decided" by
+        saying nothing -- the one claim manifest.json exists to carry.
         """
-        import inspect
-        signature = inspect.signature(manifest_probe.gather_manifest)
-        self.assertEqual(signature.parameters["policy_source"].default, "owner")
+        for kwargs in ({}, {"citation_mode": "none"}, {"policy_source": "owner"}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(TypeError):
+                    manifest_probe.gather_manifest({}, "http://x/api/embed", **kwargs)
 
     def test_public_counts_apply_the_per_document_cut(self):
         """A work row naming an excluded document does not ship

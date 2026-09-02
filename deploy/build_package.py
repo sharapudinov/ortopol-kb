@@ -78,8 +78,7 @@ from public_dump import dump_public  # noqa: E402
 OLLAMA_URL = "http://127.0.0.1:5471/api/embed"
 
 
-def write_dump(profile: str, env: dict, gz_path: Path,
-                citation_mode: str = CitationMode.NONE) -> None:
+def write_dump(profile: str, env: dict, gz_path: Path, *, citation_mode: str) -> None:
     """Dispatches to the profile's dump writer, both (env, gz_path) -> None.
 
     Here rather than inside artifact_bundle.dump_schemas so the two writers
@@ -89,10 +88,12 @@ def write_dump(profile: str, env: dict, gz_path: Path,
     a dict of function objects built at import time -- the dict captured the
     originals, so it silently ignored any later rebinding of these names
     (which is exactly how the tests substitute a stub for the real pg_dump).
-    Both writers take citation_mode: the full profile applies no cut to
-    the schema's CONTENT, but whether the schema exists to be dumped at all
-    is the same resolved fact the manifest declares
-    (manifest_contract.schemas_for).
+    Both writers take citation_mode, and none of the three signatures
+    gives it a default: the full profile applies no cut to the schema's
+    CONTENT, but whether the schema exists to be dumped at all is the same
+    resolved fact the manifest declares (manifest_contract.schemas_for),
+    and a dump that assumed one would quietly disagree with a manifest that
+    was told the other.
     """
     if profile == Profile.PUBLIC:
         dump_public(env, gz_path, citation_mode=citation_mode)

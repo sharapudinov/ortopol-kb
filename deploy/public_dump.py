@@ -192,7 +192,7 @@ PREAMBLE = (
 )
 
 
-def dump_public(env: dict, gz_path: Path, citation_mode: str = CitationMode.NONE) -> None:
+def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
     """Writes the filtered dump to gz_path, gzip-streamed in one pass.
 
     Refuses to write anything at all while any document lacks a usable
@@ -202,7 +202,10 @@ def dump_public(env: dict, gz_path: Path, citation_mode: str = CitationMode.NONE
     citation_mode is the value build_package.main() resolved once
     (citation_profile.resolve_citation_mode) and handed to the manifest as
     well; this module does not re-read the policy, so the dump and the
-    manifest cannot describe two different cuts of the same schema.
+    manifest cannot describe two different cuts of the same schema. It has
+    no default for the same reason gather_manifest()'s has none: an omitted
+    mode would be a cut nobody chose, and CitationMode.NONE happens to be
+    the cut that ships nothing.
     """
     require_classified(env)
     documents_columns = table_columns(env, "documents")

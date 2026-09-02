@@ -146,7 +146,7 @@ class DumpPublicTests(unittest.TestCase):
              mock.patch.object(public_dump, "table_columns",
                                 side_effect=lambda env, table, exclude=(): self.COLUMNS[table]), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=fake_stream):
-            public_dump.dump_public({}, gz_path)
+            public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
         return gz_path, classified_mock
 
     def test_refuses_before_writing_when_a_document_is_unclassified(self):
@@ -156,7 +156,7 @@ class DumpPublicTests(unittest.TestCase):
                                     side_effect=Unclassified("2026_x")), \
                  mock.patch.object(public_dump, "stream_stdout") as stream_mock:
                 with self.assertRaises(Unclassified):
-                    public_dump.dump_public({}, gz_path)
+                    public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
             self.assertFalse(gz_path.exists())
             stream_mock.assert_not_called()
 
@@ -192,7 +192,7 @@ class DumpPublicTests(unittest.TestCase):
                                     side_effect=lambda env, table, exclude=(): self.COLUMNS[table]), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=boom):
                 with self.assertRaises(RuntimeError) as ctx:
-                    public_dump.dump_public({}, gz_path)
+                    public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
             self.assertIn("nope", str(ctx.exception))
             self.assertFalse(gz_path.exists())
 
