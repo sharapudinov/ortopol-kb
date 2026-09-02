@@ -126,23 +126,6 @@ def graph_exists(env: dict[str, str]) -> bool:
     return n == "1"
 
 
-def graph_counts(env: dict[str, str]) -> tuple[int, int]:
-    """Current |V|/|E| of citation_graph, read without reprojecting.
-
-    Assumes the label tables exist (project_graph() always creates them via
-    create_vlabel/create_elabel, even for an empty graph) -- callers must
-    check graph_exists() first, or let this raise on a graph that was never
-    projected at all.
-    """
-    vertices, edges = graph_sql(
-        env,
-        f'SELECT (SELECT count(*) FROM {GRAPH_NAME}."Work"), '
-        f'(SELECT count(*) FROM {GRAPH_NAME}."CITES");',
-        extra_args=["-t", "-A", "-F", FIELD_SEP],
-    ).stdout.strip().split(FIELD_SEP)
-    return int(vertices), int(edges)
-
-
 def compare_counts(work_n: int, cites_n: int, vertex_n: int, edge_n: int) -> tuple[int, int]:
     """(diff_vertices, diff_edges) = (actual graph count - relational count).
 
@@ -153,7 +136,12 @@ def compare_counts(work_n: int, cites_n: int, vertex_n: int, edge_n: int) -> tup
     return (vertex_n - work_n, edge_n - cites_n)
 
 
-# The projection's CONTENT, as two md5 pairs. The graph does not merely
+# ONE reading: four counts and, as two md5 pairs, the projection's CONTENT.
+# The counts travel here rather than in four round trips of their own -- a
+# round trip is a psql fork, a temp script and a connection, while the
+# digests beside them cost 13 ms. The graph-side counts assume the label
+# tables exist (project_graph() creates them even for an empty graph): the
+# graph_exists() guard in front of this statement is what says they do. The graph does not merely
 # have to be the right SIZE: the read path serves graph properties
 # (pg_graph_cypher's citers query returns key/title/year/kind straight out
 # of the label table), and citations/store.py updates title/kind/year on
@@ -166,8 +154,12 @@ def compare_counts(work_n: int, cites_n: int, vertex_n: int, edge_n: int) -> tup
 # statement travels through a psql script, where one backslash convention
 # fewer is one hazard fewer. An empty table digests as md5('') on both
 # sides, so an empty graph over empty tables is faithful, not "unknown".
-_FINGERPRINT_SQL = """
+_READING_SQL = """
 SELECT
+ (SELECT count(*) FROM citation.work),
+ (SELECT count(*) FROM citation.cites),
+ (SELECT count(*) FROM {graph}."Work"),
+ (SELECT count(*) FROM {graph}."CITES"),
  (SELECT md5(coalesce(string_agg(
     coalesce(w.key,'')||'|'||coalesce(w.kind,'')||'|'
     ||coalesce(w.year::text,'')||'|'||coalesce(w.title,''),
@@ -215,18 +207,30 @@ class Projection(NamedTuple):
     graph_cites_digest: str
 
 
-def content_fingerprints(env: dict[str, str]) -> tuple[str, str, str, str]:
-    """(work, graph work, cites, graph cites) md5s, in one round trip.
+def projection_reading(env: dict[str, str]) -> Projection:
+    """Both sides' sizes and both sides' content, in ONE round trip.
 
     Measured on the live 438-work / 2425-edge graph (AGE 1.7.0, PostgreSQL
-    17.11): 13 ms for all four digests together, i.e. the content reading
-    costs the check nothing a caller would notice.
+    17.11): 13 ms for the four digests together, so the content reading
+    costs the check nothing a caller would notice, and the counts beside
+    them cost less than the psql startup they used to pay separately.
+    Assumes the graph exists; projection_diff() is the guarded caller.
     """
-    return tuple(graph_sql(
+    row = graph_sql(
         env,
-        _FINGERPRINT_SQL.format(graph=GRAPH_NAME),
+        _READING_SQL.format(graph=GRAPH_NAME),
         extra_args=["-t", "-A", "-F", FIELD_SEP],
-    ).stdout.strip().split(FIELD_SEP))
+    ).stdout.strip().split(FIELD_SEP)
+    work_n, cites_n, vertex_n, edge_n = (int(value) for value in row[:4])
+    return Projection(work_n, cites_n, vertex_n, edge_n, *row[4:])
+
+
+def content_fingerprints(env: dict[str, str]) -> tuple[str, str, str, str]:
+    """(work, graph work, cites, graph cites) md5s: the content half of the
+    reading, for a caller that wants only the digests."""
+    seen = projection_reading(env)
+    return (seen.work_digest, seen.graph_work_digest,
+            seen.cites_digest, seen.graph_cites_digest)
 
 
 def projection_diff(env: dict[str, str]) -> Projection | None:
@@ -239,13 +243,15 @@ def projection_diff(env: dict[str, str]) -> Projection | None:
     (check), a list of problem strings (citation_checks), an (ok, detail)
     pair against the manifest (deploy/smoke_checks) -- but the reads and
     the graph-missing branch are this function's, not each caller's.
+
+    Two psql invocations: the guard, because a statement naming
+    citation_graph."Work" fails outright on a graph that was never
+    projected, and the reading. Five of them for 13 ms of work was five
+    process startups.
     """
     if not graph_exists(env):
         return None
-    work_n = int(scalar(env, "SELECT count(*) FROM citation.work;"))
-    cites_n = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
-    vertex_n, edge_n = graph_counts(env)
-    return Projection(work_n, cites_n, vertex_n, edge_n, *content_fingerprints(env))
+    return projection_reading(env)
 
 
 def projection_faults(seen: Projection) -> list[str]:

@@ -267,7 +267,7 @@ class ImportClosureTests(unittest.TestCase):
         cocitation|hybrid` for artifact recipients, and those four
         subcommands import pg_graph_queries and pg_graph_cypher (both of
         which import pg_graph_common). Bundling the plumbing alone --
-        enough for the smoke check that only needs graph_exists/graph_counts
+        enough for the smoke check that only needs graph_exists/projection_reading
         -- left every documented query command failing with
         ModuleNotFoundError on a package that declares it can answer them.
         """

@@ -147,8 +147,9 @@ class CliLayerTests(unittest.TestCase):
     def test_the_plumbing_is_not_defined_here(self):
         defined = {node.name for node in self.TREE.body
                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        for name in ("graph_sql", "split_records", "graph_exists", "graph_counts",
-                     "compare_counts", "project", "init_schema"):
+        for name in ("graph_sql", "split_records", "graph_exists",
+                     "projection_reading", "compare_counts", "project",
+                     "init_schema"):
             self.assertNotIn(name, defined, f"{name}() belongs to pg_graph_common.py")
             self.assertTrue(hasattr(pg_graph_common, name))
 
@@ -236,18 +237,33 @@ class ProjectionDiffTests(unittest.TestCase):
 
     def test_returns_none_when_the_graph_was_never_projected(self):
         with mock.patch.object(pg_graph_common, "graph_exists", return_value=False), \
-             mock.patch.object(pg_graph_common, "scalar") as scalar_mock:
+             mock.patch.object(pg_graph_common, "projection_reading") as read_mock:
             self.assertIsNone(pg_graph_common.projection_diff({}))
-        scalar_mock.assert_not_called()
+        read_mock.assert_not_called()
 
     def test_returns_the_four_counts_in_relational_then_graph_order(self):
+        row = "438\x1f2425\x1f438\x1f2424\x1fa\x1fa\x1fb\x1fb"
         with mock.patch.object(pg_graph_common, "graph_exists", return_value=True), \
-             mock.patch.object(pg_graph_common, "scalar", side_effect=["438", "2425"]), \
-             mock.patch.object(pg_graph_common, "graph_counts", return_value=(438, 2424)), \
-             mock.patch.object(pg_graph_common, "content_fingerprints",
-                               return_value=("a", "a", "b", "b")):
+             mock.patch.object(pg_graph_common, "graph_sql",
+                               return_value=mock.Mock(stdout=row)):
             seen = pg_graph_common.projection_diff({})
         self.assertEqual(seen[:4], (438, 2425, 438, 2424))
+
+    def test_the_whole_reading_is_two_psql_invocations(self):
+        """One guard ("is there a graph at all", which the reading itself
+        cannot ask -- naming citation_graph."Work" fails outright when the
+        graph was never projected) and one statement for everything else.
+        Five of them used to answer the same question.
+        """
+        row = "438\x1f2425\x1f438\x1f2425\x1fa\x1fa\x1fb\x1fb"
+        exists = mock.Mock(stdout="1")
+        with mock.patch.object(pg_graph_common, "run_sql",
+                               side_effect=[exists, mock.Mock(stdout=row)]) as run_mock, \
+             mock.patch.object(pg_graph_common, "scalar") as scalar_mock:
+            seen = pg_graph_common.projection_diff({})
+        self.assertEqual(run_mock.call_count, 2)
+        scalar_mock.assert_not_called()
+        self.assertEqual(pg_graph_common.projection_faults(seen), [])
 
     def test_check_renders_the_diff_as_an_exit_code(self):
         # The content half of the reading lives in test_pg_graph_projection.py.
@@ -262,8 +278,8 @@ class ProjectionDiffTests(unittest.TestCase):
             self.assertEqual(pg_graph_common.check({}), 1)
 
     def _functions_assembling_the_sequence(self, path: Path) -> list[str]:
-        """Function names in `path` that name BOTH graph_exists and
-        graph_counts -- the signature of a hand-assembled projection read.
+        """Function names in `path` that name BOTH graph_exists and the
+        reading -- the signature of a hand-assembled projection read.
         """
         tree = ast.parse(path.read_text(encoding="utf-8"))
         offenders = []
@@ -272,11 +288,11 @@ class ProjectionDiffTests(unittest.TestCase):
                 continue
             names = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
             names |= {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-            if {"graph_exists", "graph_counts"} <= names:
+            if {"graph_exists", "projection_reading"} <= names:
                 offenders.append(node.name)
         return offenders
 
-    def test_nobody_else_assembles_graph_exists_plus_counts_plus_graph_counts(self):
+    def test_nobody_else_assembles_graph_exists_plus_the_reading(self):
         for path in self.SEARCHED:
             offenders = self._functions_assembling_the_sequence(path)
             if path.name == "pg_graph_common.py":

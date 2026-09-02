@@ -1,7 +1,7 @@
 """Unit tests for citation_checks.py: no live database (run_sql/scalar are
 stubbed with the exact FIELD_SEP-joined text psql produces, same convention
 as test_external_registry.py/test_legal_profile.py's `_psql_rows`).
-pg_graph_common.graph_exists/graph_counts/compare_counts are stubbed too --
+pg_graph_common.graph_exists/projection_reading/compare_counts are stubbed too --
 that module's own live behaviour is test_pg_graph.py's job.
 
 A live-database class at the bottom exercises citation_problems() against

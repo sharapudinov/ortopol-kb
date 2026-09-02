@@ -69,7 +69,7 @@ DEPLOY_FILES = [
 CORPUS_LIB_FILES = [
     "pg_common.py",
     "pg_search.py",
-    # smoke_checks.check_citation_projection reuses graph_exists/graph_counts/
+    # smoke_checks.check_citation_projection reuses graph_exists/projection_reading/
     # compare_counts rather than reimplementing the |V|=|work|/|E|=|cites|
     # comparison a second time; that plumbing, and graph_sql()'s
     # AGE-activation contract, live here (see the module's own docstring).

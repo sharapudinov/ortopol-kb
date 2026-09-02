@@ -69,11 +69,10 @@ class ProjectionReadTests(unittest.TestCase):
     """
 
     def test_the_digests_travel_with_the_counts(self):
+        row = "438\x1f2425\x1f438\x1f2425\x1fa\x1fa\x1fb\x1fb"
         with mock.patch.object(pg_graph_common, "graph_exists", return_value=True), \
-             mock.patch.object(pg_graph_common, "scalar", side_effect=["438", "2425"]), \
-             mock.patch.object(pg_graph_common, "graph_counts", return_value=(438, 2425)), \
-             mock.patch.object(pg_graph_common, "content_fingerprints",
-                               return_value=("a", "a", "b", "b")):
+             mock.patch.object(pg_graph_common, "graph_sql",
+                               return_value=mock.Mock(stdout=row)):
             seen = pg_graph_common.projection_diff({})
         self.assertEqual(seen, (438, 2425, 438, 2425, "a", "a", "b", "b"))
         self.assertEqual(pg_graph_common.projection_faults(seen), [])
@@ -157,16 +156,19 @@ class ContentFingerprintLiveTests(unittest.TestCase):
         code, out = self._check()
         self.assertEqual(code, 0, out)
 
-    def test_the_four_digests_are_read_in_one_cheap_round_trip(self):
+    def test_the_whole_reading_is_one_cheap_round_trip(self):
         started = time.monotonic()
-        digests = pg_graph_common.content_fingerprints(self.env)
+        seen = pg_graph_common.projection_reading(self.env)
         elapsed = time.monotonic() - started
-        self.assertEqual(len(digests), 4)
+        digests = (seen.work_digest, seen.graph_work_digest,
+                   seen.cites_digest, seen.graph_cites_digest)
+        self.assertEqual(seen.work_n, seen.vertex_n)
+        self.assertEqual(seen.cites_n, seen.edge_n)
         for digest in digests:
             self.assertRegex(digest, r"^[0-9a-f]{32}$")
         self.assertEqual(digests[0], digests[1])
         self.assertEqual(digests[2], digests[3])
-        self.assertLess(elapsed, 1.0, f"отпечатки заняли {elapsed:.3f} с")
+        self.assertLess(elapsed, 1.0, f"чтение заняло {elapsed:.3f} с")
 
 
 if __name__ == "__main__":
