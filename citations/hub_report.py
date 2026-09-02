@@ -10,7 +10,7 @@ depth-2 от всех 382 узлов depth-1 не записала НИ ОДНО
 — про область, а не про ИИШ.
 
 Всё считается из уже имеющегося: citation.work (evidence несёт сырые записи
-OpenAlex с cited_by_count и referenced_works) и кэш ответов в
+OpenAlex с cited_by_count и referenced_works_count) и кэш ответов в
 corpus/cache/openalex (meta.count батчей). Сети не нужно — прогон
 воспроизводится при исчерпанной квоте.
 
@@ -51,8 +51,11 @@ SELECT :run, w.key,
        coalesce(w.evidence->>'relation', 'unknown'),
        (SELECT coalesce(sum((r->>'cited_by_count')::bigint), 0)
           FROM jsonb_array_elements(w.evidence->'records') r),
-       (SELECT coalesce(sum(jsonb_array_length(
-                   coalesce(r->'referenced_works', '[]'::jsonb))), 0)
+       -- referenced_works_count, не length(referenced_works): сам список
+       -- в evidence не хранится (registry.Node.absorb), а счётчик OpenAlex
+       -- присылает рядом. Сверено на живой базе: 438 работ, 15634 ссылки
+       -- обоими способами, ноль расхождений.
+       (SELECT coalesce(sum((r->>'referenced_works_count')::bigint), 0)
           FROM jsonb_array_elements(w.evidence->'records') r)
 FROM citation.work w
 WHERE w.key IN (SELECT DISTINCT split_part(reason, 'node=', 2)

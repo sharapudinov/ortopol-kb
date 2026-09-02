@@ -243,6 +243,82 @@ class RateLimitTests(unittest.TestCase):
         self.assertEqual(client.n_requests, 2)
 
 
+class PagedStreamingTests(unittest.TestCase):
+    """Cursor pages reach the caller one at a time.
+
+    A depth-2 batch set returned over 51000 works (crawl.py's own
+    docstring); accumulating every page into one list before the caller
+    sees anything held all of them at once, and the caller drops most of
+    them on the next line.
+    """
+
+    class PagedOpener:
+        """Three cursor pages of one work each, logging every fetch."""
+
+        PAGES = [
+            '{"results": [{"id": "https://openalex.org/W1"}], "meta": {"next_cursor": "c2"}}',
+            '{"results": [{"id": "https://openalex.org/W2"}], "meta": {"next_cursor": "c3"}}',
+            '{"results": [{"id": "https://openalex.org/W3"}], "meta": {}}',
+        ]
+
+        def __init__(self, log):
+            self.log = log
+            self.n = 0
+
+        def __call__(self, _request, timeout=None):
+            page = self.PAGES[self.n]
+            self.n += 1
+            self.log.append(f"fetch{self.n}")
+            return HeaderResponse(page, {})
+
+    def _client(self, log):
+        return OpenAlexClient(opener=self.PagedOpener(log), sleep=lambda _s: None, pause=0.0)
+
+    def test_nothing_is_fetched_before_the_first_record_is_asked_for(self):
+        log = []
+        pages = self._client(log)._paged(filter="cites:W0")
+        self.assertEqual(log, [])
+        next(iter(pages))
+        self.assertEqual(log, ["fetch1"])
+
+    def test_pages_interleave_with_consumption_instead_of_piling_up(self):
+        log = []
+        for record in self._client(log).citers_of(["W0"]):
+            log.append("seen " + record["id"].rsplit("/", 1)[-1])
+        self.assertEqual(log, ["fetch1", "seen W1", "fetch2", "seen W2",
+                               "fetch3", "seen W3"])
+
+    def test_works_by_ids_streams_the_same_way(self):
+        log = []
+        seen = []
+        for record in self._client(log).works_by_ids(["W0"]):
+            seen.append(record["id"].rsplit("/", 1)[-1])
+            self.assertEqual(len(log), len(seen), "страница прочитана впрок")
+        self.assertEqual(seen, ["W1", "W2", "W3"])
+
+
+class EvidenceWeightTests(unittest.TestCase):
+    """A node keeps the ids it extracted, not the list it extracted them
+    from: node.records becomes citation.work.evidence, and referenced_works
+    is by far the bulkiest field OpenAlex returns.
+    """
+
+    def test_absorb_keeps_the_ids_and_drops_the_list(self):
+        node = registry.Node(key="W1", kind="external-skeleton", depth=1)
+        record = work("W1", refs=["W2", "W3"])
+        node.absorb(record)
+        self.assertEqual(node.referenced_works, {"W2", "W3"})
+        self.assertNotIn("referenced_works", node.records[0])
+        self.assertEqual(node.records[0]["referenced_works_count"], 2,
+                         "OpenAlex's own count stays -- hub_report counts by it")
+
+    def test_the_callers_record_is_left_alone(self):
+        record = work("W1", refs=["W2"])
+        registry.Node(key="W1", kind="external-skeleton", depth=1).absorb(record)
+        self.assertIn("referenced_works", record,
+                      "edges.among_known reads referenced_works off the record")
+
+
 class CsvEncodingTests(unittest.TestCase):
     def test_none_and_embedded_separators_survive(self):
         text = csv_rows([["a,b", None, 'quote"inside', "line\nbreak"]])

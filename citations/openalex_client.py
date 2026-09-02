@@ -34,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 
 API = "https://api.openalex.org"
@@ -203,45 +204,49 @@ class OpenAlexClient:
         raise OpenAlexError(f"исчерпаны {self.tries} попытки: {url}")
 
     # -- queries ---------------------------------------------------------
-    def _paged(self, **params) -> list[dict]:
-        """Cursor pagination; `*` is OpenAlex's first-cursor sentinel."""
-        cursor, out = "*", []
+    def _paged(self, **params) -> Iterator[dict]:
+        """Cursor pagination; `*` is OpenAlex's first-cursor sentinel.
+
+        A generator, and the two query methods below stay generators over
+        it: one depth-2 batch set answered with over 51000 works (crawl.py's
+        docstring), of which the caller keeps the few that reference the
+        frontier. Returning a list held every page of every batch at once,
+        each record carrying the bulky referenced_works, before the caller
+        could drop a single one. Nothing is requested until the consumer
+        asks for the next record.
+        """
+        cursor = "*"
         while cursor:
             body = self.get_json(self.url("works", cursor=cursor, **params))
             results = body.get("results") or []
-            out += results
+            yield from results
             if not results:
                 break
             cursor = (body.get("meta") or {}).get("next_cursor")
-        return out
 
-    def works_by_ids(self, ids) -> list[dict]:
+    def works_by_ids(self, ids) -> Iterator[dict]:
         """Metadata for up to 50 OpenAlex ids per request."""
-        out: list[dict] = []
         for chunk in batched(short_id(i) for i in ids):
             if not chunk:
                 continue
-            out += self._paged(
+            yield from self._paged(
                 filter="openalex_id:" + "|".join(chunk),
                 select=WORK_SELECT,
                 **{"per-page": PER_PAGE},
             )
-        return out
 
-    def citers_of(self, ids) -> list[dict]:
+    def citers_of(self, ids) -> Iterator[dict]:
         """Everything citing ANY of `ids`, 50 cited ids per request.
 
         The response does not say which of the 50 a given citer cites --
         that is recovered from the citer's own `referenced_works`, which is
         why WORK_SELECT keeps that field even though it is the bulkiest one.
         """
-        out: list[dict] = []
         for chunk in batched(short_id(i) for i in ids):
             if not chunk:
                 continue
-            out += self._paged(
+            yield from self._paged(
                 filter="cites:" + "|".join(chunk),
                 select=WORK_SELECT,
                 **{"per-page": PER_PAGE},
             )
-        return out

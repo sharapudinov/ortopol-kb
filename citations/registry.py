@@ -121,7 +121,17 @@ class Node:
         return grouped
 
     def absorb(self, record: dict) -> None:
-        self.records.append(record)
+        # The ids are extracted below; what is KEPT is the record without
+        # referenced_works, because self.records becomes
+        # citation.work.evidence (store.PostgresWriter.evidence_of) and that
+        # one field is bulkier than everything else the record carries put
+        # together -- tens of thousands of ids per level, held for the whole
+        # crawl and then written into JSONB. referenced_works_count, which
+        # OpenAlex sends alongside, stays: it is what the reference volume
+        # is measured by (citations/hub_report.py). A copy, not a pop: the
+        # caller's own record still feeds edges.among_known.
+        self.referenced_works |= {short_id(r) for r in (record.get("referenced_works") or [])}
+        self.records.append({k: v for k, v in record.items() if k != "referenced_works"})
         self.aliases |= record_ids(record)
         self.title = self.title or record_title(record)
         if not self.abstract:
@@ -138,7 +148,6 @@ class Node:
         for name in (record.get("title"), record.get("display_name")):
             if name and str(name).strip() and str(name).strip() not in self.titles:
                 self.titles.append(str(name).strip())
-        self.referenced_works |= {short_id(r) for r in (record.get("referenced_works") or [])}
 
 
 class WorkRegistry:
