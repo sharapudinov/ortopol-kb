@@ -103,6 +103,36 @@ def stored_zbmath_abstracts(env) -> dict[str, str]:
             for document_id, abstract in json.loads(out or "[]") if abstract}
 
 
+def stored_mathnet_titles(env) -> dict[str, tuple[list[str], list[int]]]:
+    """document_id -> (titles, years) citation.work already holds.
+
+    The Math-Net anchor's own memory, and the reason it is safe to skip the
+    page: the crawl caches both titles of a seed on its work row when it
+    first fetched them (store.PostgresWriter, external_ids), and
+    twin_pass.seed_titles() reads them back from there for the twin rule.
+    A page re-fetched to learn what the database already knows costs a
+    request and a 0.6 s pause per seed on the startup path of every crawl.
+
+    Only rows with at least one title count: an empty list is "we asked and
+    the page carried no citation", which is a fact the failure counter
+    reports, not a value to serve back.
+
+    Titles are third-party prose and travel as JSON for the same reason the
+    zbMATH abstracts do -- psql's row separator is a newline and no field
+    separator survives a value containing one.
+    """
+    out = scalar(
+        env,
+        "SELECT coalesce(json_agg(json_build_array("
+        "  document_id, external_ids->'titles', "
+        "  coalesce(external_ids->'years', '[]'::jsonb))), '[]') "
+        "FROM citation.work WHERE document_id IS NOT NULL "
+        "AND jsonb_array_length(coalesce(external_ids->'titles', '[]'::jsonb)) > 0;",
+    )
+    return {document_id: (titles, years or [])
+            for document_id, titles, years in json.loads(out or "[]") if titles}
+
+
 def fresh_keys(env, days: int) -> set[str]:
     """Keys fetched within `days` -- what --resume declines to re-fetch.
 

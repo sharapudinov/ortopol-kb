@@ -357,6 +357,7 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
             (pg_load_citations, "graph_check", 0),
             (seed_metadata, "seed_matches", {}),
             (seed_metadata, "stored_zbmath_abstracts", {}),
+            (seed_metadata, "stored_mathnet_titles", {}),
             (seed_metadata, "corpus_seed_documents", []),
             (seed_metadata, "default_zbmath_cache_dir", cache / "zbmath"),
             (seed_metadata, "default_mathnet_cache_dir", cache / "mathnet"),

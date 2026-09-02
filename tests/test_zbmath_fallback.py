@@ -1,4 +1,7 @@
-"""The zbMATH fallback: the one thing run 85 left that source doing.
+"""The two seed-metadata surfaces: the zbMATH fallback and the Math-Net
+title anchor.
+
+The zbMATH half is the one thing run 85 left that source doing.
 
 Split from test_pg_load_citations.py (kb/CLAUDE.md FILE_SIZE) along the
 line the module docstrings already draw: that file is about the crawl's
@@ -19,7 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
-from citations import seed_metadata
+from citations import inputs, seed_metadata
 from citations.zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 
 
@@ -186,6 +189,46 @@ class ZbmathAbstractsJournalTests(unittest.TestCase):
         self.assertEqual([s["action"] for s in writer.steps], ["error"])
         self.assertEqual(writer.steps[0]["frontier_key"], "1997_sm280")
         self.assertIn("429", writer.steps[0]["reason"])
+
+
+class MathnetNamesTests(unittest.TestCase):
+    """The identity anchor asks the database before it asks the site.
+
+    Both titles of a seed are stored on its own citation.work row
+    (external_ids->'titles', which twin_pass.seed_titles reads back), so a
+    second crawl already knows them. Without that short-circuit the anchor
+    re-walked every seed page on the startup path of EVERY crawl and every
+    --calibrate -- one request and a 0.6 s pause per miss, and under
+    --dry-run the cache persists nothing, so nothing was ever a hit twice.
+    """
+
+    def _run(self, stored=None, titles=(["Title"], [1989])):
+        client = mock.Mock(n_requests=1, n_cache_hits=0, failures=[],
+                           titles=mock.Mock(return_value=titles))
+        with mock.patch.object(
+                seed_metadata, "corpus_seed_documents",
+                return_value=[("1997_sm280", "https://www.mathnet.ru/rus/sm280")]), \
+             mock.patch.object(seed_metadata, "stored_mathnet_titles",
+                               return_value=stored or {}), \
+             mock.patch.object(seed_metadata, "MathnetClient", return_value=client):
+            out = seed_metadata.mathnet_names({}, log=lambda *_: None)
+        return out, client
+
+    def test_titles_already_in_the_graph_cost_no_request(self):
+        out, client = self._run(stored={"1997_sm280": (["Уже в базе"], [1989])})
+        self.assertEqual(out, {"1997_sm280": (["Уже в базе"], [1989])})
+        client.titles.assert_not_called()
+
+    def test_a_seed_without_stored_titles_is_still_fetched(self):
+        out, client = self._run()
+        client.titles.assert_called_once_with("sm280")
+        self.assertEqual(out, {"1997_sm280": (["Title"], [1989])})
+
+    def test_the_stored_read_takes_titles_and_years_off_the_work_row(self):
+        answer = '[["1997_sm280", ["Рус", "Eng"], [1989, 1991]], ["x", [], []]]'
+        with mock.patch.object(inputs, "scalar", return_value=answer):
+            stored = inputs.stored_mathnet_titles({})
+        self.assertEqual(stored, {"1997_sm280": (["Рус", "Eng"], [1989, 1991])})
 
 
 if __name__ == "__main__":

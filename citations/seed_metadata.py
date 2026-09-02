@@ -21,6 +21,7 @@ from .inputs import (
     COVERAGE_RUN,
     corpus_seed_documents,
     seed_matches,
+    stored_mathnet_titles,
     stored_zbmath_abstracts,
 )
 from .mathnet import MathnetClient, mathnet_id
@@ -92,11 +93,23 @@ def mathnet_names(env, log=print,
     counts as a seed document" change for the crawl and not for its Math-Net
     anchor, silently producing seeds with no title anchor -- which is exactly
     what the twin rule depends on.
+
+    The database is asked first, exactly as the zbMATH fallback asks it: the
+    titles of a seed already crawled are on its own citation.work row
+    (inputs.stored_mathnet_titles), and re-deriving them from the site is a
+    request plus a 0.6 s pause per seed on the startup path of EVERY crawl
+    and every --calibrate. The disk cache alone did not answer for it --
+    under --dry-run it persists no miss, so a dry run re-fetched every
+    uncached page from scratch, every time.
     """
     client = MathnetClient(cache_dir=default_mathnet_cache_dir(),
                            read_only_cache=read_only_cache)
+    stored = stored_mathnet_titles(env)
     names = {}
     for document_id, url in corpus_seed_documents(env):
+        if document_id in stored:
+            names[document_id] = stored[document_id]
+            continue
         identifier = mathnet_id(url)
         if not identifier:
             continue
@@ -104,7 +117,8 @@ def mathnet_names(env, log=print,
         if titles:
             names[document_id] = (titles, years)
     log(f"Math-Net: названий добыто для {len(names)} документов "
-        f"за {client.n_requests} запросов (из кэша: {client.n_cache_hits})")
+        f"за {client.n_requests} запросов (из кэша: {client.n_cache_hits}, "
+        f"уже в базе: {len(stored)})")
     if client.failures:
         # Not a crash: the crawl runs without the anchor. But a silent gap
         # here weakens the twin index invisibly, which already happened once.
