@@ -14,7 +14,7 @@ import json
 import pathlib
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -163,6 +163,49 @@ class ModeExclusivityTests(unittest.TestCase):
                      ["--merge-twins", "--hub-report"],
                      ["--calibrate", "--merge-twins"]):
             self.assertEqual(self._refused(argv), 2, argv)
+
+
+class ModelIsTheCorpusModelTests(unittest.TestCase):
+    """EMBEDDING_ONE_CONTRACT: citation.work.embedding has two writers and
+    no per-row model column, so a vector written under another model is a
+    plausible number rather than an error, and nothing afterwards can tell.
+    The crawl therefore refuses to start when corpus.embedding_model has
+    nobody in it -- and that refusal was the one branch every CLI test
+    mocked its way past.
+    """
+
+    def _refuse(self, argv):
+        with tempfile.TemporaryDirectory() as cache, ExitStack() as stack:
+            harness = _MainHarness(stack)
+            stack.enter_context(mock.patch.object(pg_load_citations, "resolve_model",
+                                                  return_value=None))
+            documents = stack.enter_context(
+                mock.patch.object(pg_load_citations, "corpus_document_ids"))
+            client = stack.enter_context(
+                mock.patch.object(pg_load_citations, "build_client"))
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = pg_load_citations.main(argv + ["--cache-dir", cache])
+        return code, stderr.getvalue(), harness, documents, client
+
+    def test_an_undeclared_model_stops_the_crawl_with_a_word_and_no_writes(self):
+        code, said, harness, documents, client = self._refuse(["--tau", "0.5"])
+        self.assertEqual(code, 1)
+        self.assertIn("pg_embed.py", said)
+        self.assertEqual(harness.writers, [], "писатель построен после отказа")
+        harness.upsert_run.assert_not_called()
+        documents.assert_not_called()
+        client.assert_not_called()
+
+    def test_the_calibration_is_refused_on_the_same_ground(self):
+        """It writes no citation.work row, but it DOES buy vectors and
+        record a measurement run off them -- under a model the corpus has
+        not declared, that run is unrepeatable.
+        """
+        code, said, harness, _documents, _client = self._refuse(["--calibrate"])
+        self.assertEqual(code, 1)
+        self.assertIn("pg_embed.py", said)
+        harness.upsert_run.assert_not_called()
 
 
 class MainFailurePathTests(unittest.TestCase):

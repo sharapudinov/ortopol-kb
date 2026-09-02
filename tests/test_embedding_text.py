@@ -4,9 +4,13 @@ citation.work.embedding has two producers -- the crawl (Python) and
 pg_embed.py (SQL) -- and no per-row column recording which text or which
 model made a vector. A disagreement between them is therefore invisible:
 the cosine it produces is plausible, not wrong-looking. The live class
-below holds the two spellings to each other over the real table, including
-the rows that carry newlines and tabs; the pure class holds the Python side
-to the rule itself.
+below holds the two spellings to each other over a FIXTURE it seeds
+itself -- the awkward rows spelled out, so the comparison is the same on
+every instance and an empty corpus is no reason for it to have nothing to
+say. A second live class repeats it over the real table, where it is a
+bonus: real titles carry real newlines, but how many is data, and a corpus
+without them is not a defect. The pure class holds the Python side to the
+rule itself.
 """
 from __future__ import annotations
 
@@ -50,22 +54,89 @@ class WorksTextRuleTests(unittest.TestCase):
         self.assertNotIn("left(", WORKS_TEXT_SQL)
 
 
-class BothProducersAgreeTests(unittest.TestCase):
-    """The SQL side is only checkable against a database, and the rows that
-    matter are the real ones: titles carrying newlines exist in the live
-    table (measured: 5 of 438), and they are exactly where a hand-written
-    second spelling drifts.
+def _live_env() -> dict[str, str]:
+    try:
+        env = load_pgenv(default_corpus_dir() / ".pgenv")
+    except (PostgresUnavailable, RuntimeError) as exc:
+        raise unittest.SkipTest(f"Postgres not configured: {exc}")
+    if not check_postgres_available(env):
+        raise unittest.SkipTest("Postgres not reachable")
+    return env
+
+
+# Every shape the two spellings can disagree over, named rather than hoped
+# for: a newline and a carriage return inside a title (pg_embed.py parses
+# its rows record by record, and psql's own separators are not the only
+# thing str.splitlines() breaks on), tabs and spaces at both edges, each
+# part missing in turn, both missing, and a pair long enough to be cut.
+FIXTURE = [
+    ("f:plain", "Discrete Chebyshev polynomials", "An estimate on a grid."),
+    ("f:newline", "Title\nsecond line", "Abstract\r\nsecond line"),
+    ("f:tabs", "\tTitle\t", "  Abstract  "),
+    ("f:no-abstract", "Title only", None),
+    ("f:no-title", None, "Abstract only"),
+    ("f:neither", None, None),
+    ("f:blank", "   ", "\t\n "),
+    ("f:long", "ч" * (MAX_CHARS - 10), "щ" * 100),
+]
+
+
+class BothProducersAgreeOnAFixtureTests(unittest.TestCase):
+    """The SQL side is only checkable against a database -- but not against
+    the operator's corpus. The rows are seeded here, inside a transaction
+    that is rolled back, so the comparison says the same thing on a fresh
+    instance as on this one, and a disagreement names the shape that caused
+    it instead of a key nobody can look up.
     """
 
     @classmethod
     def setUpClass(cls):
-        try:
-            env = load_pgenv(default_corpus_dir() / ".pgenv")
-        except (PostgresUnavailable, RuntimeError) as exc:
-            raise unittest.SkipTest(f"Postgres not configured: {exc}")
-        if not check_postgres_available(env):
-            raise unittest.SkipTest("Postgres not reachable")
-        cls.env = env
+        cls.env = _live_env()
+
+    def _fixture_rows(self) -> list[dict]:
+        values = ",\n".join(
+            f"({sql_literal(key)}, "
+            f"{'NULL' if title is None else sql_literal(title)}, "
+            f"{'NULL' if abstract is None else sql_literal(abstract)})"
+            for key, title, abstract in FIXTURE)
+        out = run_sql(
+            self.env,
+            "BEGIN;\n"
+            "CREATE TEMP TABLE fixture_work (key TEXT, title TEXT, abstract TEXT)\n"
+            "  ON COMMIT DROP;\n"
+            f"INSERT INTO fixture_work (key, title, abstract) VALUES\n{values};\n"
+            "SELECT coalesce(json_agg(row ORDER BY key), '[]'::json) FROM ("
+            "  SELECT key, json_build_object("
+            f"   'key', key, 'sql', left({WORKS_TEXT_SQL}, {MAX_CHARS})) AS row"
+            "  FROM fixture_work) t;\n"
+            "ROLLBACK;\n",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        return json.loads([line for line in out.splitlines() if line.strip()][-1])
+
+    def test_the_sql_expression_and_works_text_agree_on_every_shape(self):
+        produced = {row["key"]: row["sql"] for row in self._fixture_rows()}
+        self.assertEqual(len(produced), len(FIXTURE), "фикстура прочитана не вся")
+        for key, title, abstract in FIXTURE:
+            with self.subTest(shape=key):
+                self.assertEqual(produced[key], works_text(title, abstract))
+
+    def test_the_cut_is_the_same_cut_on_both_sides(self):
+        produced = {row["key"]: row["sql"] for row in self._fixture_rows()}
+        self.assertEqual(len(produced["f:long"]), MAX_CHARS)
+
+
+class BothProducersAgreeOnTheCorpusTests(unittest.TestCase):
+    """The same comparison over the real table, as a bonus over the
+    fixture: real titles carry real newlines (measured: 5 of 438), and
+    those are exactly where a hand-written second spelling drifts. HOW MANY
+    such rows exist is data, though, so an instance without them skips
+    rather than fails -- the contract itself is held by the fixture above.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
 
     def _rows(self) -> list[dict]:
         out = run_sql(
@@ -81,18 +152,21 @@ class BothProducersAgreeTests(unittest.TestCase):
 
     def test_the_sql_expression_and_works_text_agree_on_every_row(self):
         rows = self._rows()
-        self.assertGreater(len(rows), 20, "таблица пуста — сравнивать нечего")
+        if not rows:
+            raise unittest.SkipTest("citation.work пуста: сверять нечего")
         differing = [row["key"] for row in rows
                      if works_text(row["title"], row["abstract"]) != row["sql"]]
         self.assertEqual(differing, [], f"разошлись на {len(differing)} строках")
 
     def test_the_rows_with_newlines_are_among_them(self):
-        """Otherwise the agreement is only over the easy rows."""
-        rows = self._rows()
-        tricky = [row for row in rows
+        """Otherwise the agreement is only over the easy rows -- but a
+        corpus that happens to carry none is not a defect.
+        """
+        tricky = [row for row in self._rows()
                   if any(ch in (row["title"] or "") + (row["abstract"] or "")
                          for ch in "\n\r\t")]
-        self.assertTrue(tricky, "в таблице нет строк с переводами строк")
+        if not tricky:
+            raise unittest.SkipTest("в таблице нет строк с переводами строк")
         for row in tricky:
             self.assertEqual(works_text(row["title"], row["abstract"]), row["sql"],
                              row["key"])

@@ -3,8 +3,8 @@
 Split from test_pg_graph.py (kb/CLAUDE.md FILE_SIZE) along a real seam:
 that file is about the plumbing pg_graph.py drives and the AGE projection,
 this one is about citation.crawl_step's own columns -- the schema's
-one-time parse of the facts that used to live in `reason`, and the
-consumer that reads them back.
+one-time parse of the facts that used to live in `reason`. The consumer
+that reads them back is next door, in test_hub_report_columns.py.
 
 JOURNAL_FACTS_ARE_COLUMNS is the invariant under test: what the pipeline
 reads is a column, `reason` is prose for a human. Everything here needs a
@@ -18,7 +18,7 @@ import unittest
 
 import _pathfix  # noqa: F401
 import pg_graph_common
-from citations import hub_report, journal, store
+from citations import journal, store
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
@@ -157,78 +157,6 @@ class JournalBackfillTests(unittest.TestCase):
             extra_args=["-t", "-A"],
         ).stdout.strip()
         self.assertEqual(left, "0")
-
-
-class HubReportPopulateTests(unittest.TestCase):
-    """The one consumer that reads the journal's depth-1 slice back.
-
-    The aggregation is checked against the run it already produced: the
-    statement runs against the SAME run id inside a rolled-back
-    transaction, so "did the rewrite change any number" is answered by the
-    data rather than by reading the SQL. Run 93 itself is never rewritten.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.env = _live_env()
-        cls.run_id = run_sql(
-            cls.env,
-            "SELECT id FROM measurements.run WHERE spike = "
-            f"'{hub_report.SPIKE}';",
-            extra_args=["-t", "-A"],
-        ).stdout.strip()
-        if not cls.run_id:
-            raise unittest.SkipTest(f"no measurements.run for {hub_report.SPIKE}")
-        cls.n_rows = cls._rows_of_the_run()
-
-    def test_the_evidence_array_is_expanded_once_per_row(self):
-        """Two scalar subqueries deserialised the bulkiest column in the
-        schema twice for every matched work; one LATERAL does it once.
-        """
-        self.assertEqual(hub_report.POPULATE.count("jsonb_array_elements"), 1)
-        self.assertIn("LEFT JOIN LATERAL", hub_report.POPULATE)
-
-    def test_it_reproduces_the_recorded_measurement_row_for_row(self):
-        columns = "work_key, relation, cited_by_count, n_references"
-        script = (
-            "BEGIN;\n"
-            f"CREATE TEMP TABLE recorded AS SELECT {columns} "
-            f"FROM measurements.citation_hub_expansion WHERE run_id = {self.run_id};\n"
-            + hub_report.POPULATE.replace(":run", self.run_id) + "\n"
-            f"WITH fresh AS (SELECT {columns} FROM measurements.citation_hub_expansion "
-            f"               WHERE run_id = {self.run_id})\n"
-            "SELECT (SELECT count(*) FROM recorded), (SELECT count(*) FROM fresh),\n"
-            "       (SELECT count(*) FROM (SELECT * FROM fresh EXCEPT "
-            "                              SELECT * FROM recorded) a),\n"
-            "       (SELECT count(*) FROM (SELECT * FROM recorded EXCEPT "
-            "                              SELECT * FROM fresh) b);\n"
-            "ROLLBACK;\n"
-        )
-        out = run_sql(self.env, script, extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
-        row = [line for line in out.splitlines() if line.strip()][-1]
-        recorded, fresh, added, lost = row.split(FIELD_SEP)
-        self.assertEqual(fresh, recorded)
-        self.assertEqual((added, lost), ("0", "0"),
-                         "перезапись POPULATE изменила записанный замер")
-
-    @classmethod
-    def _rows_of_the_run(cls) -> str:
-        return run_sql(
-            cls.env,
-            "SELECT count(*) FROM measurements.citation_hub_expansion "
-            f"WHERE run_id = {cls.run_id};",
-            extra_args=["-t", "-A"],
-        ).stdout.strip()
-
-    def test_the_recorded_run_is_untouched_afterwards(self):
-        """Against the count taken before the probe ran, never a literal.
-
-        How many rows the recorded run has is data: the documented workflow
-        rewrites it, and a number frozen here turns that into a red suite
-        with no defect behind it. What the probe owes is that it changed
-        nothing -- which is a comparison, not a constant.
-        """
-        self.assertEqual(self._rows_of_the_run(), self.n_rows)
 
 
 class ActionVocabularyGuardTests(unittest.TestCase):
@@ -414,55 +342,6 @@ class StepColumnsTests(unittest.TestCase):
         ).stdout
         columns = {line.strip() for line in out.splitlines() if line.strip()}
         self.assertEqual(set(store.STEP_COLUMNS) - columns, set())
-
-
-class HubReportRelationTests(unittest.TestCase):
-    """The hub measurement classifies every depth-1 node by how it entered.
-
-    It used to take that from citation.work.evidence -- a blob
-    registry.Node.absorb builds out of the source's own records -- with a
-    coalesce(..., 'unknown') for the rows where the key was missing. The
-    decision that classified the node is the journal's, so the journal is
-    where the measurement reads it: this test makes the two disagree and
-    checks which one the report believes.
-    """
-
-    KEY = "test:hubrel:W1"
-
-    @classmethod
-    def setUpClass(cls):
-        cls.env = _live_env()
-        run = run_sql(
-            cls.env,
-            "SELECT id FROM measurements.run WHERE spike = "
-            f"'{hub_report.SPIKE}' ORDER BY id DESC LIMIT 1;",
-            extra_args=["-t", "-A"],
-        ).stdout.strip()
-        if not run:
-            raise unittest.SkipTest("замера hub-expansion в базе ещё нет")
-        # An EXISTING run id, never a fresh one: measurements.run is a
-        # BIGSERIAL, a rollback does not give the number back, and the
-        # versioned dump next door carries its setval (kb/CLAUDE.md).
-        cls.run_id = run
-
-    def test_the_journal_outranks_the_evidence_blob(self):
-        out = run_sql(
-            self.env,
-            "BEGIN;\n"
-            "INSERT INTO citation.work (key, source, kind, evidence) VALUES "
-            f"('{self.KEY}', 'test', 'external-skeleton', "
-            """'{"relation": "referenced", "records": [{"cited_by_count": 7,
-                  "referenced_works_count": 3}]}'::jsonb);\n"""
-            "INSERT INTO citation.crawl_step (crawl_id, depth, action, node_key, relation) "
-            f"VALUES ('test:hubrel', 1, 'keep', '{self.KEY}', 'cites');\n"
-            + hub_report.POPULATE +
-            "\nSELECT relation, cited_by_count FROM measurements.citation_hub_expansion "
-            f"WHERE run_id = :run AND work_key = '{self.KEY}';\nROLLBACK;\n",
-            variables={"run": self.run_id},
-            extra_args=["-t", "-A", "-F", FIELD_SEP],
-        ).stdout
-        rows = [line for line in out.splitlines() if line.strip()]
-        self.assertEqual(rows, [FIELD_SEP.join(["cites", "7"])])
 
 
 if __name__ == "__main__":
