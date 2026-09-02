@@ -68,6 +68,18 @@ def build_citers_sql(escaped_seed_key: str, depth: int) -> str:
     )
 
 
+def sort_citers(rows: list[dict]) -> list[dict]:
+    """Oldest first, undated last, ties broken by key.
+
+    The key is not decoration. Cypher returns the matched vertices in the
+    order AGE's label table holds them, and that order changes whenever the
+    graph is reprojected (it is a bulk INSERT ... SELECT, see
+    citation.project_graph), so citers of the same year came back in a
+    different order after every `pg_graph.py project` -- on the same data.
+    """
+    return sorted(rows, key=lambda r: (r["year"] is None, r["year"] or 0, r["key"]))
+
+
 def citers(env, document_id: str, depth: int = 1) -> list[dict]:
     escaped = scalar(
         env,
@@ -83,8 +95,7 @@ def citers(env, document_id: str, depth: int = 1) -> list[dict]:
     for rec in split_records(result.stdout):
         key, title, year, kind = rec.split(FIELD_SEP, 3)
         rows.append({"key": key, "title": title, "year": int(year) if year else None, "kind": kind})
-    rows.sort(key=lambda r: (r["year"] is None, r["year"]))
-    return rows
+    return sort_citers(rows)
 
 
 

@@ -74,6 +74,27 @@ class CitersQueryTests(unittest.TestCase):
             pgq.build_citers_sql("x$CYPHERQ$y", 1)
 
 
+class CitersOrderTests(unittest.TestCase):
+    """Two runs over unchanged data print the same table. AGE hands back the
+    label table's physical order, which a reprojection changes.
+    """
+
+    ROWS = [
+        {"key": "Wz", "year": 2020, "title": "", "kind": "external-skeleton"},
+        {"key": "Wa", "year": 2020, "title": "", "kind": "external-skeleton"},
+        {"key": "Wb", "year": None, "title": "", "kind": "external-skeleton"},
+        {"key": "Wc", "year": 1998, "title": "", "kind": "external-skeleton"},
+    ]
+
+    def test_oldest_first_undated_last_ties_by_key(self):
+        self.assertEqual([r["key"] for r in pgq.sort_citers(self.ROWS)],
+                         ["Wc", "Wa", "Wz", "Wb"])
+
+    def test_the_input_order_does_not_survive_into_the_answer(self):
+        shuffled = list(reversed(self.ROWS))
+        self.assertEqual(pgq.sort_citers(shuffled), pgq.sort_citers(self.ROWS))
+
+
 class CandidatesSqlTests(unittest.TestCase):
     """The ranking is the DATABASE's job: an HNSW-ordered top-K and a
     pre-aggregated link count, not every external-skeleton row shipped
