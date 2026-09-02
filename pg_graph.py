@@ -11,9 +11,10 @@ consumers (citers/candidates/cocitation/hybrid) reuse it instead of
 re-deriving the contract per call site.
 
 pg_graph_queries is imported lazily, from inside main() rather than at
-module level: it imports `pg_graph` (this module) to reach graph_sql(), so
-importing it up here would be a cycle. This module stays the thin
-CLI/dispatch/formatting layer; the query logic itself lives there.
+module level: it (and pg_graph_cypher, which it re-exports) imports
+`pg_graph` to reach graph_sql(), so importing it up here would be a cycle.
+This module stays the thin CLI/dispatch/formatting layer plus the shared
+psql plumbing both query modules use; the query logic itself lives there.
 
 Usage:
     python3 pg_graph.py init                 # applies pg_schema_citation.sql
@@ -35,6 +36,21 @@ from pg_common import PostgresUnavailable, load_pgenv, run_sql, run_sql_file, sc
 SCHEMA_PATH = Path(__file__).resolve().parent / "pg_schema_citation.sql"
 GRAPH_NAME = "citation_graph"
 _AGE_PREAMBLE = "LOAD 'age';\nSET search_path = ag_catalog, \"$user\", public;\n"
+
+# How a multi-row graph query's psql output is delimited, and the psql flags
+# that produce it. Here rather than in the query modules because it is the
+# same plumbing graph_sql() is: a title/reason can contain a comma, a tab and
+# a newline, so the separators are the ASCII unit/record ones no source text
+# carries. \x1e is deliberately NOT run through str.splitlines() -- that
+# treats \x1c-\x1e and \x85 as line boundaries too, which is how a
+# multi-line title used to arrive as several rows.
+FIELD_SEP = "\x1f"
+RECORD_SEP = "\x1e"
+ROW_ARGS = ["-t", "-A", "-F", FIELD_SEP, "-R", RECORD_SEP]
+
+
+def split_records(stdout: str) -> list[str]:
+    return [r.strip("\n") for r in stdout.split(RECORD_SEP) if r.strip("\n")]
 
 
 def graph_sql(env: dict[str, str], sql: str, **kwargs):

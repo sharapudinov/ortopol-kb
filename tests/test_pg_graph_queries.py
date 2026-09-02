@@ -68,16 +68,45 @@ class CitersQueryTests(unittest.TestCase):
             pgq.build_citers_sql("x$CYPHERQ$y", 1)
 
 
-class CandidatesRankingTests(unittest.TestCase):
-    """rank_candidates() is the pure sort/filter step; candidates() itself
-    (the live SQL fetch) is what excludes kind != 'external-skeleton' --
-    checked below against the SQL text, since that filter has no
-    equivalent in the pure ranking function to unit-test against synthetic
-    rows.
+class CandidatesSqlTests(unittest.TestCase):
+    """The ranking is the DATABASE's job: an HNSW-ordered top-K and a
+    pre-aggregated link count, not every external-skeleton row shipped
+    through psql for Python to sort.
     """
-    def test_sql_excludes_our_documents_by_kind(self):
-        self.assertIn("w.kind = 'external-skeleton'", pgq._CANDIDATES_SQL)
-        self.assertNotIn("our-document", pgq._CANDIDATES_SQL.split("target")[0])
+
+    SQL = pgq.build_candidates_sql(":'vec'::vector", 0)
+
+    def test_excludes_our_documents_by_kind(self):
+        self.assertIn("w.kind = 'external-skeleton'", self.SQL)
+
+    def test_top_k_is_ordered_and_limited_over_the_bare_table(self):
+        # Nothing joined below the LIMIT: that is what makes
+        # work_embedding_hnsw plannable at all.
+        nearest = self.SQL[self.SQL.index("nearest AS ("):self.SQL.index("LIMIT :top")]
+        self.assertIn("ORDER BY w.embedding <=>", nearest)
+        self.assertNotIn("JOIN", nearest)
+        self.assertLess(self.SQL.index("LIMIT :top"), self.SQL.index("LEFT JOIN links"))
+
+    def test_link_count_is_a_grouped_aggregate_not_a_per_row_subquery(self):
+        # The OR across two columns (citing = w.id OR cited = w.id) is what
+        # no index can serve; UNION ALL of the two directions, aggregated
+        # once, is what replaced it.
+        self.assertIn("UNION ALL", self.SQL)
+        self.assertIn("GROUP BY e.id", self.SQL)
+        self.assertNotIn("c.citing = w.id OR c.cited = w.id", self.SQL)
+
+    def test_min_links_cuts_before_the_top_k_not_after(self):
+        sql = pgq.build_candidates_sql(":'vec'::vector", 2)
+        self.assertLess(sql.index(":min_links"), sql.index("LIMIT :top"))
+
+    def test_no_min_links_leaves_no_tautological_filter_behind(self):
+        self.assertNotIn(":min_links", self.SQL)
+
+
+class CandidatesRankingTests(unittest.TestCase):
+    """rank_candidates() stays a pure tie-break over the already-limited
+    set: SQL orders by distance, this settles equal scores deterministically.
+    """
 
     def test_sorts_by_score_descending(self):
         rows = [
@@ -156,16 +185,41 @@ class VosviewerExportTests(unittest.TestCase):
 
 
 class HybridSqlTests(unittest.TestCase):
+    """The AGE+pgvector demonstration stays exactly that -- cypher() in a
+    FROM clause, JOINed against citation.work -- but the traversal is
+    bounded by the seeds it will actually be joined to, so its cost is
+    proportional to `top` and not to |E|.
+    """
+
+    SQL = pgq.build_hybrid_sql(["k1", "k2"])
+
     def test_cypher_sits_in_a_from_clause(self):
-        self.assertIn("FROM ag_catalog.cypher(", pgq._HYBRID_SQL)
+        self.assertIn("FROM ag_catalog.cypher(", self.SQL)
 
     def test_joins_the_cypher_output_with_citation_work(self):
-        self.assertIn("JOIN citation.work w ON w.key = e.cited_key", pgq._HYBRID_SQL)
-        self.assertIn("JOIN citation.work w ON w.key = e.citing_key", pgq._HYBRID_SQL)
+        self.assertIn("JOIN citation.work w ON w.key = e.cited_key", self.SQL)
+        self.assertIn("JOIN citation.work w ON w.key = e.citing_key", self.SQL)
 
     def test_uses_the_question_embedding_for_nearest_neighbours(self):
-        self.assertIn(":'vec'::vector", pgq._HYBRID_SQL)
-        self.assertIn("ORDER BY embedding <=> :'vec'::vector", pgq._HYBRID_SQL)
+        self.assertIn(":'vec'::vector", self.SQL)
+        self.assertIn("ORDER BY embedding <=> :'vec'::vector", self.SQL)
+
+    def test_traversal_is_bounded_by_the_seed_keys(self):
+        self.assertIn("a.key IN ['k1', 'k2']", self.SQL)
+        self.assertIn("b.key IN ['k1', 'k2']", self.SQL)
+        # ... and no longer asks for the whole edge set.
+        self.assertNotIn("MATCH (a:Work)-[:CITES]->(b:Work)\n        RETURN", self.SQL)
+
+    def test_keys_are_spliced_already_escaped_not_re_escaped_here(self):
+        sql = pgq.build_hybrid_sql([r"it\'s"])
+        self.assertIn(r"['it\'s']", sql)
+
+    def test_delimiter_collision_raises(self):
+        with self.assertRaises(ValueError):
+            pgq.build_hybrid_sql(["x$CYPHERQ$y"])
+
+    def test_no_seeds_means_no_statement_to_run(self):
+        self.assertIsNone(pgq.build_hybrid_sql([]))
 
 
 class LiveConsumersTests(unittest.TestCase):
@@ -211,6 +265,41 @@ class LiveConsumersTests(unittest.TestCase):
         pairs = pgq.cocitation(self.env, min_count=1)
         found = {(p["a_key"], p["b_key"]) for p in pairs} | {(p["b_key"], p["a_key"]) for p in pairs}
         self.assertIn((f"{self.PREFIX}a", f"{self.PREFIX}c"), found)
+
+    def test_candidates_and_hybrid_answer_from_the_same_fixture(self):
+        """candidates() must find an external-skeleton node linked to one of
+        our own documents, ranked by the embedding it was given; hybrid()
+        must find that node's neighbour through the graph. Both now do their
+        top-K in SQL, so the fixture also covers "the LIMIT did not cut the
+        answer away".
+        """
+        self.addCleanup(self._cleanup)
+        vec = "[" + ",".join(["0.1"] * 1024) + "]"
+        run_sql(
+            self.env,
+            f"""
+            INSERT INTO citation.work (key, title, source, kind, document_id, embedding) VALUES
+              ('{self.PREFIX}a', 'Seed A', 'manual', 'our-document', 'INDEX', :'vec');
+            INSERT INTO citation.work (key, title, source, kind, embedding) VALUES
+              ('{self.PREFIX}b', 'Citer B', 'manual', 'external-skeleton', :'vec'),
+              ('{self.PREFIX}c', 'Cited C', 'manual', 'external-skeleton', :'vec');
+            INSERT INTO citation.cites (citing, cited, source)
+            SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
+            WHERE x.key = '{self.PREFIX}b' AND y.key = '{self.PREFIX}a';
+            """,
+            variables={"vec": vec},
+        )
+        pg_graph.project(self.env)
+
+        ranked = pgq.candidates(self.env, top=400, min_links=1)
+        by_key = {r["key"]: r for r in ranked}
+        self.assertIn(f"{self.PREFIX}b", by_key, "узел со связью с нашим документом не найден")
+        self.assertEqual(by_key[f"{self.PREFIX}b"]["links"], 1)
+        self.assertNotIn(f"{self.PREFIX}c", by_key, "--min-links не отфильтровал узел без связей")
+
+        rows = pgq.hybrid(self.env, "тестовый вопрос", top=400)
+        if rows:  # ollama may be unavailable; hybrid() then returns []
+            self.assertTrue(all(r["neighbor_key"] for r in rows))
 
 
 if __name__ == "__main__":
