@@ -31,6 +31,10 @@ Checks:
   vectors survive both classes every page row carries an embedding
   no tsv anywhere              tsv is GENERATED from body; a dump that
                                declared it would restore stale text content
+  citation policy is owner's   manifest.citation.policy_source == "owner":
+                               an artifact whose citation mode was forced
+                               with --policy-override fails here rather
+                               than being certified as publishable
   citation slice holds         the citation-schema checks live in
                                citation_content_checks.py (module size) and
                                run in this same pass -- including the two
@@ -259,6 +263,8 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         ("full-text: блоб и текст на месте", *check_full_content_intact(manifest, facts)),
         ("векторы у всех страниц", *check_pages_embedded(manifest, scans, facts)),
         ("нет generated-колонок в дампе", *check_no_generated_columns(scans)),
+        ("citation: режим — решение владельца, не --policy-override",
+         *citation_content_checks.check_policy_is_the_owners(manifest)),
         ("citation: схема/счётчики совпадают с манифестом",
          *citation_content_checks.check_citation_schema_matches_mode(manifest, scans)),
         ("citation topology-only: content-колонки вырезаны",

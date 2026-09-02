@@ -31,6 +31,7 @@ from manifest_contract import (  # noqa: E402
     VECTOR_PROBE_QUERY,
     CitationMode,
     Key,
+    PolicySource,
     Profile,
     schemas_for,
 )
@@ -54,7 +55,7 @@ def blob_probe_doc(profile: str) -> str:
     return PUBLIC_BLOB_PROBE_DOC if profile == Profile.PUBLIC else BLOB_PROBE_DOC
 
 
-def _citation_block(env: dict, mode: str, public: bool) -> dict:
+def _citation_block(env: dict, mode: str, public: bool, policy_source: str) -> dict:
     """MANIFEST_DESCRIBES_ARTIFACT: the counts are of the rows THIS package
     carries, not of the live schema. The public profile drops every work row
     (and every edge and journal row that names it) whose document its own
@@ -64,12 +65,17 @@ def _citation_block(env: dict, mode: str, public: bool) -> dict:
 
     `mode` is resolved once per build by citation_profile.
     resolve_citation_mode() and handed in; this module never re-derives it.
+    `policy_source` travels the same way and says whose decision that mode
+    was -- the owner's row, or the command line's --policy-override.
     """
+    block = {Key.CITATION_MODE: mode, Key.CITATION_POLICY_SOURCE: policy_source,
+             Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {}}
     if mode == CitationMode.NONE:
-        return {Key.CITATION_MODE: mode, Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {}}
+        return block
     work_n, cites_n, by_kind = citation_profile.citation_counts(env, shipped_only=public)
-    return {Key.CITATION_MODE: mode, Key.WORK_COUNT: work_n, Key.CITES_COUNT: cites_n,
-            Key.WORK_BY_KIND: by_kind}
+    block.update({Key.WORK_COUNT: work_n, Key.CITES_COUNT: cites_n,
+                  Key.WORK_BY_KIND: by_kind})
+    return block
 
 
 # One round trip for the six independent scalar reads gather_manifest()
@@ -145,6 +151,7 @@ def _stemmed_token_overlap(env: dict, query: str, document_id: str, page_number:
 def gather_manifest(
     env: dict, ollama_url: str, profile: str = Profile.FULL,
     citation_mode: str = CitationMode.NONE,
+    policy_source: str = PolicySource.OWNER,
 ) -> dict:
     if profile not in Profile.ALL:
         raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
@@ -248,7 +255,7 @@ def gather_manifest(
         # smoke_test.py, which skips the measurements check when the
         # artifact declares no measurements schema.
         Key.SCHEMAS: schemas_for(profile, citation_mode),
-        Key.CITATION: _citation_block(env, citation_mode, public),
+        Key.CITATION: _citation_block(env, citation_mode, public, policy_source),
         Key.CREATED_AT: datetime.now(timezone.utc).isoformat(),
         Key.DOCUMENTS_COUNT: documents_count,
         Key.PAGES_COUNT: pages_count,

@@ -281,7 +281,8 @@ class CitationManifestTests(unittest.TestCase):
 
     NEAREST = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
 
-    def _gather(self, profile="public", citation_mode="topology-only"):
+    def _gather(self, profile="public", citation_mode="topology-only",
+                policy_source=None):
         with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)), \
              mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
              mock.patch.object(manifest_probe.legal_profile, "legal_summary",
@@ -296,16 +297,35 @@ class CitationManifestTests(unittest.TestCase):
                                               {"external-skeleton": 382, "our-document": 56})) as counts_mock:
             manifest = manifest_probe.gather_manifest(
                 {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
+                **({} if policy_source is None else {"policy_source": policy_source}),
             )
         return manifest, counts_mock
 
     def test_manifest_counts_describe_package(self):
         manifest, _counts = self._gather()
         self.assertEqual(manifest["citation"], {
-            "mode": "topology-only", "work_count": 438, "cites_count": 2425,
+            "mode": "topology-only", "policy_source": "owner",
+            "work_count": 438, "cites_count": 2425,
             "work_by_kind": {"external-skeleton": 382, "our-document": 56},
         })
         self.assertEqual(manifest["schemas"], ["corpus", "citation"])
+
+    def test_the_manifest_records_whose_decision_the_mode_was(self):
+        """The filename is not part of the package; this field is. Without
+        it an override build and an owner-classified one are byte-for-byte
+        the same artifact to every consumer that reads manifest.json.
+        """
+        manifest, _counts = self._gather(policy_source="override")
+        self.assertEqual(manifest["citation"]["policy_source"], "override")
+
+    def test_the_default_is_not_a_silent_owner_claim(self):
+        """gather_manifest defaults to owner, and build_package always
+        passes the value explicitly -- pinned so the default can never be
+        the thing that certifies an override build.
+        """
+        import inspect
+        signature = inspect.signature(manifest_probe.gather_manifest)
+        self.assertEqual(signature.parameters["policy_source"].default, "owner")
 
     def test_public_counts_apply_the_per_document_cut(self):
         """A work row naming an excluded document does not ship
@@ -322,7 +342,8 @@ class CitationManifestTests(unittest.TestCase):
     def test_none_mode_records_zero_counts_and_no_schema(self):
         manifest, counts_mock = self._gather(profile="public", citation_mode="none")
         self.assertEqual(manifest["citation"],
-                          {"mode": "none", "work_count": 0, "cites_count": 0, "work_by_kind": {}})
+                          {"mode": "none", "policy_source": "owner", "work_count": 0,
+                           "cites_count": 0, "work_by_kind": {}})
         self.assertEqual(manifest["schemas"], ["corpus"])
         counts_mock.assert_not_called()
 

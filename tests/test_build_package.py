@@ -116,9 +116,11 @@ class ProfileDispatchTests(unittest.TestCase):
                 seen["manifest"] = json.loads((workdir / "manifest.json").read_text())
                 out_path.write_bytes(b"fake-tar-zst")
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode="none"):
+            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
+                            policy_source="owner"):
                 seen["gathered_profile"] = profile
                 seen["manifest_citation_mode"] = citation_mode
+                seen["policy_source"] = policy_source
                 return _fake_manifest(
                     profile=profile_in_manifest,
                     schemas=["corpus"] if profile_in_manifest == "public"
@@ -245,13 +247,59 @@ class CitationPolicyOverrideTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         gather_mock.assert_not_called()
 
-    def test_override_renames_the_artifact_and_bypasses_the_database_decision(self):
+    def test_override_is_recorded_in_the_manifest_not_only_in_the_name(self):
+        """The filename is not part of the package: a copy under another
+        name loses it, and a recipient reading manifest.json never sees it.
+        policy_source travels INSIDE, and profile_checks.py fails on it.
+        """
+        _exit_code, seen = self._override_build()
+        self.assertEqual(seen["policy_source"], "override")
+
+    def test_an_ordinary_public_build_claims_the_owner_as_its_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode="none"):
+            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
+                            policy_source="owner"):
+                seen["policy_source"] = policy_source
+                return _fake_manifest(profile="public", schemas=["corpus", "citation"])
+
+            with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
+                 mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
+                 mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value="full-skeleton"), \
+                 mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
+                 mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
+                 mock.patch.object(build_package, "dump_public",
+                                    side_effect=lambda e, p, citation_mode="none": p.write_bytes(b"x")), \
+                 mock.patch.object(build_package, "sha256_file", return_value="a" * 64), \
+                 mock.patch.object(build_package, "package",
+                                    side_effect=lambda w, o: o.write_bytes(b"z")):
+                exit_code = build_package.main(["--profile", "public"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen["policy_source"], "owner")
+
+    def test_override_renames_the_artifact_and_bypasses_the_database_decision(self):
+        exit_code, seen = self._override_build()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen["manifest_mode"], "topology-only")
+        self.assertEqual(seen["dump_mode"], "topology-only")
+        written = seen["written"]
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].startswith("kb-public-override-"), written)
+        # Never named as if it were an ordinary (owner-classified) build.
+        self.assertFalse(written[0].startswith("kb-public-2"), written)
+
+    def _override_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_dir = Path(tmp)
+            seen = {}
+
+            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
+                            policy_source="owner"):
                 seen["manifest_mode"] = citation_mode
+                seen["policy_source"] = policy_source
                 return _fake_manifest(profile="public", schemas=["corpus", "citation"])
 
             def fake_public(env, gz_path, citation_mode="none"):
@@ -274,14 +322,8 @@ class CitationPolicyOverrideTests(unittest.TestCase):
                 exit_code = build_package.main(
                     ["--profile", "public", "--policy-override", "topology-only"])
             resolve_mock.assert_called_once()
-            written = sorted(p.name for p in (corpus_dir / "deploy").glob("*.tar.zst"))
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(seen["manifest_mode"], "topology-only")
-        self.assertEqual(seen["dump_mode"], "topology-only")
-        self.assertEqual(len(written), 1)
-        self.assertTrue(written[0].startswith("kb-public-override-"), written)
-        # Never named as if it were an ordinary (owner-classified) build.
-        self.assertFalse(written[0].startswith("kb-public-2"), written)
+            seen["written"] = sorted(p.name for p in (corpus_dir / "deploy").glob("*.tar.zst"))
+        return exit_code, seen
 
 
 class CitationModeResolvedOnceTests(unittest.TestCase):
@@ -297,8 +339,10 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
             corpus_dir = Path(tmp)
             seen = {}
 
-            def fake_gather(env, ollama_url, profile="full", citation_mode="none"):
+            def fake_gather(env, ollama_url, profile="full", citation_mode="none",
+                            policy_source="owner"):
                 seen["manifest_mode"] = citation_mode
+                seen["policy_source"] = policy_source
                 return _fake_manifest(profile=profile, schemas=["corpus"])
 
             def fake_public(env, gz_path, citation_mode="none"):

@@ -71,7 +71,7 @@ from artifact_bundle import bundle_runtime_files, dump_schemas, package  # noqa:
 from citation_profile import CitationUnclassified, resolve_citation_mode  # noqa: E402
 from dump_integrity import sha256_file  # noqa: E402
 from legal_profile import Unclassified  # noqa: E402
-from manifest_contract import CitationMode, Key, Profile  # noqa: E402
+from manifest_contract import CitationMode, Key, PolicySource, Profile  # noqa: E402
 from manifest_probe import gather_manifest  # noqa: E402
 from public_dump import dump_public  # noqa: E402
 
@@ -119,9 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         help="TEST ONLY: force the citation schema's public-artifact mode instead of "
              "reading citation.public_policy. This is NEVER the owner's decision -- it "
              "exists so the packaging/smoke pipeline can be exercised before that decision "
-             "is made. Valid only with --profile public; the output artifact is named "
-             "kb-public-override-<date>, never kb-public-<date>, so an override build can "
-             "never be mistaken for one the owner classified.",
+             "is made. Valid only with --profile public. The build records "
+             "citation.policy_source='override' IN THE MANIFEST, which profile_checks.py "
+             "fails on, and names the file kb-public-override-<date> so it also does not "
+             "look like one the owner classified.",
     )
     args = parser.parse_args(argv)
 
@@ -140,12 +141,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Postgres unavailable: {exc}", file=sys.stderr)
         return 1
 
+    # Whose decision the citation mode is, decided here and carried INTO
+    # the package. The filename says it too, but a name is not part of the
+    # artifact: it survives neither a copy under another name nor a
+    # recipient who only ever reads manifest.json. profile_checks.py fails
+    # on PolicySource.OVERRIDE, so an override build cannot be certified as
+    # publishable by any consumer, however it arrived.
     profile_tag = args.profile
+    policy_source = PolicySource.OWNER
     if args.policy_override:
         profile_tag = f"{args.profile}-override"
+        policy_source = PolicySource.OVERRIDE
         print(
-            f"ВНИМАНИЕ: --policy-override={args.policy_override} -- override, not the "
-            f"owner's decision; артефакт назван kb-{profile_tag}-..., не kb-public-...",
+            f"ВНИМАНИЕ: --policy-override={args.policy_override} -- НЕ решение владельца. "
+            f"Артефакт назван kb-{profile_tag}-..., несёт в манифесте "
+            f"citation.policy_source='{PolicySource.OVERRIDE}' и НЕ ПРОЙДЁТ "
+            f"deploy/profile_checks.py: публиковать его нельзя, он существует только "
+            f"чтобы прогнать конвейер до решения владельца.",
             file=sys.stderr,
         )
 
@@ -167,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"профиль {args.profile}; собираю манифест против живой базы...")
     try:
         manifest = gather_manifest(env, args.ollama_url, profile=args.profile,
-                                    citation_mode=citation_mode)
+                                    citation_mode=citation_mode,
+                                    policy_source=policy_source)
     except Unclassified as exc:
         # Not a crash: a document with no legal classification is a decision
         # the owner has to make, and the packager must never make it by

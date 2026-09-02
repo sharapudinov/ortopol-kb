@@ -6,6 +6,7 @@ right about actual bytes, not a mocked scan).
 from __future__ import annotations
 
 import gzip
+import pathlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +17,8 @@ import _pathfix_deploy  # noqa: F401
 import citation_columns
 import citation_content_checks
 import dump_scan
-from manifest_contract import CitationMode, Key
+import profile_checks
+from manifest_contract import CitationMode, Key, PolicySource
 
 
 def _copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:
@@ -223,6 +225,71 @@ class CheckEdgesReferenceShippedWorksTests(unittest.TestCase):
             self.MANIFEST, facts)
         self.assertFalse(ok)
         self.assertIn("2", detail)
+
+
+class PolicySourceTests(unittest.TestCase):
+    """Who decided the citation mode, asked of the package rather than of
+    its filename. An override build is otherwise indistinguishable from an
+    owner-classified one to every consumer: same profile, same schemas,
+    same counts, a consistent dump -- and the name is not part of the file.
+    """
+
+    def _manifest(self, **citation):
+        base = {Key.CITATION_MODE: CitationMode.FULL_SKELETON,
+                Key.WORK_COUNT: 1, Key.CITES_COUNT: 0}
+        base.update(citation)
+        return {Key.CITATION: base}
+
+    def test_the_owners_decision_passes(self):
+        ok, detail = citation_content_checks.check_policy_is_the_owners(
+            self._manifest(**{Key.CITATION_POLICY_SOURCE: PolicySource.OWNER}))
+        self.assertTrue(ok, detail)
+
+    def test_an_override_build_is_refused_and_says_why(self):
+        ok, detail = citation_content_checks.check_policy_is_the_owners(
+            self._manifest(**{Key.CITATION_POLICY_SOURCE: PolicySource.OVERRIDE}))
+        self.assertFalse(ok)
+        self.assertIn("--policy-override", detail)
+        self.assertIn("публиковать нельзя", detail)
+
+    def test_an_override_is_refused_even_when_it_shipped_no_graph(self):
+        """`--policy-override none` carries no citation schema at all, so
+        nothing leaked -- but the refusal is about whose decision it was.
+        """
+        ok, detail = citation_content_checks.check_policy_is_the_owners({
+            Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE,
+                           Key.CITATION_POLICY_SOURCE: PolicySource.OVERRIDE}})
+        self.assertFalse(ok)
+        self.assertIn("--policy-override", detail)
+
+    def test_a_shipping_manifest_with_no_source_is_refused_not_defaulted(self):
+        """Read with a default, an artifact predating the field would be
+        certified as owner-classified -- which is the one outcome the flag
+        must never be able to produce.
+        """
+        ok, detail = citation_content_checks.check_policy_is_the_owners(self._manifest())
+        self.assertFalse(ok)
+        self.assertIn("None", detail)
+
+    def test_an_unknown_source_is_refused_too(self):
+        ok, _detail = citation_content_checks.check_policy_is_the_owners(
+            self._manifest(**{Key.CITATION_POLICY_SOURCE: "somebody-else"}))
+        self.assertFalse(ok)
+
+    def test_an_artifact_carrying_no_graph_has_no_policy_to_certify(self):
+        ok, detail = citation_content_checks.check_policy_is_the_owners(
+            {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE}})
+        self.assertTrue(ok, detail)
+        ok, detail = citation_content_checks.check_policy_is_the_owners({})
+        self.assertTrue(ok, detail)
+
+    def test_profile_checks_runs_it(self):
+        """The check is only worth anything if the pass that certifies an
+        artifact actually calls it -- profile_checks.run_checks() is what
+        both the standalone CLI and smoke_test.py go through.
+        """
+        source = pathlib.Path(profile_checks.__file__).read_text(encoding="utf-8")
+        self.assertIn("check_policy_is_the_owners", source)
 
 
 if __name__ == "__main__":

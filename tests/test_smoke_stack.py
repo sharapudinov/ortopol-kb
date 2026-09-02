@@ -28,27 +28,65 @@ class LatestArtifactTests(unittest.TestCase):
             with self.assertRaises(smoke_stack.ArtifactUnavailable):
                 smoke_stack.latest_artifact(corpus_dir)
 
+    def _deploy(self, tmp: str, names: list[str]) -> Path:
+        corpus_dir = Path(tmp)
+        deploy_dir = corpus_dir / "deploy"
+        deploy_dir.mkdir()
+        for name in names:
+            (deploy_dir / name).touch()
+        return corpus_dir
+
     def test_picks_lexicographically_last_same_year(self):
         with tempfile.TemporaryDirectory() as tmp:
-            corpus_dir = Path(tmp)
-            deploy_dir = corpus_dir / "deploy"
-            deploy_dir.mkdir()
-            for name in ["kb-20260101.tar.zst", "kb-20260615.tar.zst", "kb-20260228.tar.zst"]:
-                (deploy_dir / name).touch()
+            corpus_dir = self._deploy(tmp, ["kb-full-20260101.tar.zst",
+                                            "kb-full-20260615.tar.zst",
+                                            "kb-full-20260228.tar.zst"])
             picked = smoke_stack.latest_artifact(corpus_dir)
-            self.assertEqual(picked.name, "kb-20260615.tar.zst")
+            self.assertEqual(picked.name, "kb-full-20260615.tar.zst")
 
     def test_picks_correctly_across_a_year_boundary(self):
         # Lexicographic sort of YYYYMMDD is also chronological across a
         # year rollover -- this pins that assumption down explicitly.
         with tempfile.TemporaryDirectory() as tmp:
-            corpus_dir = Path(tmp)
-            deploy_dir = corpus_dir / "deploy"
-            deploy_dir.mkdir()
-            for name in ["kb-20261231.tar.zst", "kb-20270101.tar.zst", "kb-20260601.tar.zst"]:
-                (deploy_dir / name).touch()
+            corpus_dir = self._deploy(tmp, ["kb-full-20261231.tar.zst",
+                                            "kb-full-20270101.tar.zst",
+                                            "kb-full-20260601.tar.zst"])
             picked = smoke_stack.latest_artifact(corpus_dir)
-            self.assertEqual(picked.name, "kb-20270101.tar.zst")
+            self.assertEqual(picked.name, "kb-full-20270101.tar.zst")
+
+    def test_an_override_build_never_answers_to_the_public_profile(self):
+        """The lexical trap this pattern exists for: 'o' (0x6f) > '2'
+        (0x32), so for the SAME date kb-public-override-<date> sorted AFTER
+        the owner-classified kb-public-<date> and a `kb-public-*` glob
+        handed the override build to anything asking for "the newest public
+        artifact" -- the very substitution the profile filter was added to
+        prevent.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_dir = self._deploy(tmp, ["kb-public-20260902.tar.zst",
+                                            "kb-public-override-20260902.tar.zst"])
+            picked = smoke_stack.latest_artifact(corpus_dir, "public")
+            self.assertEqual(picked.name, "kb-public-20260902.tar.zst")
+
+    def test_an_override_build_is_no_artifact_at_all_to_auto_discovery(self):
+        """Not merely outranked -- unreachable. With no classified build
+        beside it there is nothing to discover, rather than the override.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_dir = self._deploy(tmp, ["kb-public-override-20260902.tar.zst"])
+            with self.assertRaises(smoke_stack.ArtifactUnavailable):
+                smoke_stack.latest_artifact(corpus_dir, "public")
+            with self.assertRaises(smoke_stack.ArtifactUnavailable):
+                smoke_stack.latest_artifact(corpus_dir)
+
+    def test_a_name_that_is_not_an_artifact_name_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus_dir = self._deploy(tmp, ["kb-full-20260615.tar.zst",
+                                            "kb-full-20260615.tar.zst.sha256",
+                                            "kb-full-2026.tar.zst",
+                                            "copy of kb-full-20260616.tar.zst"])
+            picked = smoke_stack.latest_artifact(corpus_dir)
+            self.assertEqual(picked.name, "kb-full-20260615.tar.zst")
 
 
 class ArtifactDataDirTests(unittest.TestCase):
@@ -129,7 +167,7 @@ class ArtifactDataDirTests(unittest.TestCase):
             corpus_dir = Path(tmp) / "corpus"
             deploy_dir = corpus_dir / "deploy"
             deploy_dir.mkdir(parents=True)
-            tar_path = deploy_dir / "kb-20260101.tar.zst"
+            tar_path = deploy_dir / "kb-full-20260101.tar.zst"
             tar_path.touch()
             with mock.patch.object(smoke_stack, "try_default_corpus_dir", return_value=corpus_dir), \
                  mock.patch("pathlib.Path.is_file", return_value=False), \

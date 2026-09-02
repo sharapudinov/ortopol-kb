@@ -129,6 +129,7 @@ class ArtifactBuilder:
         if self.citation is not None:
             manifest["citation"] = {
                 "mode": self.citation["mode"],
+                "policy_source": self.citation.get("policy_source", "owner"),
                 "work_count": self.citation["work_count"],
                 "cites_count": self.citation["cites_count"],
                 "work_by_kind": self.citation.get("work_by_kind", {}),

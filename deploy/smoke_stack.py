@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import secrets
 import subprocess
 import tempfile
@@ -39,22 +40,38 @@ class ArtifactUnavailable(RuntimeError):
     """
 
 
+# An artifact's name in full: kb-<profile>-<8-digit date>.tar.zst, with the
+# profile a single word. Matched rather than globbed, and anchored at both
+# ends, because everything a glob would let through here is a real name a
+# build can produce. `kb-{profile}-*` matched kb-public-override-<date>,
+# which build_package.py names deliberately so it cannot pass for a
+# classified build -- and then sorted it AFTER the genuine same-date
+# artifact ('o' > '2'), so "the newest public artifact" resolved to the
+# override every time. The profile group cannot contain a hyphen, so no
+# suffixed tag can ever answer to a profile's name again.
+_ARTIFACT_NAME = re.compile(r"\Akb-(?P<profile>[a-z]+)-[0-9]{8}\.tar\.zst\Z")
+
+
 def latest_artifact(corpus_dir: Path, profile: str | None = None) -> Path:
     """The newest artifact under corpus_dir/deploy/, optionally restricted to
     one profile.
 
     The profile filter is not cosmetic: artifacts are named
-    kb-<profile>-<date>.tar.zst, so a bare `kb-*.tar.zst` sort returns
+    kb-<profile>-<date>.tar.zst, so an unrestricted sort returns
     kb-public-<date> ahead of kb-full-<date> for the SAME date (lexical
     order, 'p' > 'f') -- auto-discovery would silently smoke-test the public
     package when asked for nothing in particular. Callers say which one they
     mean; smoke_test.py defaults to full.
     """
-    pattern = f"kb-{profile}-*.tar.zst" if profile else "kb-*.tar.zst"
-    candidates = sorted((corpus_dir / "deploy").glob(pattern))
+    candidates = []
+    for path in (corpus_dir / "deploy").iterdir():
+        match = _ARTIFACT_NAME.match(path.name)
+        if match and (profile is None or match.group("profile") == profile):
+            candidates.append(path)
     if not candidates:
-        raise ArtifactUnavailable(f"no {pattern} found under {corpus_dir / 'deploy'}")
-    return candidates[-1]
+        wanted = f"kb-{profile or '<profile>'}-<YYYYMMDD>.tar.zst"
+        raise ArtifactUnavailable(f"no {wanted} found under {corpus_dir / 'deploy'}")
+    return sorted(candidates)[-1]
 
 
 @contextlib.contextmanager

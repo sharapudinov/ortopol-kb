@@ -81,6 +81,12 @@ python3 deploy/build_package.py --profile public
 перечисляет весь корпус (`legal.documents_by_distribution`) и называет вошедшие в
 пакет классы (`legal.shipped_distributions`), так что исключённое видно поимённо.
 
+Режим схемы `citation` в публичном пакете — строка `citation.public_policy`, и
+манифест говорит не только КАКОЙ он, но и ЧЕЙ: `citation.policy_source` = `owner`
+(прочитано из базы) либо `override` (задано флагом `--policy-override`, только для
+прогона конвейера). На `override` `profile_checks.py` отказывает: такой артефакт
+не публикуется, как бы он ни назывался.
+
 Проверка состава по байтам артефакта:
 `python3 deploy/profile_checks.py --artifact-dir <распакованный>` → exit 0.
 

@@ -103,8 +103,12 @@ class Key:
     # carries, not the live database (MANIFEST_DESCRIBES_ARTIFACT) -- zero
     # for CitationMode.NONE, whole-corpus otherwise (full-skeleton and
     # topology-only ship every row, only some columns differ).
+    # policy_source says WHOSE decision the mode is (PolicySource below):
+    # the filename cannot carry that, and a recipient holding only the file
+    # has no other way to ask.
     CITATION = "citation"
     CITATION_MODE = "mode"
+    CITATION_POLICY_SOURCE = "policy_source"
     WORK_COUNT = "work_count"
     CITES_COUNT = "cites_count"
     WORK_BY_KIND = "work_by_kind"
@@ -123,6 +127,28 @@ class Profile:
     FULL = "full"
     PUBLIC = "public"
     ALL = (FULL, PUBLIC)
+
+
+class PolicySource:
+    """Whose decision manifest.citation.mode records.
+
+    OWNER: read from citation.public_policy, i.e. the corpus owner's row --
+    the only provenance a publishable artifact may carry
+    (PUBLIC_APPROVED_BY_OWNER, CITATION_POLICY_IS_DATA).
+    OVERRIDE: forced at the command line by --policy-override, which exists
+    so the packaging and smoke pipeline can be exercised before that
+    decision is made. Never publishable, and profile_checks.py fails on it.
+
+    In the manifest rather than only in the filename because the filename
+    is not part of the package: it is renamed by a copy, and it is not what
+    a recipient (or a later session) reads to learn what they are holding.
+    The name still differs -- see build_package.py -- but the refusal rests
+    on this field.
+    """
+
+    OWNER = "owner"
+    OVERRIDE = "override"
+    ALL = (OWNER, OVERRIDE)
 
 
 class Distribution:
@@ -216,7 +242,12 @@ def schemas_for(profile: str, citation_mode: str) -> list[str]:
 # either hide a mode the artifact actually applied or invent counts the
 # package does not carry, so a v5 manifest fails the gate rather than being
 # read as "citation not shipped".
-MANIFEST_SCHEMA_VERSION = 6
+# 7: added citation.policy_source. A v6 reader cannot tell an artifact
+# whose citation policy is the owner's row from one whose mode was forced
+# by --policy-override; read with a default, an override build would be
+# certified as owner-classified, which is the one thing the flag must never
+# be able to produce.
+MANIFEST_SCHEMA_VERSION = 7
 
 # A paraphrase of "an algebraic polynomial bounded from its values on a
 # uniform grid" (the recurring theme of 1997_sm280 and related papers) with
