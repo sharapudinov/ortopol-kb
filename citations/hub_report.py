@@ -74,19 +74,34 @@ VERIFY_QUERY = (
 )
 
 
+def batch_filter(x_query: dict) -> str:
+    """Ключ батча — значение `filter=`, а НЕ полный x_query.url.
+
+    Наблюдено: url несёт курсор в хвосте, поэтому у 8 батчей оказалось 253
+    различных url — по одному на страницу, — и наивная дедупликация по url
+    сложила один и тот же meta.count 95 раз (3 392 521 вместо 51 652).
+    Значение filter= у всех страниц батча одно.
+    """
+    url = x_query.get("url") or ""
+    if "filter=" not in url:
+        return url or (x_query.get("oql") or "")
+    return url.split("filter=", 1)[1].split("&", 1)[0]
+
+
 def batch_counts(cache_dir: Path) -> list[int]:
-    """meta.count каждой страницы `cites:` из кэша — по одному на батч."""
+    """meta.count каждого батча `cites:` из кэша — по одному числу на батч."""
     seen: dict[str, int] = {}
     for path in sorted(Path(cache_dir).glob("*.json")):
         try:
             body = json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
-        query = (body.get("meta") or {}).get("x_query") or {}
+        meta = body.get("meta") or {}
+        query = meta.get("x_query") or {}
         oql = query.get("oql") or ""
         if "cites" not in oql or "openalex id" in oql:
             continue
-        seen.setdefault(query.get("url") or oql, (body.get("meta") or {}).get("count") or 0)
+        seen.setdefault(batch_filter(query), meta.get("count") or 0)
     return sorted(seen.values(), reverse=True)
 
 

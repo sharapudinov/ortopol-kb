@@ -12,11 +12,14 @@ offline rather than left to the next crawl to rediscover:
 """
 from __future__ import annotations
 
+import json
+import pathlib
+import tempfile
 import unittest
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
-from citations import journal, twins
+from citations import hub_report, journal, twins
 from citations.crawl import HUB_CAP, Snowball
 from citations.store import DryRunWriter
 
@@ -221,6 +224,39 @@ class CorpusTwinTests(unittest.TestCase):
     def test_normalization_folds_yo_and_tex(self):
         self.assertEqual(twins.normalize_title(r"Чебышёв $\\alpha$-ряды"),
                          twins.normalize_title("чебышев ряды"))
+
+
+class BatchCountTests(unittest.TestCase):
+    """One number per BATCH, not per page.
+
+    The first version keyed on x_query.url, which carries the cursor in its
+    tail: 8 batches came back as 253 distinct urls and the report published
+    3 392 521 promised citers instead of 51 652.
+    """
+
+    def _page(self, directory, name, ids, count, cursor):
+        body = {"meta": {"count": count, "x_query": {
+            "oql": "works where it cites (" + " or ".join(ids) + ")",
+            "url": f"/works?filter=referenced_works:{'|'.join(ids)}"
+                   f"&per_page=200&cursor={cursor}"}}}
+        (directory / name).write_text(json.dumps(body), encoding="utf-8")
+
+    def test_pages_of_one_batch_are_counted_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
+            self._page(directory, "b.json", ["W1", "W2"], 18904, "BBB")
+            self._page(directory, "c.json", ["W3"], 21, "CCC")
+            self.assertEqual(hub_report.batch_counts(directory), [18904, 21])
+
+    def test_openalex_id_batches_are_not_counted_as_cites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            (directory / "d.json").write_text(json.dumps({"meta": {
+                "count": 50, "x_query": {"oql": "works where openalex id is (W1)",
+                                         "url": "/works?filter=ids.openalex:W1"}}}),
+                encoding="utf-8")
+            self.assertEqual(hub_report.batch_counts(directory), [])
 
 
 class MathnetParseTests(unittest.TestCase):
