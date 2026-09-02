@@ -18,7 +18,8 @@ from _citation_fixtures import (
     unit,
     work,
 )
-from citations import frontier, journal, seeding, store
+from citations import edges as edges_mod
+from citations import journal, seeding, store
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH
 from citations.registry import Node, WorkRegistry, scoring_fields
@@ -100,6 +101,36 @@ class CrawlTests(unittest.TestCase):
         snowball.expand(["W_A", "W_B"], 1)
         self.assertIn(("W_A", "W_B", "referenced", "W_A"), writer.edges_seen)
 
+    def test_a_reference_already_in_the_registry_is_not_requested_again(self):
+        """It still counts as found -- the edge is a fact about both nodes --
+        but asking OpenAlex for metadata we already hold buys nothing.
+        """
+        writer = DryRunWriter()
+        seed_a = work("W_A", title="Seed one", refs=["W_B"])
+        seed_b = work("W_B", title="Seed two")
+        client = FakeClient([seed_a, seed_b], citers={})
+        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0)}), writer,
+                            tau=0.5, crawl_id="c", log=lambda *_: None)
+        snowball.seed(["doc_a", "doc_b"], {"doc_a": "W_A", "doc_b": "W_B"})
+        client.id_batches.clear()
+        _candidates, found, _hubs, _references = snowball.gather(["W_A"])
+        self.assertEqual(client.id_batches, [], "известную ссылку спросили заново")
+        self.assertEqual(found["W_A"], 1)
+
+    def test_a_reference_nobody_knows_yet_is_requested(self):
+        """The control for the dedup above: the branch is a cut, not a floor."""
+        writer = DryRunWriter()
+        seed_a = work("W_A", title="Seed one", refs=["W_NEW"])
+        client = FakeClient([seed_a, work("W_NEW", title="Unknown reference")],
+                            citers={})
+        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0)}), writer,
+                            tau=0.5, crawl_id="c", log=lambda *_: None)
+        snowball.seed(["doc_a"], {"doc_a": "W_A"})
+        client.id_batches.clear()
+        _candidates, found, _hubs, _references = snowball.gather(["W_A"])
+        self.assertEqual(client.id_batches, [["W_NEW"]])
+        self.assertEqual(found["W_A"], 1)
+
     def test_depth_two_expands_only_what_depth_one_kept(self):
         writer = DryRunWriter()
         seed = work("W_SEED", title="Seed Chebyshev")
@@ -168,6 +199,70 @@ class CrawlTests(unittest.TestCase):
         drops = [s for s in writer.steps_seen if s["action"] == "drop"]
         self.assertEqual([s["candidate_key"] for s in drops], ["W_BLANK"])
         self.assertEqual((drops[0]["score"], drops[0]["tau"]), (-1.0, 0.0))
+
+
+class ResumeTests(unittest.TestCase):
+    """--resume hands the crawl the keys it fetched recently
+    (citations/inputs.fresh_keys) and the frontier drops them.
+    """
+
+    def _crawl(self, skip_keys):
+        writer = DryRunWriter()
+        seed = work("W_SEED", title="Seed Chebyshev")
+        citer = work("W_X", title="Near Chebyshev", refs=["W_SEED"])
+        client = FakeClient([seed, citer], citers={"W_SEED": [citer], "W_X": []})
+        snowball = Snowball(client, PlannedEmbedder({"Seed": unit(0), "Near": unit(0)}),
+                            writer, tau=0.5, crawl_id="c", log=lambda *_: None,
+                            skip_keys=skip_keys)
+        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
+        client.cites_batches.clear()
+        snowball.run(2)
+        return client
+
+    def test_a_skipped_key_never_reaches_the_client(self):
+        client = self._crawl({"W_X"})
+        asked = [key for batch in client.cites_batches for key in batch]
+        self.assertNotIn("W_X", asked)
+        self.assertNotIn("W_X", [key for batch in client.id_batches for key in batch])
+
+    def test_without_the_skip_the_same_node_is_expanded(self):
+        client = self._crawl(frozenset())
+        asked = [key for batch in client.cites_batches for key in batch]
+        self.assertIn("W_X", asked)
+
+
+class SelfCitationTests(unittest.TestCase):
+    """A reference that resolves to the citing node itself is no edge.
+
+    It happens through the twin union, not through a source error: the
+    English translation carries the Russian original among its
+    referenced_works, both records share a DOI, and after the union both
+    ends of that "edge" are one node (citation.cites CHECKs citing <> cited).
+    """
+
+    def _registry_with_a_twin(self):
+        registry = WorkRegistry()
+        original = work("W_SEED", title="Seed Chebyshev", doi="10.1/x")
+        node, _new = registry.add(original, kind="our-document", depth=0,
+                                  document_id="doc_a")
+        node.referenced_works |= {"W_TRANS"}
+        translation = work("W_TRANS", title="Seed Chebyshev, translated", doi="10.1/x")
+        _same, is_new = registry.add(translation, kind="external-skeleton", depth=1)
+        self.assertFalse(is_new, "перевод не слился с оригиналом — фикстура не о том")
+        return registry
+
+    def test_the_self_loop_is_not_written(self):
+        registry = self._registry_with_a_twin()
+        self.assertEqual(registry.resolve_openalex("W_TRANS"), "W_SEED")
+        self.assertEqual(edges_mod.among_known(registry, ["W_SEED"], [], {}), [])
+
+    def test_a_reference_to_anybody_else_still_is(self):
+        registry = self._registry_with_a_twin()
+        registry.add(work("W_OTHER", title="Somebody else"),
+                     kind="external-skeleton", depth=1)
+        registry.nodes["W_SEED"].referenced_works |= {"W_OTHER"}
+        self.assertEqual(edges_mod.among_known(registry, ["W_SEED"], [], {}),
+                         [("W_SEED", "W_OTHER", "referenced", "W_SEED")])
 
 
 class ScoringMemoryTests(unittest.TestCase):

@@ -168,6 +168,39 @@ class KnownEmbeddingsTests(unittest.TestCase):
         self.assertIn(sql_literal("W'1"), run_mock.call_args[0][1])
 
 
+class FreshKeysTests(unittest.TestCase):
+    """What --resume declines to re-fetch: the keys fetched within N days.
+
+    The interval cannot travel as a psql variable (`interval :'days'` is not
+    syntax), so it is the one value this module builds into the statement --
+    through sql_literal, and the test says so, because an f-string here is
+    what the module docstring rules out.
+    """
+
+    def _asked(self, days, stdout=""):
+        with mock.patch.object(inputs, "run_sql",
+                               return_value=mock.Mock(stdout=stdout)) as run_mock:
+            keys = inputs.fresh_keys({}, days)
+        return keys, run_mock.call_args[0][1]
+
+    def test_the_interval_is_the_quoted_number_of_days(self):
+        _keys, sql = self._asked(30)
+        self.assertIn(f"now() - interval {sql_literal('30 days')}", sql)
+        self.assertIn("fetched_at >", sql)
+
+    def test_the_number_of_days_is_an_integer_whatever_arrives(self):
+        _keys, sql = self._asked("7")
+        self.assertIn(sql_literal("7 days"), sql)
+
+    def test_the_keys_come_back_as_a_set_of_records(self):
+        keys, _sql = self._asked(30, f"W1{RECORD_SEP}W2{RECORD_SEP}")
+        self.assertEqual(keys, {"W1", "W2"})
+
+    def test_nothing_fetched_recently_is_an_empty_set(self):
+        keys, _sql = self._asked(30)
+        self.assertEqual(keys, set())
+
+
 class FrontierMathTests(unittest.TestCase):
     def test_centroid_of_one_seed_is_that_seed(self):
         self.assertAlmostEqual(frontier.cosine(frontier.centroid([unit(0)]), unit(0)), 1.0)

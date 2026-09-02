@@ -118,6 +118,18 @@ class HubCapTests(unittest.TestCase):
         snow.expand(["W_HUB"], 2)
         self.assertEqual(client.cites_batches, [["W_HUB"]])
 
+    def test_at_the_cap_exactly_the_node_is_still_asked_upward(self):
+        """The cap is the last value that expands, not the first that does
+        not: `>` and `>=` differ by exactly this node.
+        """
+        writer, client, snow = self._with_hub(5000)
+        snow.expand(["W_SEED"], 1)
+        client.cites_batches.clear()
+        writer.steps_seen.clear()
+        snow.expand(["W_HUB"], 2)
+        self.assertEqual(client.cites_batches, [["W_HUB"]])
+        self.assertEqual([s for s in writer.steps_seen if s["action"] == "hub-skip"], [])
+
     def test_cited_by_count_sums_over_twins(self):
         _writer, _client, snow = snowball_over(
             [work("W_SEED", title="Seed Chebyshev")], {})
