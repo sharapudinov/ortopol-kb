@@ -52,7 +52,7 @@ python3 pg_search.py "повторные средние Валле-Пуссен�
 | `pg_load*.py`, `pg_source_urls.py`, `pg_embed.py` | загрузчики и эмбеддинги |
 | `external_registry.py`, `pg_load_external.py`, `external_checks.py` | внешняя литература: реестр `theory/external/EXTERNAL_INDEX.md`, её загрузчик и её проверки |
 | `pg_search.py` | поиск |
-| `pg_schema_citation.sql`, `citation_vocab.py`, `pg_graph.py`, `pg_graph_candidates.py`, `pg_graph_cocitation.py`, `pg_graph_cypher.py` | граф цитирований: схема и её словари, AGE-проекция (`citation_graph`), потребители (`citers`/`candidates`/`cocitation`/`hybrid`) |
+| `pg_schema_citation*.sql`, `citation_vocab.py`, `pg_graph.py`, `pg_graph_candidates.py`, `pg_graph_cocitation.py`, `pg_graph_cypher.py` | граф цитирований: схема и её словари, AGE-проекция (`citation_graph`), потребители (`citers`/`candidates`/`cocitation`/`hybrid`) |
 | `corpus_completeness.py` | предикат полноты корпуса |
 | `deploy/` | сборка артефакта, docker-compose стек, смок-тест, проверки состава |
 | `EXTENDING.md` | процедуры пополнения базы |
@@ -98,5 +98,5 @@ python3 deploy/build_package.py --profile public
 python3 -m unittest discover -s tests -t tests
 ```
 
-1090 тестов, без Docker и без сети; тестам, которым нужна живая база, при её
+1129 тестов, без Docker и без сети; тестам, которым нужна живая база, при её
 отсутствии положено пропускаться с внятным сообщением.
