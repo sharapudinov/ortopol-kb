@@ -62,7 +62,6 @@ from pathlib import Path
 
 import citation_content_checks
 import dump_scan
-import manifest_classes
 from manifest_classes import classes, content_expectation, expected_ids
 from manifest_contract import Key
 
