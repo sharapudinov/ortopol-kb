@@ -67,9 +67,22 @@ class Snowball:
 
     # -- seeds -----------------------------------------------------------
     def seed(self, documents, matches, abstracts=None, names=None) -> list[str]:
-        """See seeding.seed(): kept as a method so the crawl reads as one
-        object, implemented there so this file stays about traversal."""
-        return seeding.seed(self, documents, matches, abstracts, names)
+        """The seed set, established by seeding.py and assigned here.
+
+        Kept as a method so the crawl reads as one object; implemented there
+        so this file stays about traversal. Every attribute this touches is
+        set from a returned value -- seeding.py holds no Snowball.
+        """
+        steps, n_matched = seeding.collect_seeds(
+            self.registry, self.client, self.crawl_id, documents, matches,
+            abstracts, names)
+        # Journalled BEFORE the centroid is computed, not after: a run where
+        # OpenAlex returned nothing has no centroid and cannot continue, and
+        # the error rows explaining why must survive that exit.
+        self.writer.journal(steps)
+        self.seed_keys, self.centroid, self.per_depth[0] = seeding.rank_seeds(
+            self.registry, self.embed_nodes, len(documents), n_matched)
+        return self.seed_keys
 
     def embed_nodes(self, nodes) -> list[list[float]]:
         vectors = self.embed([candidate_text(n.title, n.abstract) for n in nodes])

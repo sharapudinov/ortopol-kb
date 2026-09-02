@@ -13,9 +13,9 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
-from citations import journal, store
+from citations import journal, seeding, store
 from citations.crawl import Snowball
-from citations.registry import Node
+from citations.registry import Node, WorkRegistry
 from citations.store import DryRunWriter, PostgresWriter, Writer
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql, scalar
@@ -173,6 +173,55 @@ class CrawlTests(unittest.TestCase):
         drops = [s for s in writer.steps_seen if s["action"] == "drop"]
         self.assertEqual([s["candidate_key"] for s in drops], ["W_BLANK"])
         self.assertIn("score=-1.0000 tau=0.0000", drops[0]["reason"])
+
+
+class SeedingWithoutSnowballTests(unittest.TestCase):
+    """seeding.py takes a registry, a client and callables -- never a
+    Snowball -- so the seed set can be established and asserted here with
+    neither a crawl object nor a writer in sight.
+    """
+
+    def _registry_and_client(self):
+        records = [work("W_SEED_A", title="Seed Chebyshev")]
+        return WorkRegistry(), FakeClient(records)
+
+    def test_collect_seeds_registers_the_known_and_journals_the_rest(self):
+        registry, client = self._registry_and_client()
+        steps, n_matched = seeding.collect_seeds(
+            registry, client, "c", ["doc_a", "doc_b"], {"doc_a": "W_SEED_A"})
+        self.assertEqual(sorted(registry.nodes), ["W_SEED_A"])
+        self.assertEqual(n_matched, 1)
+        self.assertEqual(sorted(s["action"] for s in steps), ["seed", "seed-missing"])
+
+    def test_collect_seeds_writes_nothing_itself(self):
+        """The journal rows come back for the caller to write -- crawl.py
+        writes them before the centroid, because a run with no seeds raises
+        there and the rows have to survive it.
+        """
+        registry, client = self._registry_and_client()
+        steps, _ = seeding.collect_seeds(registry, client, "c", ["doc_b"], {})
+        self.assertEqual([s["action"] for s in steps], ["seed-missing"])
+
+    def test_rank_seeds_returns_the_state_instead_of_assigning_it(self):
+        registry, client = self._registry_and_client()
+        _steps, n_matched = seeding.collect_seeds(
+            registry, client, "c", ["doc_a", "doc_b"], {"doc_a": "W_SEED_A"})
+
+        def embed_nodes(nodes):
+            vectors = [unit(0) for _ in nodes]
+            for node, vector in zip(nodes, vectors):
+                node.embedding = vector
+            return vectors
+
+        keys, centre, per_depth_row = seeding.rank_seeds(registry, embed_nodes, 2, n_matched)
+        self.assertEqual(keys, ["W_SEED_A"])
+        self.assertEqual(centre, unit(0))
+        self.assertEqual(per_depth_row, {"seeds": 1, "seed_missing": 1})
+        self.assertAlmostEqual(registry.nodes["W_SEED_A"].score, 1.0)
+
+    def test_no_seed_at_all_has_no_centre_to_rank_against(self):
+        with self.assertRaises(ValueError):
+            seeding.rank_seeds(WorkRegistry(), lambda nodes: [], 1, 0)
 
 
 class WriterConformanceTests(unittest.TestCase):
