@@ -32,28 +32,54 @@ DUMPED_CITATION_TABLES = ("work", "cites", "crawl_step", "public_policy",
                           "schema_backfill")
 
 
-class TableColumnsTests(unittest.TestCase):
-    def _columns(self, stdout, **kwargs):
-        with mock.patch.object(public_dump, "run_sql", return_value=mock.Mock(stdout=stdout)):
-            return public_dump.table_columns({}, "documents", **kwargs)
+class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
+    """The corpus half of the dump asks the same engine the citation half
+    does (schema_catalog.py). Its table list used to be a hand-typed map
+    and a hand-ordered sequence of calls: pg_schema.sql declares exactly
+    the three below, so they agreed by attention alone, and a fourth table
+    would have shipped its DDL with no COPY block -- profile_checks
+    compares schemas, not tables, so nothing downstream contradicts one.
+    """
 
-    def test_reads_the_catalog_and_keeps_order(self):
-        columns = self._columns("id\nfilename\nlegal_class\npublic_distribution\n")
-        self.assertEqual(columns, ["id", "filename", "legal_class", "public_distribution"])
+    def test_the_list_and_the_order_are_the_catalogs(self):
+        with mock.patch.object(public_dump.schema_catalog, "present_tables",
+                                return_value=["documents", "pages", "embedding_model"]), \
+             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+                                return_value=[("pages", "documents")]):
+            self.assertEqual(public_dump.corpus_tables({}),
+                             ["documents", "pages", "embedding_model"])
 
-    def test_excludes_what_the_caller_names(self):
-        columns = self._columns("id\ndocument_id\nbody\n", exclude=("id",))
-        self.assertEqual(columns, ["document_id", "body"])
+    def test_a_child_written_before_its_parent_is_reordered(self):
+        with mock.patch.object(public_dump.schema_catalog, "present_tables",
+                                return_value=["pages", "documents", "embedding_model"]), \
+             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+                                return_value=[("pages", "documents")]):
+            self.assertEqual(public_dump.corpus_tables({}),
+                             ["documents", "pages", "embedding_model"])
 
-    def test_empty_result_is_an_error_not_an_empty_copy_block(self):
-        with self.assertRaises(RuntimeError):
-            self._columns("")
+    def test_a_table_nobody_classified_stops_the_build(self):
+        with mock.patch.object(public_dump.schema_catalog, "present_tables",
+                                return_value=["documents", "pages", "embedding_model",
+                                              "annotations"]), \
+             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+                                return_value=[]):
+            with self.assertRaises(public_dump.schema_catalog.TableUnclassified) as caught:
+                public_dump.corpus_tables({})
+        self.assertIn("corpus.annotations", str(caught.exception))
 
-    def test_query_excludes_generated_columns(self):
+    def test_the_column_read_excludes_generated_columns(self):
         # tsv and source_path are GENERATED: including them would make the
         # dump either unrestorable or (worse) carry text that no longer
         # matches body.
-        self.assertIn("a.attgenerated = ''", public_dump._COLUMNS_SQL)
+        self.assertIn("a.attgenerated = ''", public_dump.schema_catalog._COLUMNS_SQL)
+
+    def test_the_module_no_longer_reads_the_catalog_itself(self):
+        """One implementation of "what does this schema hold", asked with a
+        schema argument -- not one per schema.
+        """
+        source = Path(public_dump.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("pg_attribute", source)
+        self.assertNotIn("pg_namespace", source)
 
 
 class CopySelectTests(unittest.TestCase):
@@ -143,8 +169,10 @@ class DumpPublicTests(unittest.TestCase):
             dst.write(b"-- DDL\n" if argv[0] == "pg_dump" else b"row\n")
 
         with mock.patch.object(public_dump, "require_classified") as classified_mock, \
-             mock.patch.object(public_dump, "table_columns",
-                                side_effect=lambda env, table, exclude=(): self.COLUMNS[table]), \
+             mock.patch.object(public_dump, "corpus_tables",
+                                return_value=list(DumpPublicTests.COLUMNS)), \
+             mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                                return_value=dict(DumpPublicTests.COLUMNS)), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=fake_stream):
             public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
         return gz_path, classified_mock
@@ -188,8 +216,10 @@ class DumpPublicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "table_columns",
-                                    side_effect=lambda env, table, exclude=(): self.COLUMNS[table]), \
+                 mock.patch.object(public_dump, "corpus_tables",
+                                    return_value=list(DumpPublicTests.COLUMNS)), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                                    return_value=dict(DumpPublicTests.COLUMNS)), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=boom):
                 with self.assertRaises(RuntimeError) as ctx:
                     public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
@@ -218,8 +248,10 @@ class CitationDumpIntegrationTests(unittest.TestCase):
     def _run(self, tmp, citation_mode):
         gz_path = Path(tmp) / "01_dump.sql.gz"
         with mock.patch.object(public_dump, "require_classified"), \
-             mock.patch.object(public_dump, "table_columns",
-                                side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
+             mock.patch.object(public_dump, "corpus_tables",
+                                return_value=list(DumpPublicTests.COLUMNS)), \
+             mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                                return_value=dict(DumpPublicTests.COLUMNS)), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=self._fake_stream), \
              mock.patch.object(citation_dump, "citation_tables",
                                 return_value=list(DUMPED_CITATION_TABLES)), \
@@ -266,8 +298,10 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "table_columns",
-                                    side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
+                 mock.patch.object(public_dump, "corpus_tables",
+                                    return_value=list(DumpPublicTests.COLUMNS)), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                                    return_value=dict(DumpPublicTests.COLUMNS)), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capturing_stream), \
                  mock.patch.object(citation_dump, "citation_tables",
                                     return_value=list(DUMPED_CITATION_TABLES)), \
@@ -310,8 +344,10 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "table_columns",
-                                    side_effect=lambda env, table, exclude=(): DumpPublicTests.COLUMNS[table]), \
+                 mock.patch.object(public_dump, "corpus_tables",
+                                    return_value=list(DumpPublicTests.COLUMNS)), \
+                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                                    return_value=dict(DumpPublicTests.COLUMNS)), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capture), \
                  mock.patch.object(citation_dump, "citation_tables",
                                     return_value=list(DUMPED_CITATION_TABLES)), \

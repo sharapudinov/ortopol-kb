@@ -155,15 +155,13 @@ def gather_manifest(
 
     citation_mode and policy_source are required and keyword-only: they are
     the two halves of ONE resolution (citation_profile.resolve_citation_mode),
-    and this function has no way to arrive at either of them. A default
-    would make omission indistinguishable from a decision -- and the
-    decision it would fabricate is the owner's own: mode `none` with
-    provenance `owner` is a fully self-consistent package asserting that the
-    owner said the citation graph does not travel, which every
-    recipient-side gate would then certify. Refusing the call is the only
-    answer a producer can give about a fact it does not hold, the same
-    polarity legal_profile.require_classified and
-    citation_profile.require_citation_mode apply to theirs.
+    and this function can arrive at neither. A default would make omission
+    indistinguishable from a decision -- and the decision it would fabricate
+    is the owner's own: mode `none` with provenance `owner` is a
+    self-consistent package asserting the owner said the citation graph does
+    not travel, which every recipient-side gate then certifies. Refusing is
+    the only answer a producer can give about a fact it does not hold -- the
+    polarity require_classified and require_citation_mode apply to theirs.
     """
     if profile not in Profile.ALL:
         raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")

@@ -23,9 +23,10 @@ rows that reference it across a foreign key.
 WHICH tables travel is the catalog's answer, not a tuple's: pg_dump
 --schema-only emits DDL for every table in schema citation, so a table
 added later and forgotten here would ship as a correctly-created, silently
-EMPTY one. citation_tables() reads pg_class and refuses to build when a
-relation is not in the classification -- the same polarity, and the same
-refusal, that citation_columns.py applies per column.
+EMPTY one. citation_tables() reads pg_class (schema_catalog.py, the one
+engine both dumps ask) and refuses to build when a relation is not in the
+classification -- the same polarity, and the same refusal, that
+citation_columns.py applies per column.
 
 id is preserved (never re-sequenced the way corpus.pages.id is excluded and
 left to the restore-side sequence): citation.cites references
@@ -42,7 +43,9 @@ from __future__ import annotations
 
 from typing import IO
 
-from citation_catalog import (
+from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
+from schema_catalog import (
+    classified_tables,
     columns_of,
     foreign_key_edges,
     present_tables,
@@ -50,10 +53,11 @@ from citation_catalog import (
     schema_columns,
     schema_serial_columns,
 )
-from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import CitationMode, strips_content
 from pg_stream import stream_stdout
+
+SCHEMA = "citation"
 
 # One alias per dumped table (the same discipline public_dump.TABLE_ALIASES
 # follows): an unlisted table raises KeyError instead of quietly producing
@@ -83,39 +87,22 @@ _SOURCE = {
     "schema_backfill": "FROM citation.schema_backfill b ORDER BY b.name",
 }
 
-class TableUnclassified(RuntimeError):
-    """A table in schema citation nobody has said how to dump."""
+# A table is classified here only if all three maps know it: what may
+# leave (citation_columns), which alias its projection uses, and which rows
+# it contributes. Any one of them missing is the same silence.
+CLASSIFIED = (set(CITATION_COLUMN_CLASS) & set(TABLE_ALIASES) & set(_SOURCE))
 
-
-def classified_tables(present: list[str]) -> list[str]:
-    """`present` in dump order, or a refusal naming what is unclassified.
-
-    The column list has been catalog-driven from the start, so a new column
-    could not vanish silently; the TABLE list was a tuple, and the guard
-    test iterated that same tuple, so a table added to the schema later
-    would have shipped its DDL with no COPY block at all -- a restore that
-    succeeds with an empty table, which no manifest number and no smoke
-    check would have contradicted. Being unclassified is now the build's
-    problem, the same answer UNCLASSIFIED_FAILS_BUILD gives a document.
-    """
-    unknown = [name for name in present
-               if name not in CITATION_COLUMN_CLASS or name not in TABLE_ALIASES
-               or name not in _SOURCE]
-    if unknown:
-        raise TableUnclassified(
-            "таблица citation." + ", citation.".join(sorted(unknown))
-            + " не классифицирована: дополните CITATION_COLUMN_CLASS "
-            "(deploy/citation_columns.py), TABLE_ALIASES и _SOURCE "
-            "(deploy/citation_dump.py); сборка отказывается "
-            "угадывать, уезжает ли новая таблица в public-артефакт"
-        )
-    return list(present)
+_UNCLASSIFIED_HINT = ("дополните CITATION_COLUMN_CLASS "
+                      "(deploy/citation_columns.py), TABLE_ALIASES и _SOURCE "
+                      "(deploy/citation_dump.py)")
 
 
 def citation_tables(env: dict) -> list[str]:
     """The tables to dump: the catalog's list, held to the classification
     and put in the order a restore needs."""
-    return restore_order(classified_tables(present_tables(env)), foreign_key_edges(env))
+    present = classified_tables(present_tables(env, SCHEMA), CLASSIFIED,
+                                SCHEMA, _UNCLASSIFIED_HINT)
+    return restore_order(present, foreign_key_edges(env, SCHEMA), SCHEMA)
 
 
 def _select_expression(table: str, column: str, mode: str) -> str:
@@ -204,8 +191,8 @@ def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
     # the loop: pg_attribute answers them for every table in one read, and
     # asking per table cost a psql process, a temp script and a connection
     # per table per question on top of the (necessary) one process per COPY.
-    columns = schema_columns(env)
-    serials = schema_serial_columns(env)
+    columns = schema_columns(env, SCHEMA)
+    serials = schema_serial_columns(env, SCHEMA)
     for table in citation_tables(env):
-        write_copy_block(env, dst, table, columns_of(columns, table), mode,
+        write_copy_block(env, dst, table, columns_of(columns, table, SCHEMA), mode,
                          serials=serials.get(table, ()))

@@ -14,10 +14,10 @@ import unittest
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
-import citation_catalog
 import citation_columns
 import citation_dump
 import citation_profile
+import schema_catalog
 from legal_profile import SHIPPED_SQL
 from manifest_contract import CitationMode
 from paths import default_corpus_dir
@@ -40,7 +40,7 @@ def _live_env() -> dict[str, str]:
 class ClassificationCoversTheCatalogTests(unittest.TestCase):
     """The map is complete against the DATABASE, not against itself.
 
-    table_columns() reads pg_attribute and citation_tables() reads pg_class,
+    schema_columns() reads pg_attribute and citation_tables() reads pg_class,
     so the artifact's shape grows with the schema; the classification has to
     grow with it in the same commit or the build stops. Asserted as set
     equality both ways, tables and columns alike: something in the schema
@@ -61,9 +61,10 @@ class ClassificationCoversTheCatalogTests(unittest.TestCase):
         )
 
     def test_every_dumped_column_is_classified_and_nothing_else_is(self):
+        columns = schema_catalog.schema_columns(self.env, citation_dump.SCHEMA)
         for table in citation_dump.citation_tables(self.env):
             self.assertEqual(
-                set(citation_catalog.table_columns(self.env, table)),
+                set(schema_catalog.columns_of(columns, table, citation_dump.SCHEMA)),
                 set(citation_columns.CITATION_COLUMN_CLASS[table]),
                 f"citation.{table}: каталог и классификация разошлись",
             )
@@ -80,14 +81,16 @@ class ClassificationCoversTheCatalogTests(unittest.TestCase):
             self.env,
             "BEGIN;\n"
             "CREATE TABLE citation.test_unclassified_probe (id BIGINT);\n"
-            + citation_catalog._TABLES_SQL
+            + schema_catalog._TABLES_SQL
             + "ROLLBACK;",
+            variables={"schema": citation_dump.SCHEMA},
             extra_args=["-t", "-A"],
         ).stdout
         present = [line.strip() for line in seen.splitlines() if line.strip()]
         self.assertIn("test_unclassified_probe", present)
-        with self.assertRaises(citation_dump.TableUnclassified) as caught:
-            citation_dump.classified_tables(present)
+        with self.assertRaises(schema_catalog.TableUnclassified) as caught:
+            schema_catalog.classified_tables(present, citation_dump.CLASSIFIED,
+                                             citation_dump.SCHEMA, "дополните карты")
         self.assertIn("citation.test_unclassified_probe", str(caught.exception))
 
     def test_the_probe_table_did_not_survive_the_rollback(self):
@@ -110,7 +113,8 @@ class CatalogDerivedShapeTests(unittest.TestCase):
         cls.env = _live_env()
 
     def test_the_serial_columns_are_the_ones_with_a_sequence(self):
-        serials = {table: citation_catalog.serial_columns(self.env, table)
+        by_table = schema_catalog.schema_serial_columns(self.env, citation_dump.SCHEMA)
+        serials = {table: by_table.get(table, [])
                    for table in citation_dump.citation_tables(self.env)}
         self.assertEqual({t: c for t, c in serials.items() if c},
                          {"work": ["id"], "crawl_step": ["id"]})
@@ -118,7 +122,7 @@ class CatalogDerivedShapeTests(unittest.TestCase):
     def test_the_dump_order_is_what_the_foreign_keys_require(self):
         order = citation_dump.citation_tables(self.env)
         self.assertEqual(order, list(DUMPED_TABLES))
-        for child, parent in citation_catalog.foreign_key_edges(self.env):
+        for child, parent in schema_catalog.foreign_key_edges(self.env, citation_dump.SCHEMA):
             self.assertLess(order.index(parent), order.index(child),
                             f"{child} восстанавливается раньше {parent}")
 
@@ -127,8 +131,9 @@ class CatalogDerivedShapeTests(unittest.TestCase):
         nothing about the order of THIS dump -- the corpus slice is written
         by public_dump.py before it.
         """
-        self.assertEqual(citation_catalog.foreign_key_edges(self.env),
-                         [("cites", "work")])
+        self.assertEqual(
+            schema_catalog.foreign_key_edges(self.env, citation_dump.SCHEMA),
+            [("cites", "work")])
 
 
 class LiveLegalCutTests(unittest.TestCase):

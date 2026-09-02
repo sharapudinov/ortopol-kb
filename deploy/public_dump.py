@@ -49,6 +49,15 @@ would have silently dropped legal_class/public_distribution/legal_note from
 the public artifact -- the one artifact whose whole point is carrying that
 information. Only generated columns (recomputed on restore) and pages.id
 (the sequence reassigns it, see PAGES_EXCLUDED) are left out.
+
+The table list is read the same way, through the same module the citation
+dump reads (schema_catalog.py). It was a hand-typed map and a hand-ordered
+sequence of calls, which agreed with pg_schema.sql by nothing but
+attention: a fourth corpus table would have shipped its DDL with no COPY
+block, and profile_checks.check_schemas compares SCHEMAS, not tables, so
+nothing downstream contradicts an empty one. What stays hand-written is
+the per-schema knowledge -- which alias a table's projection uses and
+which rows it contributes -- and an unclassified table is a refusal.
 """
 from __future__ import annotations
 
@@ -61,11 +70,13 @@ from deploy_pathfix import ensure_corpus_importable
 ensure_corpus_importable()
 
 import citation_dump  # noqa: E402
+import schema_catalog  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
 from manifest_contract import CitationMode, Profile, schemas_for  # noqa: E402
 from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL, require_classified  # noqa: E402
-from pg_common import run_sql  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
+
+SCHEMA = "corpus"
 
 # What _dump_ddl() asks pg_dump for: the public profile's schemas MINUS
 # citation, which citation_dump.dump_citation() appends under its own mode
@@ -81,36 +92,28 @@ PUBLIC_SCHEMAS = tuple(schemas_for(Profile.PUBLIC, CitationMode.NONE))
 # setval() to emit and keep in sync.
 PAGES_EXCLUDED = ("id",)
 
-_COLUMNS_SQL = """
-SELECT a.attname
-FROM pg_attribute a
-JOIN pg_class c ON c.oid = a.attrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'corpus' AND c.relname = '{table}'
-  AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
-ORDER BY a.attnum;
-"""
-
-
-# One alias per dumped table, so _select_expression() never has to guess:
-# an unlisted table raises KeyError instead of silently producing SQL with
-# the wrong alias.
+# One alias per dumped table, so _select_expression() never has to guess,
+# and the classification the table list is held to: a table nobody listed
+# here is a table nobody said how to ship.
 TABLE_ALIASES = {"documents": "d", "pages": "p", "embedding_model": "m"}
 
+_UNCLASSIFIED_HINT = ("дополните TABLE_ALIASES и _copy_select "
+                      "(deploy/public_dump.py)")
 
-def table_columns(env: dict, table: str, exclude: tuple[str, ...] = ()) -> list[str]:
-    """Non-generated columns of corpus.<table>, in catalog order, minus
-    `exclude`. Raises when the table has none -- a typo in a table name
-    would otherwise produce a silently empty COPY block.
+# Columns the dump leaves to the restore side, per table.
+EXCLUDED_COLUMNS = {"pages": PAGES_EXCLUDED}
+
+
+def corpus_tables(env: dict) -> list[str]:
+    """The tables to dump: the catalog's list, held to the classification
+    and put in the order a restore needs (corpus.pages references
+    corpus.documents, and pg_constraint is where that is written down).
     """
-    rows = run_sql(env, _COLUMNS_SQL.format(table=table), extra_args=["-t", "-A"]).stdout
-    columns = [
-        line.strip() for line in rows.splitlines()
-        if line.strip() and line.strip() not in exclude
-    ]
-    if not columns:
-        raise RuntimeError(f"corpus.{table} has no dumpable columns -- wrong table name?")
-    return columns
+    present = schema_catalog.classified_tables(
+        schema_catalog.present_tables(env, SCHEMA), TABLE_ALIASES,
+        SCHEMA, _UNCLASSIFIED_HINT)
+    return schema_catalog.restore_order(
+        present, schema_catalog.foreign_key_edges(env, SCHEMA), SCHEMA)
 
 
 def _select_expression(table: str, column: str) -> str:
@@ -208,18 +211,16 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
     the cut that ships nothing.
     """
     require_classified(env)
-    documents_columns = table_columns(env, "documents")
-    pages_columns = table_columns(env, "pages", exclude=PAGES_EXCLUDED)
-    model_columns = table_columns(env, "embedding_model")
+    tables = corpus_tables(env)
+    columns = schema_catalog.schema_columns(env, SCHEMA)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             dst.write(PREAMBLE.encode())
             _dump_ddl(env, dst)
             dst.write(b"\n")
-            # documents first: corpus.pages.document_id is a FK to it.
-            write_copy_block(env, dst, "documents", documents_columns)
-            write_copy_block(env, dst, "pages", pages_columns)
-            write_copy_block(env, dst, "embedding_model", model_columns)
+            for table in tables:
+                write_copy_block(env, dst, table, schema_catalog.columns_of(
+                    columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ())))
             dst.write(b"\n")
             citation_dump.dump_citation(env, dst, citation_mode)
     except CommandFailed as exc:
