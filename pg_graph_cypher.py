@@ -29,7 +29,7 @@ import sys
 
 import pg_graph_common
 import pg_search
-from pg_common import scalar
+from pg_common import scalar, sql_literal
 from pg_graph_common import FIELD_SEP, ROW_ARGS, split_records
 
 MIN_DEPTH, MAX_DEPTH = 1, 3
@@ -122,42 +122,49 @@ def citers(env, document_id: str, depth: int = 1) -> list[dict]:
 # pre-escaped from citation.cypher_literal(), the one escaping
 # implementation this module trusts and never re-derives -- the same
 # contract build_citers_sql() follows.
+#
+# The seeds arrive as a VALUES list, and this statement does NO vector work
+# at all: the nearest-neighbour scan happens once, in _NEAREST_SEEDS_SQL
+# below, and its answer -- key, escaped key, score -- is what gets spliced
+# here. The `nearest` CTE used to re-run that scan verbatim, so every hybrid
+# call paid for two top-K searches over the HNSW index and serialised the
+# 1024-float query vector into two psql scripts.
 _HYBRID_SQL = """
-WITH edges AS (
+WITH nearest(key, score) AS (
+    VALUES {seeds}
+),
+edges AS (
     SELECT citing_key::text AS citing_key, cited_key::text AS cited_key
     FROM ag_catalog.cypher('citation_graph', $CYPHERQ$
         MATCH (a:Work)-[:CITES]->(b:Work)
         WHERE a.key IN [{keys}] OR b.key IN [{keys}]
         RETURN a.key, b.key
     $CYPHERQ$) AS (citing_key agtype, cited_key agtype)
-),
-nearest AS (
-    SELECT key, coalesce(year::text, '') AS year, coalesce(title, '') AS title,
-           1 - (embedding <=> :'vec'::vector) AS score
-    FROM citation.work
-    WHERE embedding IS NOT NULL
-    ORDER BY embedding <=> :'vec'::vector
-    LIMIT :top
 )
-SELECT n.key, n.year, n.title, n.score::text, 'cites' AS direction,
-       w.key, coalesce(w.title, '')
+SELECT n.key, coalesce(s.year::text, ''), coalesce(s.title, ''), n.score::text,
+       'cites' AS direction, w.key, coalesce(w.title, '')
 FROM nearest n
+JOIN citation.work s ON s.key = n.key
 JOIN edges e ON e.citing_key = n.key
 JOIN citation.work w ON w.key = e.cited_key
 UNION ALL
-SELECT n.key, n.year, n.title, n.score::text, 'cited_by' AS direction,
-       w.key, coalesce(w.title, '')
+SELECT n.key, coalesce(s.year::text, ''), coalesce(s.title, ''), n.score::text,
+       'cited_by' AS direction, w.key, coalesce(w.title, '')
 FROM nearest n
+JOIN citation.work s ON s.key = n.key
 JOIN edges e ON e.cited_key = n.key
 JOIN citation.work w ON w.key = e.citing_key
 ORDER BY 4 DESC, 1, 5;
 """
 
-# The seeds, and their keys already escaped for Cypher by the database's own
-# citation.cypher_literal(). One round trip, reusing exactly the CTE the
-# statement above re-evaluates, so the two see the same `top` rows.
-_NEAREST_KEYS_SQL = """
-SELECT citation.cypher_literal(key)
+# The one vector scan of a hybrid call: the seeds, their keys already
+# escaped for Cypher by the database's own citation.cypher_literal(), and
+# the score the statement above reports -- carried across rather than
+# recomputed, so both halves of the answer describe the same `top` rows by
+# construction and not by two searches agreeing.
+_NEAREST_SEEDS_SQL = """
+SELECT key, citation.cypher_literal(key),
+       (1 - (embedding <=> :'vec'::vector))::text
 FROM citation.work
 WHERE embedding IS NOT NULL
 ORDER BY embedding <=> :'vec'::vector
@@ -165,19 +172,30 @@ LIMIT :top;
 """
 
 
-def build_hybrid_sql(escaped_keys: list[str]) -> str | None:
-    """`escaped_keys` MUST already be citation.cypher_literal() output (see
-    hybrid() below, which fetches them pre-escaped) -- this function only
-    splices them into query text. None when there are no seeds at all: an
-    empty IN list is not valid Cypher, and the answer is empty anyway.
+def build_hybrid_sql(seeds: list[tuple[str, str, str]]) -> str | None:
+    """`seeds` are (key, cypher-escaped key, score) triples as
+    _NEAREST_SEEDS_SQL returned them -- the escaping is the database's
+    (citation.cypher_literal), this function only splices.
+
+    Two literal forms, because the key is read twice by two languages: as a
+    Cypher string inside the dollar-quoted command, and as a SQL string in
+    the VALUES list, where sql_literal() is the repository's one quoting.
+    The score is spliced as the source printed it, after float() has
+    confirmed it IS a number -- reformatting it here would move the value.
+
+    None when there are no seeds at all: an empty IN list is not valid
+    Cypher, and an empty VALUES list is not valid SQL either.
     """
-    if not escaped_keys:
+    if not seeds:
         return None
-    keys = ", ".join(f"'{key}'" for key in escaped_keys)
-    sql = _HYBRID_SQL.format(keys=keys)
+    keys = ", ".join(f"'{escaped}'" for _key, escaped, _score in seeds)
     if "$CYPHERQ$" in keys:
         raise ValueError("seed key collides with the $CYPHERQ$ delimiter")
-    return sql
+    values = []
+    for key, _escaped, score in seeds:
+        float(score)  # anything but a number must not reach the statement text
+        values.append(f"({sql_literal(key)}, {score}::double precision)")
+    return _HYBRID_SQL.format(keys=keys, seeds=",\n           ".join(values))
 
 
 def hybrid(env, question: str, top: int = 10) -> list[dict]:
@@ -185,14 +203,14 @@ def hybrid(env, question: str, top: int = 10) -> list[dict]:
     if vec is None:
         print("эмбеддинги недоступны, hybrid недоступен", file=sys.stderr)
         return []
-    variables = {"vec": vec, "top": str(int(top))}
-    seeds = pg_graph_common.graph_sql(env, _NEAREST_KEYS_SQL, variables=variables,
-                                extra_args=["-t", "-A"]).stdout.split("\n")
-    sql = build_hybrid_sql([key for key in seeds if key.strip()])
+    result = pg_graph_common.graph_sql(
+        env, _NEAREST_SEEDS_SQL, variables={"vec": vec, "top": str(int(top))},
+        extra_args=ROW_ARGS)
+    seeds = [tuple(rec.split(FIELD_SEP, 2)) for rec in split_records(result.stdout)]
+    sql = build_hybrid_sql([s for s in seeds if len(s) == 3 and s[0].strip()])
     if sql is None:
         return []
-    result = pg_graph_common.graph_sql(env, sql, variables=variables,
-                                 extra_args=ROW_ARGS)
+    result = pg_graph_common.graph_sql(env, sql, extra_args=ROW_ARGS)
     rows = []
     for rec in split_records(result.stdout):
         key, year, title, score, direction, n_key, n_title = rec.split(FIELD_SEP, 6)

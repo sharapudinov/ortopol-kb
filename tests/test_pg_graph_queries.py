@@ -262,7 +262,8 @@ class HybridSqlTests(unittest.TestCase):
     proportional to `top` and not to |E|.
     """
 
-    SQL = pgq.build_hybrid_sql(["k1", "k2"])
+    SEEDS = [("k1", "k1", "0.742"), ("k2", "k2", "0.5")]
+    SQL = pgq.build_hybrid_sql(SEEDS)
 
     def test_cypher_sits_in_a_from_clause(self):
         self.assertIn("FROM ag_catalog.cypher(", self.SQL)
@@ -271,9 +272,20 @@ class HybridSqlTests(unittest.TestCase):
         self.assertIn("JOIN citation.work w ON w.key = e.cited_key", self.SQL)
         self.assertIn("JOIN citation.work w ON w.key = e.citing_key", self.SQL)
 
-    def test_uses_the_question_embedding_for_nearest_neighbours(self):
-        self.assertIn(":'vec'::vector", self.SQL)
-        self.assertIn("ORDER BY embedding <=> :'vec'::vector", self.SQL)
+    def test_the_seeds_are_carried_in_not_searched_for_again(self):
+        """One hybrid call, one nearest-neighbour scan. This statement used
+        to re-run the identical top-K over the HNSW index, with the 1024-
+        float question vector serialised into a second psql script.
+        """
+        self.assertNotIn("<=>", self.SQL, "второй запрос всё ещё ищет по вектору")
+        self.assertNotIn(":'vec'", self.SQL)
+        self.assertIn("WITH nearest(key, score) AS (\n    VALUES ", self.SQL)
+        self.assertIn("(E'k1', 0.742::double precision)", self.SQL)
+
+    def test_the_one_vector_scan_uses_the_question_embedding(self):
+        self.assertIn("ORDER BY embedding <=> :'vec'::vector", pgq._NEAREST_SEEDS_SQL)
+        self.assertIn("citation.cypher_literal(key)", pgq._NEAREST_SEEDS_SQL)
+        self.assertIn("LIMIT :top", pgq._NEAREST_SEEDS_SQL)
 
     def test_traversal_is_bounded_by_the_seed_keys(self):
         self.assertIn("a.key IN ['k1', 'k2']", self.SQL)
@@ -282,12 +294,17 @@ class HybridSqlTests(unittest.TestCase):
         self.assertNotIn("MATCH (a:Work)-[:CITES]->(b:Work)\n        RETURN", self.SQL)
 
     def test_keys_are_spliced_already_escaped_not_re_escaped_here(self):
-        sql = pgq.build_hybrid_sql([r"it\'s"])
-        self.assertIn(r"['it\'s']", sql)
+        sql = pgq.build_hybrid_sql([("it's", r"it\'s", "0.1")])
+        self.assertIn(r"['it\'s']", sql, "ключ для Cypher переэкранирован здесь")
+        self.assertIn("E'it\\'s'", sql, "ключ для SQL не проведён через sql_literal")
+
+    def test_a_score_that_is_not_a_number_never_reaches_the_statement(self):
+        with self.assertRaises(ValueError):
+            pgq.build_hybrid_sql([("k1", "k1", "0.5); DROP TABLE citation.work; --")])
 
     def test_delimiter_collision_raises(self):
         with self.assertRaises(ValueError):
-            pgq.build_hybrid_sql(["x$CYPHERQ$y"])
+            pgq.build_hybrid_sql([("x", "x$CYPHERQ$y", "0.5")])
 
     def test_no_seeds_means_no_statement_to_run(self):
         self.assertIsNone(pgq.build_hybrid_sql([]))

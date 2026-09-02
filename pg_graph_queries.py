@@ -33,7 +33,7 @@ from pg_graph_cypher import (  # noqa: F401  (re-exported: see the docstring)
     sort_citers,
     validate_depth,
     _HYBRID_SQL,
-    _NEAREST_KEYS_SQL,
+    _NEAREST_SEEDS_SQL,
 )
 
 
