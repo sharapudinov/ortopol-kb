@@ -112,12 +112,26 @@ class CandidatesSqlTests(unittest.TestCase):
         self.assertIn("w.kind = 'external-skeleton'", self.SQL)
 
     def test_top_k_is_ordered_and_limited_over_the_bare_table(self):
-        # Nothing joined below the LIMIT: that is what makes
-        # work_embedding_hnsw plannable at all.
+        # Nothing but the single-row target is read below the LIMIT: that is
+        # what makes work_embedding_hnsw plannable at all.
         nearest = self.SQL[self.SQL.index("nearest AS ("):self.SQL.index("LIMIT :top")]
-        self.assertIn("ORDER BY w.embedding <=>", nearest)
-        self.assertNotIn("JOIN", nearest)
+        self.assertIn("ORDER BY w.embedding <=> t.v", nearest)
+        self.assertIn("CROSS JOIN LATERAL", nearest)
+        self.assertNotIn("links", nearest)
+        self.assertNotIn("JOIN citation.", nearest)
         self.assertLess(self.SQL.index("LIMIT :top"), self.SQL.index("LEFT JOIN links"))
+
+    def test_the_target_is_evaluated_once_per_statement(self):
+        """Spliced into both the score and the ORDER BY, the centroid was
+        two textually distinct subqueries -- two aggregations over every
+        our-document embedding per call -- and the query vector's 1024
+        floats were serialised into the statement twice.
+        """
+        for expr in (":'vec'::vector", pgq._CENTROID_EXPR):
+            sql = pgq.build_candidates_sql(expr, 0)
+            self.assertEqual(sql.count(expr), 1, expr)
+            self.assertIn("target AS MATERIALIZED", sql)
+            self.assertEqual(sql.count("t.v"), 2, "счёт и порядок читают одно и то же")
 
     def test_link_count_is_a_grouped_aggregate_not_a_per_row_subquery(self):
         # The OR across two columns (citing = w.id OR cited = w.id) is what
@@ -138,7 +152,7 @@ class CandidatesSqlTests(unittest.TestCase):
         self.assertGreater(sql.index(":min_links"), sql.index("LIMIT :top"))
         nearest = sql[sql.index("nearest AS ("):sql.index("LIMIT :top")]
         self.assertNotIn("links", nearest)
-        self.assertNotIn("JOIN", nearest)
+        self.assertNotIn("JOIN citation.", nearest)
 
     def test_no_min_links_keeps_every_top_k_row_with_its_count(self):
         self.assertNotIn(":min_links", self.SQL)
@@ -418,6 +432,24 @@ class LiveConsumersTests(unittest.TestCase):
             """,
         )
         self.assertEqual(len(pgq.cocitation(self.env, min_count=1, limit=2)), 2)
+
+    def test_the_top_k_still_plans_as_an_hnsw_scan(self):
+        """The shape's whole purpose, asked of the planner rather than
+        argued: with the target bound once and read through a LATERAL, the
+        ordered scan is still the index's. enable_seqscan=off because at
+        438 works the planner is right to prefer a sort -- the question is
+        whether the index REMAINS available as the graph grows.
+        """
+        vec = "[" + ",".join(["0.1"] * 1024) + "]"
+        plan = run_sql(
+            self.env,
+            "SET enable_seqscan = off;\nEXPLAIN (COSTS OFF)\n"
+            + pgq.build_candidates_sql(":'vec'::vector", 0),
+            variables={"vec": vec, "top": "20"},
+            extra_args=["-t", "-A"],
+        ).stdout
+        self.assertIn("work_embedding_hnsw", plan, plan)
+        self.assertIn("Order By: (embedding <=> t.v)", plan, plan)
 
     def test_candidates_and_hybrid_answer_from_the_same_fixture(self):
         """candidates() must find an external-skeleton node linked to one of

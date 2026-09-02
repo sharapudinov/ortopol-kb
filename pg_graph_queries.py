@@ -79,7 +79,16 @@ _CENTROID_EXPR = (
 #                  the default 0 rather than written as a tautological >= 0.
 #
 # {target_expr} is module-owned SQL, never caller input: either the bound
-# query vector or the corpus centroid subquery.
+# query vector or the corpus centroid subquery -- and it is spliced ONCE,
+# into a MATERIALIZED CTE the nearest scan reads through a LATERAL. Spliced
+# into both the score and the ORDER BY, as it was, the centroid became two
+# textually distinct subqueries and Postgres aggregated over every
+# our-document embedding twice per call, while the query vector's 1024
+# floats were serialised into the statement text twice. LATERAL rather
+# than a plain cross join because the ordering must belong to the scan:
+# EXPLAIN on this instance (enable_seqscan=off) shows Index Scan using
+# work_embedding_hnsw with Order By: embedding <=> t.v, i.e. the one shape
+# this query exists to keep available.
 #
 # At the graph's present size (438 works) the planner still prefers a
 # sequential scan with a top-N heapsort, and is right to -- 363 candidate
@@ -95,13 +104,20 @@ WITH links AS (
     JOIN citation.work o ON o.id = e.other AND o.kind = 'our-document'
     GROUP BY e.id
 ),
+target AS MATERIALIZED (
+    SELECT {target_expr} AS v
+),
 nearest AS (
-    SELECT w.id, w.key, w.year, w.title,
-           1 - (w.embedding <=> {target_expr}) AS score
-    FROM citation.work w
-    WHERE w.kind = 'external-skeleton' AND w.embedding IS NOT NULL
-    ORDER BY w.embedding <=> {target_expr}
-    LIMIT :top
+    SELECT n.*
+    FROM target t
+    CROSS JOIN LATERAL (
+        SELECT w.id, w.key, w.year, w.title,
+               1 - (w.embedding <=> t.v) AS score
+        FROM citation.work w
+        WHERE w.kind = 'external-skeleton' AND w.embedding IS NOT NULL
+        ORDER BY w.embedding <=> t.v
+        LIMIT :top
+    ) n
 )
 SELECT n.key, coalesce(n.year::text, ''), coalesce(n.title, ''),
        n.score::text, coalesce(l.n, 0)::text
