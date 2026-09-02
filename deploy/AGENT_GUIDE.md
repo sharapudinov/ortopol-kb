@@ -60,10 +60,10 @@ compose своим `--env-file` не разворачивает `$` и до `PGP
 `blob_integrity_checks.py`, `bundled_files_check.py`, `manifest_contract.py`,
 `compose_lifecycle.py`, `dump_integrity.py`, `deploy_pathfix.py`,
 `ollama_registry.py`, `drift_probe.py`, `profile_checks.py`, `dump_scan.py`,
-`pg_rank_probe.py`), а также копии
-двух общих модулей репозитория (`corpus_lib/pg_common.py`,
-`corpus_lib/pg_search.py`) лежат прямо здесь, рядом
-с дампом и `manifest.json` — запускаются без доступа к репозиторию:
+`pg_rank_probe.py`), а также копии общих модулей репозитория
+(`corpus_lib/pg_common.py`, `corpus_lib/pg_search.py`, `corpus_lib/pg_graph.py`,
+`corpus_lib/pg_graph_queries.py`, `corpus_lib/pg_graph_cypher.py`) лежат прямо
+здесь, рядом с дампом и `manifest.json` — запускаются без доступа к репозиторию:
 
 ```bash
 python3 smoke_test.py
@@ -306,31 +306,52 @@ WHERE family && array['meixner'];
 (`(:Work {key, kind, year, title})-[:CITES {source}]->(:Work)`); реляционные
 таблицы — источник истины, граф — производная проекция.
 
-Спросить граф:
+Спросить граф (скрипты лежат в `corpus_lib/`; `--pgenv` обязателен — вне чекаута
+репозитория его негде взять по умолчанию):
 
 ```bash
-python3 pg_graph.py citers <document_id> [--depth N]                       # кто (транзитивно, N ≤ 3) цитирует документ
-python3 pg_graph.py candidates [--top K] [--query "текст"] [--min-links N]  # внешние узлы, ближайшие по смыслу/связям к корпусу
-python3 pg_graph.py cocitation [--min-count M] [--export-vosviewer DIR]     # пары, процитированные вместе; экспорт в VOSviewer
-python3 pg_graph.py hybrid "вопрос" [--top K] [--show-sql]                  # ближайшие по эмбеддингу узлы + их соседи в графе
+cd corpus_lib
+python3 pg_graph.py --pgenv ../.pgenv citers <document_id> [--depth N]        # кто (транзитивно, N ≤ 3) цитирует документ
+python3 pg_graph.py --pgenv ../.pgenv candidates [--top K] [--query "текст"] [--min-links N]  # внешние узлы, ближайшие по смыслу/связям к корпусу
+python3 pg_graph.py --pgenv ../.pgenv cocitation [--min-count M] [--export-vosviewer DIR]     # пары, процитированные вместе; экспорт в VOSviewer
+python3 pg_graph.py --pgenv ../.pgenv hybrid "вопрос" [--top K] [--show-sql]  # ближайшие по эмбеддингу узлы + их соседи в графе
 ```
 
 Граф — производная: после любой правки `citation.work`/`citation.cites`
 `python3 pg_graph.py project` пересобирает `citation_graph` с нуля, а
-`project --check` сверяет текущую проекцию с таблицами без пересборки.
+`project --check` сверяет текущую проекцию с таблицами без пересборки. Внутри
+пакета это уже сделано за вас: `init/02_project_graph.sql` строит проекцию
+сразу после восстановления дампа, потому что сам граф не дампится никогда
+(apache/age #2503 — восстановленный `ag_graph.graphid` несёт oid чужой базы, и
+Cypher по нему сломан).
 
-Схема `citation` пока не входит ни в один профиль `manifest.json` — команды выше
-читают ту же живую базу `corpus`, к которой подключён этот гайд, если граф
-развёрнут рядом; полных текстов внешних работ здесь нет и не будет ни в каком
-профиле — только заголовки, рефераты и связи.
+Что из схемы `citation` есть в ЭТОМ пакете — говорит блок `citation` в
+`manifest.json`, поле `mode`:
+
+| `mode` | что уехало |
+| --- | --- |
+| `full-skeleton` | вся схема: узлы с рефератами, рёбра с `evidence`, журнал обхода, строка политики |
+| `topology-only` | те же строки, но `work.abstract`, `work.evidence` и `cites.evidence` пустые: остаются заголовки, годы, виды и связи |
+| `none` | схемы `citation` в пакете нет вовсе — ни таблиц, ни строк |
+
+В профиле `full` это всегда `full-skeleton`: он несёт базу целиком. В профиле
+`public` значение выбирает владелец корпуса (строка `citation.public_policy` в
+живой базе); без такой строки публичный пакет просто не собирается. Поверх
+этого действует правовой режим ОТДЕЛЬНЫХ документов: узел `citation.work`,
+ссылающийся на документ, которого в этом пакете нет, не уезжает вместе с ним —
+как и его рёбра и журнальные строки о нём.
+
+Полных текстов чужих работ здесь нет ни в каком режиме — только заголовки,
+рефераты (и те лишь в `full-skeleton`) и связи.
 
 ## Чего в базе НЕТ
 
 В профиле `public` нет текста и исходников документов с
 `public_distribution = 'metadata-only'`, нет ни единой строки о документах с
-`public_distribution = 'excluded'` (см. «Профиль пакета») и нет схемы
-`measurements` — все три пропуска объявлены в `manifest.json` и проверяются
-`profile_checks.py`, то есть это известные границы, а не повреждение.
+`public_distribution = 'excluded'` — ни в `corpus`, ни в `citation` (см.
+«Профиль пакета» и «Граф цитирований») — и нет схемы `measurements`. Все
+пропуски объявлены в `manifest.json` и проверяются `profile_checks.py`, то есть
+это известные границы, а не повреждение.
 
 Это не курируемый реестр проверенных утверждений — `measurements.run.our_stance`
 маркирует уверенность конкретной записи, но нет отдельной таблицы «фактов, которым

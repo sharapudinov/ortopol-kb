@@ -241,5 +241,45 @@ class ImportClosureTests(unittest.TestCase):
         )
 
 
+    def test_graph_query_modules_resolve_inside_the_bundle(self):
+        """AGENT_GUIDE.md documents `pg_graph.py citers|candidates|
+        cocitation|hybrid` for artifact recipients, and those four
+        subcommands import pg_graph_queries (which imports pg_graph_cypher).
+        Bundling pg_graph.py alone -- enough for the smoke check that only
+        needs graph_exists/graph_counts -- left every documented query
+        command failing with ModuleNotFoundError on a package that declares
+        it can answer them.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            artifact_bundle.bundle_runtime_files(workdir)
+            result = subprocess.run(
+                [sys.executable, "-c", "import pg_graph, pg_graph_queries"],
+                cwd=workdir / "corpus_lib", capture_output=True, text=True,
+            )
+        self.assertEqual(
+            result.returncode, 0,
+            "the graph query commands AGENT_GUIDE.md documents do not import "
+            f"inside the bundle: {result.stderr}",
+        )
+
+    def test_deploy_scripts_reach_the_graph_modules_through_the_pathfix(self):
+        """The other entry point: a deploy script (smoke_checks) importing
+        the graph modules must find them through deploy_pathfix's corpus_lib
+        shim, from the deploy directory rather than from corpus_lib itself.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            artifact_bundle.bundle_runtime_files(workdir)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from deploy_pathfix import ensure_corpus_importable; "
+                 "ensure_corpus_importable(); "
+                 "import pg_common, pg_search, pg_graph, pg_graph_queries"],
+                cwd=workdir, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

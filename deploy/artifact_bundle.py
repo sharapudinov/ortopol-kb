@@ -49,7 +49,7 @@ DEPLOY_FILES = [
     # corpus, which is the builder's job, not the recipient's.
     "profile_checks.py",
     "dump_scan.py",
-    # Static verification of the citation-schema slice of the dump (task
+    # Static verification of the citation-schema slice of the dump:
     # profile_checks.py's run_checks() calls into it.
     "citation_content_checks.py",
     # Rebuilds citation_graph after the dump restores (see its own comment
@@ -65,6 +65,14 @@ CORPUS_LIB_FILES = [
     # the thin CLI layer other consumers, in-repo or bundled, import for
     # graph_sql()'s AGE-activation contract).
     "pg_graph.py",
+    # ... and the query layer behind its citers/candidates/cocitation/hybrid
+    # subcommands, which AGENT_GUIDE.md documents to the recipient. pg_graph.py
+    # imports pg_graph_queries lazily from main(), and that module re-exports
+    # the two Cypher consumers from pg_graph_cypher.py -- bundling only the
+    # CLI left every documented graph query raising ModuleNotFoundError on a
+    # package whose own guide says it can answer them.
+    "pg_graph_queries.py",
+    "pg_graph_cypher.py",
 ]
 
 
