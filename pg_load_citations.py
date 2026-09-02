@@ -70,16 +70,16 @@ def build_client(args, cache) -> OpenAlexClient:
 
 
 def do_merge_twins(env, args) -> int:
-    # Same construction main() makes for the crawl: the mode's promise is
-    # kept by WHICH writer exists, not by a flag consulted per statement.
+    # Same construction main() does for the crawl, and everything said
+    # afterwards is asked of the WRITER, not of the command line.
     writer = DryRunWriter() if args.dry_run else PostgresWriter(env)
     merged = twin_pass.merge_twins(env, args.crawl_id or "merge-twins", writer)
     for item in merged:
         print(f"  {item['key']} -> {item['document_id']} [{item['rule']}] "
               f"(семя {item['seed_key']}): {item['title'][:64]}")
     print(f"склеено двойников наших работ: {len(merged)}"
-          + (" (--dry-run, ничего не записано)" if args.dry_run else ""))
-    if not args.dry_run and merged:
+          + (" (--dry-run, ничего не записано)" if writer.dry else ""))
+    if not writer.dry and merged:
         print("kind после склейки: " + twin_pass.kind_census(env))
         vertices, edges = project(env)
         print(f"проекция графа: V={vertices} E={edges}")
@@ -143,12 +143,19 @@ def do_calibrate(snowball: Snowball, client, tree_root: Path, writer) -> int:
     return 0
 
 
-def do_crawl(env, snowball: Snowball, client, args) -> int:
-    summary = snowball.run(args.depth)
+def do_crawl(env, snowball: Snowball, client, writer, depth_limit: int) -> int:
+    """Обход и отчёт о нём. Записал ли он что-нибудь — знает писатель.
+
+    У флага ответ расходится с делом на первом же режиме, который строит
+    DryRunWriter без --dry-run (--calibrate уже такой): печаталась бы приёмка
+    живого прогона, а project()/graph_check() — «верная проекция» графа, в
+    который ничего не писали.
+    """
+    summary = snowball.run(depth_limit)
     for depth in sorted(summary):
         print(f"  depth {depth}: " + ", ".join(f"{k}={v}" for k, v in summary[depth].items()))
     print(f"запросов OpenAlex: {client.n_requests} (из кэша: {client.n_cache_hits})")
-    if args.dry_run:
+    if writer.dry:
         print("--dry-run: в базу ничего не записано")
         return 0
     vertices, edges = project(env)
@@ -249,12 +256,11 @@ def main(argv: list[str] | None = None) -> int:
 
     crawl_id = args.crawl_id or time.strftime("%Y%m%dT%H%M%S")
     writer = DryRunWriter() if (args.dry_run or args.calibrate) else PostgresWriter(env)
-    # Four caches in the data tree, all four chosen HERE and handed to
-    # their readers as objects -- the same construction the two writers
-    # above get, and for the same reason: --dry-run's promise about the tree
-    # must not depend on a keyword nobody forgot (DRY_RUN_WRITES_NOTHING).
-    # The fourth memoises the VECTORS, which --calibrate buys and, writing
-    # no work row, leaves nowhere.
+    # Four caches in the data tree, all four chosen HERE and handed to their
+    # readers as objects -- the same construction the two writers above get,
+    # and for the same reason: --dry-run's promise about the tree must not
+    # depend on a keyword nobody forgot (DRY_RUN_WRITES_NOTHING). The fourth
+    # memoises the VECTORS --calibrate buys and, writing no work row, loses.
     client = build_client(args, cache_for(Path(args.cache_dir), read_only=args.dry_run))
     zbmath_cache = cache_for(default_zbmath_cache_dir(), read_only=args.dry_run)
     mathnet_cache = cache_for(default_mathnet_cache_dir(), read_only=args.dry_run)
@@ -276,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:
             return do_calibrate(snowball, client, data_root(), measurements)
-        return do_crawl(env, snowball, client, args)
+        return do_crawl(env, snowball, client, writer, args.depth)
     except QuotaExhausted as exc:
         _journal_error(writer, crawl_id, args.depth, exc)
         print(f"квота OpenAlex исчерпана: {exc}", file=sys.stderr)

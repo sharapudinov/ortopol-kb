@@ -74,9 +74,21 @@ class Writer(Protocol):
     A Protocol rather than a base class: neither writer inherits anything,
     and the point is to pin the contract the crawl depends on, not to share
     code between a database and a list.
+
+    `dry` is part of the contract for the same reason `counts` is: what the
+    caller says about the run afterwards -- "nothing was written", a graph
+    projection, an acceptance count -- is a property of WHICH writer it
+    built, and asking the writer is the only way to be told the truth about
+    it. Asked of the command line instead, the two answers are free to
+    disagree, and they already do: --calibrate builds a DryRunWriter with
+    --dry-run unset, and today nothing breaks only because argparse
+    dispatch order puts the calibration mode first. The measurements seam
+    next door (spike_runs.py) carries the same attribute for the same
+    reason.
     """
 
     counts: dict[str, int]
+    dry: bool
 
     def works(self, nodes) -> int: ...
 
@@ -89,6 +101,8 @@ class Writer(Protocol):
 
 class PostgresWriter:
     """The live-database implementation of what crawl.py needs written."""
+
+    dry = False
 
     def __init__(self, env, source: str = "openalex"):
         self.env = env
@@ -220,6 +234,8 @@ class DryRunWriter:
     about the shape of the rows, and a report reads a sample: the counts
     above are the quantity, these are the specimen.
     """
+
+    dry = True
 
     # Enough to see every kind of row a level produces, few enough that
     # the whole crawl's worth is a rounding error next to one level's.

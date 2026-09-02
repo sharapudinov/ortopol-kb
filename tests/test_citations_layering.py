@@ -17,6 +17,8 @@ import _pathfix  # noqa: F401
 import paths
 import pg_load_citations
 from citations import inputs
+from citations.spike_runs import DryRunMeasurementsWriter, MeasurementsWriter
+from citations.store import DryRunWriter, PostgresWriter, Writer
 from pg_common import FIELD_SEP, RECORD_SEP
 
 CITATIONS_DIR = Path(inputs.__file__).resolve().parent
@@ -264,6 +266,76 @@ class LoaderIsADispatcherTests(unittest.TestCase):
                     and node.module == "citations.seed_metadata"
                     for alias in node.names}
         self.assertEqual(imported, {"mathnet_names", "zbmath_abstracts"})
+
+
+class WriterModeIsAnObjectTests(unittest.TestCase):
+    """Both writer seams answer "did this run write anything" the same way:
+    the caller asks the writer it built.
+
+    The graph seam used to be asked of argparse instead, and the two answers
+    are already free to disagree -- main() builds a DryRunWriter when
+    --calibrate is set with --dry-run unset, and only dispatch order keeps
+    that combination away from do_crawl(). Reached, it would have printed a
+    live run's acceptance counts and called project()/graph_check() over a
+    graph nothing was written to, reporting a faithful projection of a run
+    that wrote no rows.
+    """
+
+    TREE = ast.parse(LOADER.read_text(encoding="utf-8"))
+    MODES = ("do_crawl", "do_merge_twins", "do_hub_report")
+
+    def test_both_seams_carry_the_mode_on_the_writer(self):
+        for writer, dry in ((PostgresWriter({}), False), (DryRunWriter(), True),
+                            (MeasurementsWriter({}), False),
+                            (DryRunMeasurementsWriter(), True)):
+            with self.subTest(writer=type(writer).__name__):
+                self.assertIs(writer.dry, dry)
+
+    def test_the_graph_writers_conform_to_the_protocol(self):
+        self.assertIn("dry", Writer.__annotations__)
+        for writer in (PostgresWriter({}), DryRunWriter()):
+            with self.subTest(writer=type(writer).__name__):
+                self.assertIsInstance(writer, Writer)
+
+    def test_no_mode_branches_on_the_flag_once_a_writer_exists(self):
+        """The flag builds objects and is never consulted again: inside the
+        mode functions every mention of args.dry_run is a construction (the
+        writer's ternary, a cache's keyword), and nothing branches on it.
+        """
+        functions = {node.name: node for node in ast.walk(self.TREE)
+                     if isinstance(node, ast.FunctionDef)}
+        for name in self.MODES:
+            with self.subTest(mode=name):
+                self.assertEqual(self._branching_uses(functions[name]), 0,
+                                 f"{name}(): режим спрашивается у писателя, не у флага")
+
+    def test_do_crawl_is_not_even_handed_the_command_line(self):
+        functions = {node.name: node for node in ast.walk(self.TREE)
+                     if isinstance(node, ast.FunctionDef)}
+        self.assertNotIn("args", [a.arg for a in functions["do_crawl"].args.args])
+
+    @staticmethod
+    def _is_flag(node) -> bool:
+        return (isinstance(node, ast.Attribute) and node.attr == "dry_run"
+                and isinstance(node.value, ast.Name) and node.value.id == "args")
+
+    @classmethod
+    def _branching_uses(cls, function: ast.FunctionDef) -> int:
+        """How many args.dry_run reads are NOT part of building an object:
+        the test of a `X() if flag else Y()` and a keyword argument are
+        constructions, anything else decides something after the fact.
+        """
+        building = set()
+        for node in ast.walk(function):
+            if (isinstance(node, ast.IfExp) and cls._is_flag(node.test)
+                    and isinstance(node.body, ast.Call)
+                    and isinstance(node.orelse, ast.Call)):
+                building.add(id(node.test))
+            if isinstance(node, ast.Call):
+                building.update(id(kw.value) for kw in node.keywords
+                                if cls._is_flag(kw.value))
+        return len([node for node in ast.walk(function)
+                    if cls._is_flag(node) and id(node) not in building])
 
 
 if __name__ == "__main__":
