@@ -19,7 +19,7 @@ import _pathfix_deploy  # noqa: F401
 
 import profile_checks
 from _artifact_fixtures import ArtifactBuilder
-from manifest_contract import MANIFEST_SCHEMA_VERSION, Key
+from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
 
 GATE = "версия манифеста = версия проверяльщика"
 

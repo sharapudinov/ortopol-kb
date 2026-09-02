@@ -25,7 +25,8 @@ import citation_policy_check
 import dump_scan
 import profile_checks
 from manifest_classes import check_profile_is_known
-from manifest_contract import CitationMode, Key, PolicySource, Profile
+from manifest_keys import Key
+from manifest_contract import CitationMode, PolicySource, Profile
 from _artifact_fixtures import (
     ArtifactBuilder,
     DOCUMENT_COLUMNS,

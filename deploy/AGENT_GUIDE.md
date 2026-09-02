@@ -58,7 +58,7 @@ compose своим `--env-file` не разворачивает `$` и до `PGP
 Пакет несёт собственный смок-тест: `smoke_test.py` и модули, которые он
 импортирует (`smoke_stack.py`, `smoke_checks.py`, `vector_probe_check.py`,
 `blob_integrity_checks.py`, `bundled_files_check.py`, `manifest_contract.py`,
-`compose_lifecycle.py`, `dump_integrity.py`, `deploy_pathfix.py`,
+`manifest_keys.py`, `compose_lifecycle.py`, `dump_integrity.py`, `deploy_pathfix.py`,
 `ollama_registry.py`, `drift_probe.py`, `profile_checks.py`, `dump_scan.py`,
 `pg_rank_probe.py`), а также копии общих модулей репозитория
 (`corpus_lib/pg_common.py`, `corpus_lib/pg_search.py`,

@@ -41,6 +41,9 @@ DEPLOY_FILES = [
     "ollama_registry.py",
     "drift_probe.py",
     "manifest_contract.py",
+    # ... and, beside it, the manifest's own key names and version, which
+    # every bundled verifier reads and none of them may spell itself.
+    "manifest_keys.py",
     # The probe question itself, which drift_probe.py defaults to.
     "probe_query.py",
     "pg_rank_probe.py",

@@ -293,10 +293,11 @@ python3 deploy/profile_checks.py --artifact-dir <распакованный>   #
   несёт `setval` последовательности — прогон тестов «сдвигает» дамп в СОСЕДНЕЙ
   репе, и `corpus/research_completeness.py` падает со STALE DUMP. Уборка такого
   теста возвращает последовательность к `max(id)` (см.
-  `tests/test_citations_cli.py::RunRowUpdateLiveTests`).
+  `tests/test_spike_runs.py::RunRowUpdateLiveTests`).
 - **Версия манифеста.** Добавление/переименование поля — это `MANIFEST_SCHEMA_VERSION`
-  в `deploy/manifest_contract.py` (и старый артефакт честно падает на версии, а не
-  читается с дефолтами).
+  и имя ключа в `deploy/manifest_keys.py` (форма самого файла; словари, по которым
+  решает сборка, — рядом в `manifest_contract.py`), и старый артефакт честно падает
+  на версии, а не читается с дефолтами.
 
 ## Дерево данных
 

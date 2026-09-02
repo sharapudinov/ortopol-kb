@@ -19,11 +19,11 @@ from bundled_files_check import (  # noqa: E402,F401 -- re-exported for smoke_te
     OPERATIONAL_ALLOWLIST,
     check_bundled_files,
 )
-from manifest_contract import (  # noqa: E402,F401 -- MANIFEST_SCHEMA_VERSION re-exported, see smoke_test.py's checks.MANIFEST_SCHEMA_VERSION
+from manifest_keys import (  # noqa: E402,F401 -- MANIFEST_SCHEMA_VERSION re-exported, see smoke_test.py's checks.MANIFEST_SCHEMA_VERSION
     MANIFEST_SCHEMA_VERSION,
-    CitationMode,
     Key,
 )
+from manifest_contract import CitationMode  # noqa: E402
 from ollama_registry import served_model_digest  # noqa: E402
 import pg_graph_common  # noqa: E402
 from pg_common import scalar, scalar_row  # noqa: E402

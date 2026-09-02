@@ -71,7 +71,8 @@ from artifact_bundle import bundle_runtime_files, dump_schemas, package  # noqa:
 from citation_profile import CitationUnclassified, resolve_citation_mode  # noqa: E402
 from dump_integrity import sha256_file  # noqa: E402
 from legal_profile import Unclassified  # noqa: E402
-from manifest_contract import CitationMode, Key, PolicySource, Profile  # noqa: E402
+from manifest_keys import Key  # noqa: E402
+from manifest_contract import CitationMode, PolicySource, Profile  # noqa: E402
 from manifest_probe import gather_manifest  # noqa: E402
 from public_dump import dump_public  # noqa: E402
 

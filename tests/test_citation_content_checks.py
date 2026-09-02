@@ -17,7 +17,8 @@ import _pathfix_deploy  # noqa: F401
 import citation_columns
 import citation_content_checks
 import dump_scan
-from manifest_contract import CitationMode, Key
+from manifest_keys import Key
+from manifest_contract import CitationMode
 
 
 def _copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:

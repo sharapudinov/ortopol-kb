@@ -14,7 +14,8 @@ backup, and the legal cut is the public profile's job alone.
 """
 from __future__ import annotations
 
-from manifest_contract import Key, Profile
+from manifest_keys import Key
+from manifest_contract import Profile
 
 
 def classes(manifest: dict) -> tuple[dict[str, list[str]], list[str], list[str]]:

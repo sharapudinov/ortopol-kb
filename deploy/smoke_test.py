@@ -39,7 +39,8 @@ import drift_probe
 import profile_checks
 import smoke_checks as checks
 from dump_integrity import sha256_file
-from manifest_contract import Key, Profile
+from manifest_keys import Key
+from manifest_contract import Profile
 from smoke_stack import (
     OLLAMA_PORT,
     PROJECT,

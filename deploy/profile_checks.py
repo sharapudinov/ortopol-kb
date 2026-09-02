@@ -77,7 +77,7 @@ from manifest_classes import (
     content_expectation,
     expected_ids,
 )
-from manifest_contract import MANIFEST_SCHEMA_VERSION, Key
+from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
 
 # Column names the checks reason about, from corpus.documents/corpus.pages.
 BLOB_COLUMN = "source_blob"

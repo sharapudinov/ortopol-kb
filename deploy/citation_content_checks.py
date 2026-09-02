@@ -45,7 +45,8 @@ from __future__ import annotations
 
 import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
-from manifest_contract import CitationMode, Key, strips_content
+from manifest_keys import Key
+from manifest_contract import CitationMode, strips_content
 
 # How many offending rows the verdict quotes. The count is exact; the list
 # is a sample, because the scan that fills it runs over citation.crawl_step

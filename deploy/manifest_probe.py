@@ -26,13 +26,8 @@ import citation_profile  # noqa: E402
 import legal_profile  # noqa: E402
 import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
-from manifest_contract import (  # noqa: E402
-    MANIFEST_SCHEMA_VERSION,
-    CitationMode,
-    Key,
-    Profile,
-    schemas_for,
-)
+from manifest_keys import MANIFEST_SCHEMA_VERSION, Key  # noqa: E402
+from manifest_contract import CitationMode, Profile, schemas_for  # noqa: E402
 from ollama_registry import served_model_digest  # noqa: E402
 from pg_common import FIELD_SEP, scalar, scalar_row  # noqa: E402
 from probe_query import VECTOR_PROBE_QUERY  # noqa: E402

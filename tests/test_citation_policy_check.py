@@ -16,7 +16,8 @@ import _pathfix_deploy  # noqa: F401
 
 import citation_policy_check
 import profile_checks
-from manifest_contract import CitationMode, Key, PolicySource, Profile
+from manifest_keys import Key
+from manifest_contract import CitationMode, PolicySource, Profile
 
 
 class PolicySourceTests(unittest.TestCase):

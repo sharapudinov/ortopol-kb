@@ -24,7 +24,8 @@ hole in it.
 """
 from __future__ import annotations
 
-from manifest_contract import CitationMode, Key, PolicySource, Profile
+from manifest_keys import Key
+from manifest_contract import CitationMode, PolicySource, Profile
 
 
 def check_policy_is_the_owners(manifest: dict) -> tuple[bool, str]:

@@ -35,7 +35,7 @@ ensure_corpus_importable()
 import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
 from probe_query import VECTOR_PROBE_QUERY as DEFAULT_QUERY  # noqa: E402
-from manifest_contract import Key  # noqa: E402
+from manifest_keys import Key  # noqa: E402
 from pg_common import PostgresUnavailable, load_pgenv  # noqa: E402
 
 # DEFAULT_QUERY is probe_query.VECTOR_PROBE_QUERY under a name that

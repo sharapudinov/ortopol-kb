@@ -16,7 +16,7 @@ from pathlib import Path
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
-from manifest_contract import MANIFEST_SCHEMA_VERSION
+from manifest_keys import MANIFEST_SCHEMA_VERSION
 
 DOCUMENT_COLUMNS = ["id", "filename", "legal_class", "public_distribution",
                     "legal_note", "source_blob", "source_sha256"]

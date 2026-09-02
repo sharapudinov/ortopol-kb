@@ -293,7 +293,8 @@ class ProjectionReadTests(unittest.TestCase):
         import _pathfix_deploy  # noqa: F401
 
         import smoke_checks
-        from manifest_contract import CitationMode, Key
+        from manifest_keys import Key
+        from manifest_contract import CitationMode
 
         manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON,
                                    Key.WORK_COUNT: 3, Key.CITES_COUNT: 2}}
