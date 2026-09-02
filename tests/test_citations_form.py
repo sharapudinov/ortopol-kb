@@ -280,11 +280,6 @@ class BatchCountTests(unittest.TestCase):
     3 392 521 promised citers instead of 51 652.
     """
 
-    def setUp(self):
-        # Each case is a fresh process as far as the notes memo is concerned.
-        hub_cache._NOTES.clear()
-        self.addCleanup(hub_cache._NOTES.clear)
-
     def _page(self, directory, name, ids, count, cursor):
         body = {"meta": {"count": count, "x_query": {
             "oql": "works where it cites (" + " or ".join(ids) + ")",
@@ -336,26 +331,43 @@ class BatchCountTests(unittest.TestCase):
             # The body is now unreadable: only a reader that still parses it
             # can notice, and the answer must not change.
             (directory / "a.json").write_text("{ not json at all", encoding="utf-8")
-            # A NEXT run starts with an empty memo -- what makes it cheap is
+            # A NEXT pass has a memo of its own -- what makes it cheap is
             # the sidecar, and that is what this asks about.
-            hub_cache._NOTES.clear()
             self.assertEqual(hub_cache.batch_counts(http_cache.DiskCache(directory)), [18904])
 
-    def test_a_second_call_in_one_process_reads_nothing_again(self):
+    def test_a_second_pass_by_one_reader_reads_nothing_again(self):
         """Under --dry-run the cache is read-only, so no sidecar can be
-        written and every call would re-read (and re-parse) the whole page.
-        The pages already read stay in the process.
+        written and every pass would re-read (and re-parse) the whole page.
+        What the reader has already read stays on the READER, so the saving
+        lasts exactly as long as the object does.
         """
         with tempfile.TemporaryDirectory() as tmp:
             directory = pathlib.Path(tmp)
             self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
             cache = http_cache.ReadOnlyCache(directory)
-            self.assertEqual(hub_cache.batch_counts(cache), [18904])
+            reader = hub_cache.HubCacheReader(cache)
+            self.assertEqual(reader.batch_counts(), [18904])
             first = cache.hits
             self.assertGreater(first, 0)
-            self.assertEqual(hub_cache.batch_counts(cache), [18904])
+            self.assertEqual(reader.batch_counts(), [18904])
             self.assertEqual(cache.hits, first,
                              "страница прочитана второй раз")
+
+    def test_two_readers_over_one_directory_share_nothing(self):
+        """A DiskCache and a ReadOnlyCache over the same directory in one
+        process used to share memo entries through a module-level dict
+        keyed by the path, so what one read was served to the other --
+        including after the page had been rewritten.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._page(directory, "a.json", ["W1", "W2"], 18904, "AAA")
+            first = hub_cache.HubCacheReader(http_cache.ReadOnlyCache(directory))
+            self.assertEqual(first.batch_counts(), [18904])
+            self._page(directory, "a.json", ["W1", "W2"], 21, "AAA")
+            second = hub_cache.HubCacheReader(http_cache.ReadOnlyCache(directory))
+            self.assertEqual(second.batch_counts(), [21],
+                             "новый читатель получил чужую память")
 
     def test_a_sidecar_is_not_mistaken_for_a_page(self):
         with tempfile.TemporaryDirectory() as tmp:

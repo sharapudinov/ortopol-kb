@@ -33,67 +33,86 @@ CITES_MARKER = "works where it cites"
 HEAD_BYTES = 65536
 
 
-# Что уже прочитано В ЭТОМ ПРОЦЕССЕ, по (каталог кэша, имя страницы).
-# Сайдкар удешевляет СЛЕДУЮЩИЙ прогон, но под --dry-run кэш read-only и
-# писать сайдкар некуда (DRY_RUN_WRITES_NOTHING) — тогда единственное, что
-# спасает от повторного разбора десятков мегабайт, это память процесса.
-# Ключ с каталогом, а не одно имя: у двух кэшей страницы называются
-# одинаково (имя — хэш url), а лежат в них разные тела.
-_NOTES: dict[tuple[str, str], dict | None] = {}
+class HubCacheReader:
+    """Проход по кэшу ответов, помнящий прочитанные страницы.
 
+    Память — на объекте, а не в модуле. Сайдкар удешевляет СЛЕДУЮЩИЙ
+    прогон, но под --dry-run кэш read-only и писать сайдкар некуда
+    (DRY_RUN_WRITES_NOTHING) — тогда единственное, что спасает от
+    повторного разбора десятков мегабайт, это память процесса. Модульный
+    словарь давал её всем сразу: два объекта Cache над одним каталогом
+    (DiskCache и ReadOnlyCache в одном процессе — ровно то, что делает
+    прогон тестов) делили записи, а перезапись страницы ничего не
+    сбрасывала. Читатель держит свою память ровно столько, сколько живёт
+    сам, и подмена режима снова становится свойством того, что построено.
 
-def batch_note(cache, name: str) -> dict | None:
-    """{filter, oql, count} страницы кэша: из памяти процесса, из сайдкара,
-    иначе разбором.
-
-    Сайдкар пишет сам клиент рядом со страницей
-    (openalex_client.page_index), но кэш долговечен и не стирается: 259
-    страниц лежат с тех пор, когда сайдкаров не было. Для них — один проход:
-    префильтр по СЫРОМУ тексту головы (страница батча «вниз» весит десятки
-    мегабайт, и разбирать её ради двух полей нечего), затем разбор и запись
-    сайдкара, чтобы следующий прогон читал килобайты.
+    Кэш приходит объектом (citations/http_cache.py), а не путём: проход
+    дописывает к страницам сайдкары, то есть ПИШЕТ в дерево данных, и под
+    --dry-run эту запись снимает ReadOnlyCache.
     """
-    key = (str(getattr(cache, "directory", id(cache))), name)
-    if key not in _NOTES:
-        _NOTES[key] = _read_note(cache, name)
-    return _NOTES[key]
 
+    def __init__(self, cache):
+        self.cache = cache
+        self._notes: dict[str, dict | None] = {}
 
-def _read_note(cache, name: str) -> dict | None:
-    sidecar = openalex_client.sidecar_name(name)
-    stored = cache.read(sidecar)
-    if stored is not None:
+    def batch_note(self, name: str) -> dict | None:
+        """{filter, oql, count} страницы кэша: из памяти читателя, из
+        сайдкара, иначе разбором.
+
+        Сайдкар пишет сам клиент рядом со страницей
+        (openalex_client.page_index), но кэш долговечен и не стирается: 259
+        страниц лежат с тех пор, когда сайдкаров не было. Для них — один
+        проход: префильтр по СЫРОМУ тексту головы (страница батча «вниз»
+        весит десятки мегабайт, и разбирать её ради двух полей нечего),
+        затем разбор и запись сайдкара, чтобы следующий прогон читал
+        килобайты.
+        """
+        if name not in self._notes:
+            self._notes[name] = self._read_note(name)
+        return self._notes[name]
+
+    def _read_note(self, name: str) -> dict | None:
+        sidecar = openalex_client.sidecar_name(name)
+        stored = self.cache.read(sidecar)
+        if stored is not None:
+            try:
+                return json.loads(stored)
+            except ValueError:
+                return None
+        head = self.cache.read(name, limit=HEAD_BYTES)
+        if head is None:
+            return None
+        if CITES_MARKER not in head and '"x_query"' in head:
+            return None
+        body = self.cache.read(name)
+        if body is None:
+            return None
         try:
-            return json.loads(stored)
+            note = openalex_client.page_index(json.loads(body))
         except ValueError:
             return None
-    head = cache.read(name, limit=HEAD_BYTES)
-    if head is None:
-        return None
-    if CITES_MARKER not in head and '"x_query"' in head:
-        return None
-    body = cache.read(name)
-    if body is None:
-        return None
-    try:
-        note = openalex_client.page_index(json.loads(body))
-    except ValueError:
-        return None
-    cache.write(sidecar, json.dumps(note, ensure_ascii=False))
-    return note
+        self.cache.write(sidecar, json.dumps(note, ensure_ascii=False))
+        return note
+
+    def batch_counts(self) -> list[int]:
+        """meta.count каждого батча `cites:` из кэша — по одному числу на батч."""
+        seen: dict[str, int] = {}
+        for name in sorted(self.cache.names()):
+            if not name.endswith(".json") or name.endswith(openalex_client.SIDECAR_SUFFIX):
+                continue
+            note = self.batch_note(name)
+            if note is None:
+                continue
+            oql = note.get("oql") or ""
+            if "cites" not in oql or "openalex id" in oql:
+                continue
+            seen.setdefault(note.get("filter") or "", note.get("count") or 0)
+        return sorted(seen.values(), reverse=True)
 
 
 def batch_counts(cache) -> list[int]:
-    """meta.count каждого батча `cites:` из кэша — по одному числу на батч."""
-    seen: dict[str, int] = {}
-    for name in sorted(cache.names()):
-        if not name.endswith(".json") or name.endswith(openalex_client.SIDECAR_SUFFIX):
-            continue
-        note = batch_note(cache, name)
-        if note is None:
-            continue
-        oql = note.get("oql") or ""
-        if "cites" not in oql or "openalex id" in oql:
-            continue
-        seen.setdefault(note.get("filter") or "", note.get("count") or 0)
-    return sorted(seen.values(), reverse=True)
+    """Один проход по кэшу. Читатель, которому нужна память между
+    проходами, держит HubCacheReader сам — память живёт столько же, сколько
+    объект, а не столько, сколько процесс.
+    """
+    return HubCacheReader(cache).batch_counts()
