@@ -39,9 +39,11 @@ extra a completeness run can be indifferent to.
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import pg_graph_common
 from paths import EXTERNAL_SOURCE_DIR, IIS_SOURCE_DIR
-from pg_common import FIELD_SEP, run_sql, scalar
+from pg_common import FIELD_SEP, run_sql
 from pg_graph_common import citation_schema_exists, kind_counts
 
 
@@ -89,12 +91,13 @@ def self_loop_work_ids(env: dict) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def _projection_stale(env: dict) -> list[str]:
+def _projection_stale(seen) -> list[str]:
     """The same reading `pg_graph.py project --check` makes, rendered as
     completeness problems -- pg_graph_common.projection_diff() owns the
-    reading, this owns only the wording.
+    reading, this owns only the wording. The reading itself is made once by
+    citation_state() and passed in: it also carries the work/cites totals
+    the summary line needs.
     """
-    seen = pg_graph_common.projection_diff(env)
     if seen is None:
         return ["PROJECTION STALE: citation_graph is not projected "
                 "(python3 pg_graph.py project)"]
@@ -136,24 +139,52 @@ def indexed_without_external_document(env: dict) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def citation_summary(env: dict) -> str:
-    """One line for corpus_completeness.py's opись report -- purely
-    informational, never a source of pass/fail (that is citation_problems).
+class CitationState(NamedTuple):
+    """What a completeness run needs to know about the citation graph:
+    everything wrong with it, and the one line of опись that describes it.
+
+    Both together, because they are answers to the same reading. The
+    summary used to re-ask whether the schema exists, re-run the kind
+    census and count citation.cites a second time -- and the projection
+    reading the problems had just made already carries the work and cites
+    totals (pg_graph_common's own docstring prices a round trip: a psql
+    fork, a temp script and a connection).
     """
+
+    problems: list[str]
+    summary: str
+
+
+def citation_state(env: dict) -> CitationState:
     if not citation_schema_exists(env):
-        return "citation: schema absent"
-    by_kind = kind_counts(env)
-    work_total = sum(by_kind.values())
-    cites_total = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
-    kinds = ", ".join(f"{k}={n}" for k, n in sorted(by_kind.items()))
-    return f"citation: {work_total} work ({kinds}), {cites_total} cites"
+        return CitationState(
+            ["CITATION SCHEMA MISSING: the citation graph is part of the knowledge "
+             "base, not optional (python3 pg_graph.py init)"],
+            "citation: schema absent")
+    seen = pg_graph_common.projection_diff(env)
+    return CitationState(_problems(env, seen), _summary(env, seen))
 
 
 def citation_problems(env: dict) -> list[str]:
-    if not citation_schema_exists(env):
-        return ["CITATION SCHEMA MISSING: the citation graph is part of the knowledge "
-                "base, not optional (python3 pg_graph.py init)"]
+    """The problems alone, for a caller that wants no опись line."""
+    return citation_state(env).problems
 
+
+def _summary(env: dict, seen) -> str:
+    """One line for corpus_completeness.py's опись report -- purely
+    informational, never a source of pass/fail (that is the problems).
+
+    The kind breakdown is a census this reading does not carry; the totals
+    beside it come from the reading rather than from a count of their own.
+    """
+    by_kind = kind_counts(env)
+    kinds = ", ".join(f"{k}={n}" for k, n in sorted(by_kind.items()))
+    if seen is None:
+        return f"citation: {sum(by_kind.values())} work ({kinds}), проекции нет"
+    return f"citation: {seen.work_n} work ({kinds}), {seen.cites_n} cites"
+
+
+def _problems(env: dict, seen) -> list[str]:
     problems: list[str] = []
     problems += [
         f"UNPLACED DOCUMENT: {doc_id} -- neither citation.work(kind='our-document') "
@@ -169,7 +200,7 @@ def citation_problems(env: dict) -> list[str]:
         "(violates CHECK citing <> cited -- manual integrity check needed)"
         for work_id in self_loop_work_ids(env)
     ]
-    problems += _projection_stale(env)
+    problems += _projection_stale(seen)
     problems += [
         f"NO SEMANTIC KEY: citation.work {key!r} has a non-empty title and no embedding"
         for key in works_without_semantic_key(env)

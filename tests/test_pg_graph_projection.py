@@ -89,8 +89,7 @@ class ProjectionReadTests(unittest.TestCase):
         import citation_checks
 
         stale = FAITHFUL._replace(graph_cites_digest="other")
-        with mock.patch.object(pg_graph_common, "projection_diff", return_value=stale):
-            problems = citation_checks._projection_stale({})
+        problems = citation_checks._projection_stale(stale)
         self.assertEqual(len(problems), 1)
         self.assertTrue(problems[0].startswith("PROJECTION STALE: "))
         self.assertIn("content fingerprint differs", problems[0])

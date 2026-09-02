@@ -72,28 +72,22 @@ class SelfLoopTests(unittest.TestCase):
 
 
 class ProjectionStaleTests(unittest.TestCase):
-    """Only the wording is this module's; the reading belongs to
-    pg_graph_common.projection_diff(), which is therefore what these mock.
+    """Only the wording is this module's; the reading is made once by
+    citation_state() and handed in, so these pass it directly.
     """
 
     def test_missing_graph_is_one_problem(self):
-        with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
-                               return_value=None):
-            problems = citation_checks._projection_stale({})
+        problems = citation_checks._projection_stale(None)
         self.assertEqual(len(problems), 1)
         self.assertIn("PROJECTION STALE", problems[0])
 
     FAITHFUL = pg_graph_common.Projection(5, 3, 5, 3, "w", "w", "c", "c")
 
     def test_matching_counts_and_content_are_no_problem(self):
-        with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
-                               return_value=self.FAITHFUL):
-            self.assertEqual(citation_checks._projection_stale({}), [])
+        self.assertEqual(citation_checks._projection_stale(self.FAITHFUL), [])
 
     def test_mismatched_counts_are_one_problem_naming_the_diff(self):
-        with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
-                               return_value=self.FAITHFUL._replace(vertex_n=4)):
-            problems = citation_checks._projection_stale({})
+        problems = citation_checks._projection_stale(self.FAITHFUL._replace(vertex_n=4))
         self.assertEqual(len(problems), 1)
         self.assertIn("work=5", problems[0])
         self.assertIn("vertices=4", problems[0])
@@ -118,20 +112,60 @@ class IndexedWithoutExternalTests(unittest.TestCase):
         self.assertIn("theory/external", sql)
 
 
+def _projection(work_n: int, cites_n: int):
+    """A faithful reading of that size -- digests equal on both sides."""
+    return pg_graph_common.Projection(work_n, cites_n, work_n, cites_n,
+                                      "d1", "d1", "d2", "d2")
+
+
 class CitationSummaryTests(unittest.TestCase):
+    COUNTS = {"external-skeleton": 382, "our-document": 56}
+
     def test_missing_schema_says_so(self):
         with mock.patch.object(citation_checks, "citation_schema_exists", return_value=False):
-            self.assertEqual(citation_checks.citation_summary({}), "citation: schema absent")
+            self.assertEqual(citation_checks.citation_state({}).summary,
+                             "citation: schema absent")
 
     def test_present_schema_reports_counts(self):
-        counts = {"external-skeleton": 382, "our-document": 56}
         with mock.patch.object(citation_checks, "citation_schema_exists", return_value=True), \
-             mock.patch.object(citation_checks, "kind_counts", return_value=counts), \
-             mock.patch.object(citation_checks, "scalar", return_value="2425"):
-            summary = citation_checks.citation_summary({})
+             mock.patch.object(citation_checks, "kind_counts", return_value=self.COUNTS), \
+             mock.patch.object(pg_graph_common, "projection_diff",
+                                return_value=_projection(438, 2425)), \
+             mock.patch.object(citation_checks, "_problems", return_value=[]):
+            summary = citation_checks.citation_state({}).summary
         self.assertIn("438 work", summary)
         self.assertIn("2425 cites", summary)
         self.assertIn("external-skeleton=382", summary)
+
+    def test_the_summary_costs_no_reading_of_its_own(self):
+        """The totals come from the projection reading the problems made:
+        the schema question is asked once, the reading happens once, and no
+        second count of citation.cites is issued at all.
+        """
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            schema = stack.enter_context(mock.patch.object(
+                citation_checks, "citation_schema_exists", return_value=True))
+            reading = stack.enter_context(mock.patch.object(
+                pg_graph_common, "projection_diff", return_value=_projection(438, 2425)))
+            stack.enter_context(mock.patch.object(
+                citation_checks, "kind_counts", return_value=self.COUNTS))
+            stack.enter_context(mock.patch.object(citation_checks, "_problems", return_value=[]))
+            run_sql = stack.enter_context(mock.patch.object(citation_checks, "run_sql"))
+            state = citation_checks.citation_state({})
+        self.assertIn("2425 cites", state.summary)
+        schema.assert_called_once()
+        reading.assert_called_once()
+        run_sql.assert_not_called()
+
+    def test_an_unprojected_graph_still_gets_a_summary_line(self):
+        with mock.patch.object(citation_checks, "citation_schema_exists", return_value=True), \
+             mock.patch.object(citation_checks, "kind_counts", return_value=self.COUNTS), \
+             mock.patch.object(pg_graph_common, "projection_diff", return_value=None), \
+             mock.patch.object(citation_checks, "_problems", return_value=[]):
+            summary = citation_checks.citation_state({}).summary
+        self.assertIn("438 work", summary)
+        self.assertIn("проекции нет", summary)
 
 
 class CitationProblemsTests(unittest.TestCase):
@@ -146,6 +180,9 @@ class CitationProblemsTests(unittest.TestCase):
         stack.enter_context(mock.patch.object(citation_checks, "works_without_evidence", return_value=[]))
         stack.enter_context(mock.patch.object(citation_checks, "self_loop_work_ids", return_value=[]))
         stack.enter_context(mock.patch.object(citation_checks, "_projection_stale", return_value=[]))
+        stack.enter_context(mock.patch.object(pg_graph_common, "projection_diff",
+                                              return_value=_projection(1, 1)))
+        stack.enter_context(mock.patch.object(citation_checks, "kind_counts", return_value={}))
         stack.enter_context(mock.patch.object(citation_checks, "works_without_semantic_key", return_value=[]))
         stack.enter_context(
             mock.patch.object(citation_checks, "indexed_without_external_document", return_value=[]))
@@ -240,7 +277,7 @@ class CitationChecksLiveTests(unittest.TestCase):
         self.assertEqual(problems, [], problems)
 
     def test_citation_summary_names_a_nonzero_work_and_cites_count(self):
-        summary = citation_checks.citation_summary(self.env)
+        summary = citation_checks.citation_state(self.env).summary
         self.assertIn("work (", summary)
         self.assertIn("cites", summary)
         self.assertNotIn("schema absent", summary)
