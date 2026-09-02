@@ -217,6 +217,73 @@ class SharedCitationPlumbingTests(unittest.TestCase):
             self.assertIn("kind_counts", imported, path.name)
 
 
+class ProjectionDiffTests(unittest.TestCase):
+    """projection_diff() is the ONE reading behind "is the projection
+    faithful"; check(), citation_checks._projection_stale() and
+    deploy/smoke_checks.check_citation_projection() are three renderings of
+    its result and own no reads of their own.
+    """
+
+    # Every module that could plausibly ask the question, checked against
+    # the re-implementation signature rather than against a list of known
+    # offenders: a NEW consumer assembling the sequence by hand is exactly
+    # what this guard is for.
+    SEARCHED = sorted(
+        set(Path(pg_graph_common.__file__).resolve().parent.glob("*.py"))
+        | set((Path(pg_graph_common.__file__).resolve().parent / "deploy").glob("*.py"))
+        | set((Path(pg_graph_common.__file__).resolve().parent / "citations").glob("*.py"))
+    )
+
+    def test_returns_none_when_the_graph_was_never_projected(self):
+        with mock.patch.object(pg_graph_common, "graph_exists", return_value=False), \
+             mock.patch.object(pg_graph_common, "scalar") as scalar_mock:
+            self.assertIsNone(pg_graph_common.projection_diff({}))
+        scalar_mock.assert_not_called()
+
+    def test_returns_the_four_counts_in_relational_then_graph_order(self):
+        with mock.patch.object(pg_graph_common, "graph_exists", return_value=True), \
+             mock.patch.object(pg_graph_common, "scalar", side_effect=["438", "2425"]), \
+             mock.patch.object(pg_graph_common, "graph_counts", return_value=(438, 2424)):
+            self.assertEqual(pg_graph_common.projection_diff({}), (438, 2425, 438, 2424))
+
+    def test_check_renders_the_diff_as_an_exit_code(self):
+        with mock.patch.object(pg_graph_common, "projection_diff",
+                               return_value=(5, 3, 5, 3)):
+            self.assertEqual(pg_graph_common.check({}), 0)
+        with mock.patch.object(pg_graph_common, "projection_diff",
+                               return_value=(5, 3, 4, 3)):
+            self.assertEqual(pg_graph_common.check({}), 1)
+        with mock.patch.object(pg_graph_common, "projection_diff", return_value=None):
+            self.assertEqual(pg_graph_common.check({}), 1)
+
+    def _functions_assembling_the_sequence(self, path: Path) -> list[str]:
+        """Function names in `path` that name BOTH graph_exists and
+        graph_counts -- the signature of a hand-assembled projection read.
+        """
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+            names |= {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            if {"graph_exists", "graph_counts"} <= names:
+                offenders.append(node.name)
+        return offenders
+
+    def test_nobody_else_assembles_graph_exists_plus_counts_plus_graph_counts(self):
+        for path in self.SEARCHED:
+            offenders = self._functions_assembling_the_sequence(path)
+            if path.name == "pg_graph_common.py":
+                self.assertEqual(offenders, ["projection_diff"], path.name)
+                continue
+            self.assertEqual(
+                offenders, [],
+                f"{path.name}: {offenders} re-derive the projection read -- "
+                "call pg_graph_common.projection_diff() instead",
+            )
+
+
 class CrawlStepIndexTests(unittest.TestCase):
     """crawl_step is the largest table in the schema and the public cut
     matches two of its columns by equality, once per name it removes.

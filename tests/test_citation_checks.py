@@ -71,24 +71,25 @@ class SelfLoopTests(unittest.TestCase):
 
 
 class ProjectionStaleTests(unittest.TestCase):
+    """Only the wording is this module's; the reading belongs to
+    pg_graph_common.projection_diff(), which is therefore what these mock.
+    """
+
     def test_missing_graph_is_one_problem(self):
-        with mock.patch.object(citation_checks.pg_graph_common, "graph_exists", return_value=False):
+        with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
+                               return_value=None):
             problems = citation_checks._projection_stale({})
         self.assertEqual(len(problems), 1)
         self.assertIn("PROJECTION STALE", problems[0])
 
     def test_matching_counts_are_no_problem(self):
-        with mock.patch.object(citation_checks.pg_graph_common, "graph_exists", return_value=True), \
-             mock.patch.object(citation_checks, "scalar", side_effect=["5", "3"]), \
-             mock.patch.object(citation_checks.pg_graph_common, "graph_counts", return_value=(5, 3)), \
-             mock.patch.object(citation_checks.pg_graph_common, "compare_counts", return_value=(0, 0)):
+        with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
+                               return_value=(5, 3, 5, 3)):
             self.assertEqual(citation_checks._projection_stale({}), [])
 
     def test_mismatched_counts_are_one_problem_naming_the_diff(self):
-        with mock.patch.object(citation_checks.pg_graph_common, "graph_exists", return_value=True), \
-             mock.patch.object(citation_checks, "scalar", side_effect=["5", "3"]), \
-             mock.patch.object(citation_checks.pg_graph_common, "graph_counts", return_value=(4, 3)), \
-             mock.patch.object(citation_checks.pg_graph_common, "compare_counts", return_value=(-1, 0)):
+        with mock.patch.object(citation_checks.pg_graph_common, "projection_diff",
+                               return_value=(5, 3, 4, 3)):
             problems = citation_checks._projection_stale({})
         self.assertEqual(len(problems), 1)
         self.assertIn("work=5", problems[0])

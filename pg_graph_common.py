@@ -152,6 +152,27 @@ def compare_counts(work_n: int, cites_n: int, vertex_n: int, edge_n: int) -> tup
     return (vertex_n - work_n, edge_n - cites_n)
 
 
+def projection_diff(env: dict[str, str]) -> tuple[int, int, int, int] | None:
+    """(work_n, cites_n, vertex_n, edge_n), or None when there is no graph.
+
+    The whole reading behind "is the projection faithful", in one place:
+    does the graph exist at all, how many rows do the relational tables
+    hold, how many does AGE hold. compare_counts() is the arithmetic over
+    the result and every asker renders it differently -- an exit code
+    (check), a list of problem strings (citation_checks), an (ok, detail)
+    pair against the manifest (deploy/smoke_checks) -- but the reads, the
+    graph-missing branch and the order of the four numbers are this
+    function's, not each caller's. Three copies of that sequence is what
+    compare_counts() was already meant to prevent, one level shallower.
+    """
+    if not graph_exists(env):
+        return None
+    work_n = int(scalar(env, "SELECT count(*) FROM citation.work;"))
+    cites_n = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
+    vertex_n, edge_n = graph_counts(env)
+    return work_n, cites_n, vertex_n, edge_n
+
+
 def check(env: dict[str, str]) -> int:
     """Exit code of "is the projection still faithful": 0 when it is.
 
@@ -160,13 +181,12 @@ def check(env: dict[str, str]) -> int:
     -- and a second implementation of the comparison is exactly what
     compare_counts() exists to prevent.
     """
-    if not graph_exists(env):
+    diff = projection_diff(env)
+    if diff is None:
         print(f"проекция не строилась: графа {GRAPH_NAME} нет в ag_catalog.ag_graph",
               file=sys.stderr)
         return 1
-    work_n = int(scalar(env, "SELECT count(*) FROM citation.work;"))
-    cites_n = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
-    vertex_n, edge_n = graph_counts(env)
+    work_n, cites_n, vertex_n, edge_n = diff
     diff_v, diff_e = compare_counts(work_n, cites_n, vertex_n, edge_n)
     if diff_v == 0 and diff_e == 0:
         print(f"OK: |V|={vertex_n} |E|={edge_n}")

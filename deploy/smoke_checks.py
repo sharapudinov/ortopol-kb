@@ -149,8 +149,9 @@ def check_measurements_run(env: dict, manifest: dict) -> tuple[bool, str]:
 
 def check_citation_projection(env: dict, manifest: dict) -> tuple[bool | None, str]:
     """AGE is loaded and citation_graph is a faithful projection of the
-    restored citation.work/cites -- confirms deploy/init/02_project_graph.sql
-    actually ran, the way check_measurements_run confirms 01_dump.sql.gz did.
+    restored citation.work/cites, which in turn hold what the manifest
+    declares -- confirms deploy/init/02_project_graph.sql actually ran, the
+    way check_measurements_run confirms 01_dump.sql.gz did.
 
     SKIP (None), not FAIL, when the artifact's manifest declares no shipped
     citation mode (an older artifact predating the citation schema, or one built under
@@ -163,15 +164,24 @@ def check_citation_projection(env: dict, manifest: dict) -> tuple[bool | None, s
     mode = citation.get(Key.CITATION_MODE)
     if mode is None or mode == CitationMode.NONE:
         return None, f"citation mode={mode!r} -- профиль не несёт граф, проверять нечего"
-    if not pg_graph_common.graph_exists(env):
+    diff = pg_graph_common.projection_diff(env)
+    if diff is None:
         return False, "citation_graph не спроецирован после restore (init/02_project_graph.sql?)"
+    # The reading is projection_diff()'s; what this check adds is WHICH
+    # counts the graph is held against. Two comparisons, not one: the graph
+    # against the restored tables (the projection ran and is faithful) and
+    # the restored tables against the manifest (the dump carries what the
+    # package says it carries). Only the first was made here before, so a
+    # dump short of its own manifest passed as long as the projection
+    # reproduced the shortfall faithfully.
+    work_n, cites_n, vertex_n, edge_n = diff
     want_work = citation.get(Key.WORK_COUNT, 0)
     want_cites = citation.get(Key.CITES_COUNT, 0)
-    vertex_n, edge_n = pg_graph_common.graph_counts(env)
-    diff_v, diff_e = pg_graph_common.compare_counts(want_work, want_cites, vertex_n, edge_n)
-    ok = diff_v == 0 and diff_e == 0
-    return ok, (f"vertices={vertex_n} (work {want_work}, diff {diff_v}), "
-                f"edges={edge_n} (cites {want_cites}, diff {diff_e})")
+    diff_v, diff_e = pg_graph_common.compare_counts(work_n, cites_n, vertex_n, edge_n)
+    ok = diff_v == 0 and diff_e == 0 and work_n == want_work and cites_n == want_cites
+    return ok, (f"vertices={vertex_n} (work {work_n}, diff {diff_v}), "
+                f"edges={edge_n} (cites {cites_n}, diff {diff_e}); "
+                f"манифест: work {want_work}, cites {want_cites}")
 
 
 # blob_sha256/check_blob_roundtrip/check_blob_corruption_detected now live in

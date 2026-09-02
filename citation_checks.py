@@ -90,12 +90,15 @@ def self_loop_work_ids(env: dict) -> list[str]:
 
 
 def _projection_stale(env: dict) -> list[str]:
-    if not pg_graph_common.graph_exists(env):
+    """The same reading `pg_graph.py project --check` makes, rendered as
+    completeness problems -- pg_graph_common.projection_diff() owns the
+    reading, this owns only the wording.
+    """
+    diff = pg_graph_common.projection_diff(env)
+    if diff is None:
         return ["PROJECTION STALE: citation_graph is not projected "
                 "(python3 pg_graph.py project)"]
-    work_n = int(scalar(env, "SELECT count(*) FROM citation.work;"))
-    cites_n = int(scalar(env, "SELECT count(*) FROM citation.cites;"))
-    vertex_n, edge_n = pg_graph_common.graph_counts(env)
+    work_n, cites_n, vertex_n, edge_n = diff
     diff_v, diff_e = pg_graph_common.compare_counts(work_n, cites_n, vertex_n, edge_n)
     if diff_v == 0 and diff_e == 0:
         return []
