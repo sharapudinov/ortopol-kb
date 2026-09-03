@@ -18,6 +18,7 @@ from _citation_fixtures import (
     unit,
     work,
 )
+from citation_vocab import Relation
 from citations import seeding
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH
@@ -174,6 +175,30 @@ class CrawlTests(unittest.TestCase):
         snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
         snowball.run(2)
         self.assertEqual(client.cites_batches, [["W_SEED"], ["W_NEAR"]])
+
+    def test_a_level_of_leaves_only_ends_the_crawl_and_says_so(self):
+        """The complement of the rule above: a node reached by
+        `relation='referenced'` is written and never opened, so a level
+        whose survivors are all references leaves the next frontier empty.
+        The crawl stops there rather than asking OpenAlex for the citers of
+        nothing -- and it says why, because a run that ends a level early
+        looks exactly like a run that finished otherwise.
+        """
+        said = []
+        writer = DryRunWriter()
+        seed = work("W_SEED", title="Seed Chebyshev", refs=["W_REF"])
+        reference = work("W_REF", title="Near Chebyshev")
+        client = FakeClient([seed, reference], citers={})
+        embedder = PlannedEmbedder({"Seed": unit(0), "Near": unit(0)})
+        snowball = Snowball(client, embedder, writer, tau=0.5, crawl_id="c",
+                            log=said.append)
+        snowball.seed(["doc_a"], {"doc_a": "W_SEED"})
+        per_depth = snowball.run(2)
+        self.assertEqual(snowball.registry.nodes["W_REF"].relation, Relation.REFERENCED)
+        # 0 is the seed level; depth 2 is the one that never ran.
+        self.assertEqual(sorted(per_depth), [0, 1])
+        self.assertEqual(client.cites_batches, [["W_SEED"]])
+        self.assertTrue(any("фронтир пуст" in line for line in said), said)
 
     def test_calibrate_scores_every_candidate_and_writes_no_work(self):
         writer = DryRunWriter()

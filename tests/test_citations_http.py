@@ -32,7 +32,7 @@ from citations.openalex_client import (
     page_index,
     sidecar_name,
 )
-from citations.openalex_records import direction_of
+from citations.openalex_records import SIDECAR_SUFFIX, direction_of
 
 PAGE = ('<html><head><title>И. И. Шарапудинов, “Русское название”, Матем. сб., '
         '180:9 (1989), 1–10; I. I. Sharapudinov, “English title”, '
@@ -68,6 +68,33 @@ class OpenAlexSidecarTests(unittest.TestCase):
                                 "direction": "cites",
                                 "oql": "works where it cites (W1 or W2)",
                                 "count": 18904})
+
+    def test_a_sidecar_that_cannot_be_written_costs_neither_page_nor_answer(self):
+        """The swallow is deliberate -- the cache is disposable scratch and
+        a directory that will not take the index is the caller's problem,
+        not a failed request's -- but nothing had ever made it fire, so
+        "the primary cached page survives it" was an intention rather than
+        a fact.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = http_cache.DiskCache(Path(tmp))
+            written = cache.write
+
+            def refuse_the_sidecar(name, text):
+                if name.endswith(SIDECAR_SUFFIX):
+                    raise OSError("read-only file system")
+                written(name, text)
+
+            cache.write = refuse_the_sidecar
+            client = OpenAlexClient(opener=_Sequence([_Response(self.BODY)]),
+                                    sleep=lambda _s: None, pause=0.0, cache=cache)
+            body = client.get_json("https://api.openalex.org/works?filter=cites:W1|W2")
+            pages = [p for p in Path(tmp).glob("*.json")
+                     if not p.name.endswith(SIDECAR_SUFFIX)]
+            self.assertEqual(len(pages), 1, "страница кэша не записалась")
+            self.assertEqual(json.loads(pages[0].read_text(encoding="utf-8")),
+                             json.loads(self.BODY))
+        self.assertEqual(body["meta"]["count"], 18904)
 
     def test_a_read_only_cache_writes_neither_page_nor_sidecar(self):
         """--dry-run's third channel: the response cache is in the data

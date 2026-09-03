@@ -290,5 +290,56 @@ class RegistryIdentityTests(unittest.TestCase):
         self.assertEqual(registry.key_for("doi:10.1/x"), "doi:10.1/x")
 
 
+class ReleaseWrittenTests(unittest.TestCase):
+    """The mechanism the crawl's documented peak-memory bound rests on.
+
+    A node outlives its row -- the next level reads its ids, its relation
+    and its reference list off the registry -- but two of its fields cannot
+    be read again: the vector and the raw source records, taken once by
+    store's works(). Held to the end of the crawl they are 1024 floats plus
+    a record list that grows on every re-sighting, multiplied by every node
+    ever kept, which is exactly the peak level-at-a-time scoring bounds.
+    Nothing asserted that they were actually dropped.
+    """
+
+    def _registry(self):
+        registry = WorkRegistry()
+        for key in ("W1", "W2"):
+            node, _is_new = registry.add({"id": f"https://openalex.org/{key}",
+                                          "title": f"Title {key}"},
+                                         kind="external-skeleton", depth=1)
+            node.embedding = [0.5] * 8
+        return registry
+
+    def test_the_payload_the_write_consumed_is_dropped(self):
+        registry = self._registry()
+        registry.release_written(["W1"])
+        self.assertIsNone(registry.nodes["W1"].embedding)
+        self.assertEqual(registry.nodes["W1"].records, [])
+
+    def test_a_node_nobody_wrote_keeps_its_payload(self):
+        registry = self._registry()
+        registry.release_written(["W1"])
+        self.assertEqual(registry.nodes["W2"].embedding, [0.5] * 8)
+        self.assertEqual(len(registry.nodes["W2"].records), 1)
+
+    def test_the_node_itself_survives_the_release(self):
+        """Released, not forgotten: the next level resolves edges through
+        this registry, so a key that vanished here is an edge endpoint the
+        crawl can no longer place.
+        """
+        registry = self._registry()
+        registry.release_written(["W1"])
+        self.assertEqual(registry.resolve_openalex("W1"), "W1")
+
+    def test_a_key_with_no_node_is_ignored(self):
+        """The caller names what it WROTE; which of those the registry
+        still holds is the registry's own question.
+        """
+        registry = self._registry()
+        registry.release_written(["W1", "W_NEVER_ADDED"])
+        self.assertIsNone(registry.nodes["W1"].embedding)
+
+
 if __name__ == "__main__":
     unittest.main()
