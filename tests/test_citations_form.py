@@ -13,15 +13,12 @@ offline rather than left to the next crawl to rediscover:
 from __future__ import annotations
 
 import inspect
-import json
-import pathlib
-import tempfile
 import unittest
 from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
-from citations import hub_report, journal, twin_pass, twins
+from citations import journal, twin_pass, twins
 from citations.crawl import HUB_CAP, Snowball
 from citations import store
 from citations.dry_store import DryRunWriter

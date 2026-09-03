@@ -17,9 +17,7 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 from _citation_fixtures import (
-    DIMS,
     FakeClient,
-    PlannedEmbedder,
     unit,
     work,
 )

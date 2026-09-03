@@ -20,11 +20,9 @@ import _pathfix_deploy  # noqa: F401
 import citation_columns
 import citation_dump
 import schema_catalog
-import citation_profile
-from legal_profile import SHIPPED_SQL
 from manifest_contract import CitationMode, Profile, schemas_for
 from paths import default_corpus_dir
-from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
+from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv
 
 FIELD_SEP = "\x1f"
 

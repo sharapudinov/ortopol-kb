@@ -16,7 +16,6 @@ import pathlib
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stderr
-from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401

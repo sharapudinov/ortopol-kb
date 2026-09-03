@@ -11,7 +11,6 @@ check about a dict this repository never builds.
 from __future__ import annotations
 
 import gzip
-import pathlib
 import tempfile
 import unittest
 from pathlib import Path

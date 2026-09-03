@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import re
 import unittest
-from pathlib import Path
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401

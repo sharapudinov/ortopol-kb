@@ -21,13 +21,12 @@ from unittest import mock
 from pathlib import Path
 
 import _pathfix  # noqa: F401
-from _http_fixtures import Response as _Response, Sequence as _Sequence, http_error as _http_error
+from _http_fixtures import Response as _Response, Sequence as _Sequence
 
 from citations import frontier, http_cache, openalex_client
 from citations.mathnet import MathnetClient, parse_titles
 from citations.openalex_client import (
     OpenAlexClient,
-    OpenAlexError,
     note_direction,
     page_index,
     sidecar_name,

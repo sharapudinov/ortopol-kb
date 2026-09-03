@@ -31,7 +31,6 @@ import _pathfix_deploy  # noqa: F401
 import corpus_columns
 import corpus_content_checks
 import corpus_cut
-import public_dump
 import schema_catalog
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql

@@ -10,7 +10,6 @@ and belongs to test_citation_dump.py; the corpus half's shape is next door.
 from __future__ import annotations
 
 import contextlib
-import io
 import tempfile
 import unittest
 from pathlib import Path
