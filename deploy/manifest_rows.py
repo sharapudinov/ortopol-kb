@@ -2,9 +2,9 @@
 dump.
 
 MANIFEST_DESCRIBES_ARTIFACT is what this module is: documents_count,
-pages_count, the citation block's table_rows, its two headline totals and
-its kind census are all "what rows does this package carry", and the only
-place that answer exists is the package. They were read from the live database instead
+pages_count, both blocks' table_rows, the citation block's two headline
+totals and its kind census are all "what rows does this package carry", and
+the only place that answer exists is the package. They were read from the live database instead
 -- documents/pages before the dump was written, the citation counts and
 the kind census from cut-aware queries beside the plan, the full profile's
 from a fresh read after pg_dump finished -- while the recipient's bundled gate demands exact
@@ -47,6 +47,11 @@ def stamp_dumped_rows(manifest: dict, rows) -> dict:
     manifest, and the recipient's gate refuses an empty table_rows under a
     shipping mode rather than reading it as silence.
 
+    Both schemas get that declaration, from the one tally the counter
+    already produced: table_rows_check.py asks the same question of each,
+    and the corpus half had only documents_count/pages_count, so every
+    other corpus table was described by nothing at all.
+
     work_by_kind is stamped here too, from the same writing: `kind` is a
     TOPOLOGY column and ships under every mode that ships the schema, so
     the census is a fact the COPY stream carries
@@ -58,6 +63,7 @@ def stamp_dumped_rows(manifest: dict, rows) -> dict:
     block[Key.WORK_BY_KIND] = dict(rows.work_by_kind)
     for key, table in CITATION_COUNTS.items():
         block[key] = rows.citation.get(table, 0)
+    manifest[Key.CORPUS][Key.TABLE_ROWS] = dict(rows.corpus)
     for key, table in CORPUS_COUNTS.items():
         manifest[key] = rows.corpus.get(table, 0)
     return manifest

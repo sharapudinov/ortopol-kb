@@ -12,12 +12,10 @@ Checks:
                            nothing, carries NEITHER of) citation.work and
                            citation.cites, and their row counts equal
                            manifest.citation.work_count/cites_count
-  every table is named    and, one level wider, EVERY citation table the
-                           manifest declares in table_rows is in the dump
-                           with exactly that many rows, and no citation
-                           table is in the dump the manifest does not
-                           declare -- so the checks below cannot pass
-                           because their subject never shipped
+  every table is named    is table_rows_check.py's question, for BOTH
+                           classified schemas at once -- so the checks
+                           below cannot pass because their subject never
+                           shipped
   work -> document holds  every citation.work.document_id in the dump names
                            a corpus.documents row the SAME dump carries.
                            citation.work.document_id is a foreign key across
@@ -55,12 +53,6 @@ from citation_content_checks import CITES_TABLE, WORK_TABLE
 from manifest_classes import expected_ids
 from manifest_keys import Key
 from manifest_contract import ships_citation
-
-# The schema whose tables this module reasons about. Spelled once: the
-# manifest names a table bare, the dump names it qualified, and this is the
-# only place the two spellings are put together.
-SCHEMA = "citation"
-
 
 def _ships_citation(manifest: dict) -> bool:
     """manifest_contract.ships_citation() over this manifest's block -- the
@@ -119,51 +111,6 @@ def check_citation_schema_matches_mode(manifest: dict, scans: dict) -> tuple[boo
     ok = present == {WORK_TABLE, CITES_TABLE} and work_rows == want_work and cites_rows == want_cites
     return ok, (f"mode={mode!r}, work rows={work_rows} (manifest {want_work}), "
                 f"cites rows={cites_rows} (manifest {want_cites})")
-
-
-def check_every_declared_table_shipped(manifest: dict, scans: dict) -> tuple[bool, str]:
-    """Every citation table manifest.citation.table_rows names is in the
-    dump, with exactly that many COPY rows -- and no citation table is in
-    the dump that the manifest does not name.
-
-    The two counts next door describe work and cites; crawl_step,
-    public_policy and schema_backfill were described by nothing at all, so
-    a dump that carried no journal satisfied every check about the journal.
-    check_journal_names_nothing_cut() in particular reported a green "0
-    distinct name(s)" -- an artifact missing the most delicately cut table
-    in the schema certified as one whose cut holds.
-
-    Both directions, and an empty declaration under a shipping mode is a
-    failure rather than a quiet pass: a manifest that names no table is one
-    this reader cannot hold to anything.
-    """
-    citation = manifest.get(Key.CITATION, {})
-    declared = citation.get(Key.TABLE_ROWS)
-    shipped = {name for name in scans if name.startswith(f"{SCHEMA}.")}
-    if not _ships_citation(manifest):
-        ok = not declared and not shipped
-        return ok, (f"mode={citation.get(Key.CITATION_MODE)!r}; "
-                    f"declared {sorted(declared or [])}, in dump {sorted(shipped)}")
-    if not isinstance(declared, dict) or not declared:
-        return False, (
-            f"manifest.citation.{Key.TABLE_ROWS} пуст ({declared!r}) при режиме, "
-            "который везёт схему: держать дамп не к чему -- пересоберите пакет "
-            "текущим сборщиком"
-        )
-    problems = []
-    for table, want in sorted(declared.items()):
-        qualified = f"{SCHEMA}.{table}"
-        scan = scans.get(qualified)
-        if scan is None:
-            problems.append(f"{qualified}: блока COPY нет, а манифест обещает {want}")
-        elif scan.rows != want:
-            problems.append(f"{qualified}: {scan.rows} строк против {want}")
-    for name in sorted(shipped - {f"{SCHEMA}.{table}" for table in declared}):
-        problems.append(f"{name}: в дампе есть, в манифесте не назван")
-    return not problems, (
-        f"{len(declared)} declared table(s): " + ("; ".join(problems) or "все на месте, "
-        + ", ".join(f"{table}={rows}" for table, rows in sorted(declared.items())))
-    )
 
 
 def check_kind_census_matches_manifest(manifest: dict, facts) -> tuple[bool, str]:

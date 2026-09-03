@@ -174,6 +174,20 @@ class PublicProfileChecksTests(unittest.TestCase):
         self.assertFalse(ok, detail)
         self.assertIn("half-skeleton", detail)
 
+    def test_a_corpus_table_declared_but_never_shipped_fails(self):
+        """The corpus half of the per-table declaration, end to end: a
+        table the manifest promises and the dump does not carry used to be
+        indistinguishable from a table correctly cut away, because only
+        documents and pages were described at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.corpus_table_rows = {"documents": 3, "pages": 4, "embedding_model": 1}
+            results = _results(builder)
+        ok, detail = results["corpus: каждая заявленная таблица приехала целиком"]
+        self.assertFalse(ok)
+        self.assertIn("corpus.embedding_model", detail)
+
     def test_tsv_in_the_page_copy_columns_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             builder = ArtifactBuilder(Path(tmp))

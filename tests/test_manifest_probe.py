@@ -309,6 +309,13 @@ class CitationManifestTests(unittest.TestCase):
         })
         self.assertEqual(manifest["schemas"], ["corpus", "citation"])
 
+    def test_the_corpus_block_declares_its_shape_and_no_numbers(self):
+        """The corpus half of the per-table declaration is written here and
+        filled by the dump, exactly as the citation block beside it: this
+        function runs before the file exists.
+        """
+        self.assertEqual(self._gather()["corpus"], {"table_rows": {}})
+
     def test_the_citation_block_reads_the_database_for_nothing_at_all(self):
         """The kind census was the last live read here, and the last number
         no artifact-side check re-derived. `kind` is TOPOLOGY and travels
@@ -326,6 +333,7 @@ class CitationManifestTests(unittest.TestCase):
     @staticmethod
     def _blank_manifest() -> dict:
         return {"documents_count": 0, "pages_count": 0,
+                "corpus": {"table_rows": {}},
                 "citation": {"work_count": 0, "cites_count": 0, "work_by_kind": {},
                              "table_rows": {}}}
 
@@ -337,6 +345,7 @@ class CitationManifestTests(unittest.TestCase):
             work_by_kind={"external-skeleton": 382, "our-document": 56}))
         self.assertEqual(manifest, {
             "documents_count": 70, "pages_count": 2462,
+            "corpus": {"table_rows": {"documents": 70, "pages": 2462}},
             "citation": {"work_count": 438, "cites_count": 2425,
                          "work_by_kind": {"external-skeleton": 382, "our-document": 56},
                          "table_rows": {"work": 438, "cites": 2425, "crawl_step": 5}}})

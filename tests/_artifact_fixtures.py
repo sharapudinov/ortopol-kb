@@ -135,6 +135,8 @@ class ArtifactBuilder:
         self.full_content = ["full-text", "internal"]
         self.unclassified = 0
         self.extra_sql = ""
+        # None = declare exactly the corpus blocks write() puts in the dump.
+        self.corpus_table_rows: dict | None = None
         # None = this build shipped no citation schema; the manifest still
         # carries the block saying so, because "the graph does not travel"
         # is a decision the artifact has to name (citation_policy_check).
@@ -201,6 +203,14 @@ class ArtifactBuilder:
             "profile": self.profile,
             "schemas": self.schemas,
             "pages_count": len(self.pages),
+            # The corpus half of the per-table declaration, taken from the
+            # blocks this fixture actually writes -- the same polarity the
+            # citation block below has, and the same one the packager has
+            # (manifest_rows.py stamps both from one tally). A test about a
+            # MISMATCH sets corpus_table_rows itself.
+            "corpus": {"table_rows": self.corpus_table_rows if self.corpus_table_rows
+                       is not None else {"documents": len(self.documents),
+                                         "pages": len(self.pages)}},
             "dump": {"file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"},
             "legal": legal,
         }

@@ -1,9 +1,10 @@
 """What the manifest DECLARES about the citation rows, held to the rows the
 dump turns out to hold (deploy/citation_cut_checks.py).
 
-Three claims, one subject: the schema and the two headline totals under the
-declared mode, every table named in table_rows with exactly that many rows,
-and the kind census. Split from test_citation_cut_checks.py for module size
+Two claims, one subject: the schema and the two headline totals under the
+declared mode, and the kind census. (Every table named in table_rows is the
+schema-neutral question next door, test_table_rows_check.py.) Split from
+test_citation_cut_checks.py for module size
 (kb/CLAUDE.md FILE_SIZE) along the seam the checked module's own docstring
 already draws -- everything there asks whether the rows that shipped name
 only what this package carries, everything here asks whether there are as
@@ -75,87 +76,6 @@ class CheckCitationSchemaMatchesModeTests(unittest.TestCase):
             Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY, Key.WORK_COUNT: 1, Key.CITES_COUNT: 0,
         }}
         ok, _detail = citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertFalse(ok)
-
-
-class CheckEveryDeclaredTableShippedTests(unittest.TestCase):
-    """The manifest names every citation table the dump carries, and the
-    dump carries every table the manifest names -- with the same row count.
-
-    Without this, the recipient learned nothing about crawl_step,
-    public_policy or schema_backfill: the checks that read the journal find
-    no rows, report a green nought and certify a package that never shipped
-    the table their whole subject is.
-    """
-
-    JOURNAL = ["id", "frontier_key"]
-
-    def _scans(self, tables: dict[str, list[list[str]]]) -> dict:
-        dump = "CREATE TABLE corpus.documents (id text);\n"
-        for table, rows in tables.items():
-            columns = ["id", "key"] if table in ("work",) else self.JOURNAL
-            dump += _copy_block(f"citation.{table}", columns, rows)
-        scans, _facts = _scan(dump)
-        return scans
-
-    def _manifest(self, declared) -> dict:
-        return {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY,
-                               Key.TABLE_ROWS: declared}}
-
-    def test_every_declared_table_present_with_its_count_passes(self):
-        scans = self._scans({"work": [["1", "k1"]], "crawl_step": [["1", "k1"], ["2", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1, "crawl_step": 2}), scans)
-        self.assertTrue(ok, detail)
-
-    def test_a_declared_table_the_dump_never_carried_is_the_whole_point(self):
-        """The journal is declared and absent -- which is exactly the
-        package on which check_journal_names_nothing_cut() reported zero
-        names and passed.
-        """
-        scans = self._scans({"work": [["1", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1, "crawl_step": 604}), scans)
-        self.assertFalse(ok)
-        self.assertIn("citation.crawl_step", detail)
-        self.assertIn("604", detail)
-
-    def test_a_row_count_that_does_not_match_the_declaration_fails(self):
-        scans = self._scans({"work": [["1", "k1"]], "crawl_step": [["1", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1, "crawl_step": 2}), scans)
-        self.assertFalse(ok)
-        self.assertIn("1 строк против 2", detail)
-
-    def test_a_table_in_the_dump_that_the_manifest_does_not_name_fails(self):
-        """The other direction: a table shipped without being described is
-        a slice of the schema nothing on this side can hold to anything.
-        """
-        scans = self._scans({"work": [["1", "k1"]], "crawl_step": [["1", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1}), scans)
-        self.assertFalse(ok)
-        self.assertIn("citation.crawl_step", detail)
-
-    def test_a_shipping_mode_declaring_no_table_at_all_is_refused(self):
-        for declared in (None, {}, "нет"):
-            with self.subTest(declared=declared):
-                ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-                    self._manifest(declared), self._scans({"work": [["1", "k1"]]}))
-                self.assertFalse(ok, detail)
-                self.assertIn(Key.TABLE_ROWS, detail)
-
-    def test_a_mode_that_ships_nothing_declares_nothing_and_carries_nothing(self):
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE, Key.TABLE_ROWS: {}}}
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            manifest, self._scans({}))
-        self.assertTrue(ok, detail)
-
-    def test_a_mode_that_ships_nothing_may_not_declare_a_table_either(self):
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE,
-                                   Key.TABLE_ROWS: {"work": 1}}}
-        ok, _detail = citation_cut_checks.check_every_declared_table_shipped(
-            manifest, self._scans({}))
         self.assertFalse(ok)
 
 

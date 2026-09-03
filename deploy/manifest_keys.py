@@ -47,6 +47,12 @@ class Key:
     VECTOR_PROBE = "vector_probe"
     FILES = "files"
     DUMP = "dump"
+    # corpus{} -- the same per-table declaration the citation block carries
+    # below, for the schema every profile ships. documents_count and
+    # pages_count above are two headline numbers; everything else the
+    # corpus schema holds was described by nothing, and a check that finds
+    # no COPY block cannot tell "cut correctly" from "never shipped".
+    CORPUS = "corpus"
 
     # embedding_model{}.
     MODEL = "model"
@@ -104,11 +110,13 @@ class Key:
     WORK_COUNT = "work_count"
     CITES_COUNT = "cites_count"
     WORK_BY_KIND = "work_by_kind"
-    # {table: rows} for EVERY citation table the dump carries, not only the
-    # two the counts above describe. What a recipient can otherwise learn
-    # about crawl_step, public_policy and schema_backfill is nothing: a
-    # check that finds no such block has no way to tell "cut correctly" from
-    # "never shipped", and reports a green nought either way.
+    # {table: rows} for EVERY table of the block's schema the dump carries,
+    # not only the ones the counts above describe. What a recipient can
+    # otherwise learn about crawl_step, public_policy and schema_backfill
+    # is nothing: a check that finds no such block has no way to tell "cut
+    # correctly" from "never shipped", and reports a green nought either
+    # way. One name for both blocks (corpus{} and citation{}), because one
+    # check reads both (table_rows_check.py).
     TABLE_ROWS = "table_rows"
 
 
@@ -145,4 +153,10 @@ class Key:
 # vacuously on a dump carrying no journal at all. A v8 manifest names no
 # tables, and read with a default that would be the same silence, so the
 # version gate separates them.
-MANIFEST_SCHEMA_VERSION = 9
+# 10: added corpus.table_rows -- the same declaration v9 gave the citation
+# schema, for the schema every profile ships. Without it the corpus half of
+# the certification asserts the row counts of exactly two tables and reads
+# the absence of every other as nothing to check, which is the polarity v9
+# was added to invert. A v9 manifest names no corpus table, and read with a
+# default that is the same silence, so the version gate separates them.
+MANIFEST_SCHEMA_VERSION = 10

@@ -216,6 +216,12 @@ def gather_manifest(
         # count describes a package nobody has produced yet.
         Key.DOCUMENTS_COUNT: 0,
         Key.PAGES_COUNT: 0,
+        # ... and, beside those two headline numbers, the per-table
+        # declaration for the whole schema, filled from the same writing
+        # (manifest_rows.py). The citation block carries its twin, and one
+        # check reads both (table_rows_check.py): a table described by
+        # nothing is one whose absence certifies green.
+        Key.CORPUS: {Key.TABLE_ROWS: {}},
         Key.EMBEDDING_MODEL: {
             Key.MODEL: model, Key.DIMS: dims, Key.DIGEST: digest, Key.SIZE_BYTES: size_bytes,
         },

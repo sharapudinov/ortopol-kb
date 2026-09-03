@@ -83,6 +83,11 @@ DEPLOY_FILES = [
     # nobody classified; this is the same question asked of the file, which
     # is the only side a recipient of an unsigned manifest can ask it from.
     "column_class_checks.py",
+    # ... and its neighbour one level up: the per-table row counts each
+    # classified schema's manifest block declares, held to the COPY blocks
+    # the file turns out to have. Both schemas from one engine -- without it
+    # profile_checks.py does not import at all on the recipient's side.
+    "table_rows_check.py",
     # ... and the manifest-only legal vocabulary its checks reason over,
     # split off for module size: without it profile_checks.py does not
     # import at all on the recipient's side.

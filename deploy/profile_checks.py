@@ -49,6 +49,13 @@ contributing row visitors to that same pass:
                                stops the build) asked of the finished file,
                                which is the side an unsigned manifest
                                leaves to the recipient
+  every table is declared      table_rows_check.py: each classified
+                               schema's manifest block names every table of
+                               it the dump carries, with exactly that many
+                               rows, and carries every table it names. Both
+                               schemas from one engine, because a check
+                               that finds no COPY block cannot otherwise
+                               tell "cut correctly" from "never shipped"
   corpus content holds         corpus_content_checks.py (module size):
                                classification complete, excluded left no
                                trace, metadata-only stripped, full-text
@@ -102,6 +109,7 @@ import column_class_checks
 import corpus_content_checks
 import dump_scan
 import sequence_checks
+import table_rows_check
 from manifest_classes import check_legal_vocabulary_is_known, check_profile_is_known
 from manifest_contract import required_schemas
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
@@ -236,6 +244,9 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(contents, manifest)),
         ("каждая колонка дампа классифицирована",
          *column_class_checks.check_columns_are_classified(scans)),
+        *[(f"{schema}: каждая заявленная таблица приехала целиком",
+           *table_rows_check.check_every_declared_table_shipped(manifest, scans, schema))
+          for schema in table_rows_check.DECLARED_SCHEMAS],
         ("правовая классификация полна",
          *corpus_content_checks.check_classification_complete(manifest, scans)),
         ("excluded: ни строки документа, ни страниц",
@@ -254,8 +265,6 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
          *citation_policy_check.check_policy_is_the_owners(manifest)),
         ("citation: схема/счётчики совпадают с манифестом",
          *citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)),
-        ("citation: каждая заявленная таблица приехала целиком",
-         *citation_cut_checks.check_every_declared_table_shipped(manifest, scans)),
         ("citation: content-колонки вырезаны вне full-skeleton",
          *citation_content_checks.check_content_is_stripped(manifest, facts)),
         ("citation.work ссылается только на документы этого пакета",

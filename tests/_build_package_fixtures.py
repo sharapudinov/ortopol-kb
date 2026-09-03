@@ -25,6 +25,7 @@ def fake_manifest(**overrides) -> dict:
         "documents_count": 70,
         "pages_count": 2462,
         Key.CITATION: {Key.CITATION_MODE: "full-skeleton", Key.TABLE_ROWS: {}},
+        Key.CORPUS: {Key.TABLE_ROWS: {}},
     }
     manifest.update(overrides)
     return manifest
