@@ -56,6 +56,12 @@ DEPLOY_FILES = [
     # corpus, which is the builder's job, not the recipient's.
     "profile_checks.py",
     "dump_scan.py",
+    # ... and the one check that reads no COPY row at all: the statements
+    # BETWEEN the blocks, and whether each sequence the dump's own DDL
+    # declares was repositioned after the rows that consumed it. Split off
+    # because it is the schema's question rather than either schema's --
+    # without it profile_checks.py does not import at all.
+    "sequence_checks.py",
     # ... and the corpus half of what it checks: the document/page visitors
     # and the six checks that hold the dump to the legal classification.
     # Split off for module size, like the citation half below -- without it

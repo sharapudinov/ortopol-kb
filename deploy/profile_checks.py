@@ -44,6 +44,11 @@ contributing row visitors to that same pass:
                                trace, metadata-only stripped, full-text
                                intact, every page embedded, no generated
                                column in the dump
+  sequences arrive moved       sequence_checks.py: every sequence-owning
+                               column whose table shipped rows is followed
+                               by a setval, and it comes after the block.
+                               The one breach that is silent at restore
+                               time and lands on the recipient's next insert
   legal vocabulary             which ids the manifest says are carried, and
                                in which shape, is manifest_classes.py
                                (module size): a manifest-only reading, with
@@ -85,6 +90,7 @@ import citation_policy_check
 import column_class_checks
 import corpus_content_checks
 import dump_scan
+import sequence_checks
 from manifest_classes import check_profile_is_known
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
 
@@ -185,6 +191,8 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
          *corpus_content_checks.check_pages_embedded(manifest, scans, facts)),
         ("нет generated-колонок в дампе",
          *corpus_content_checks.check_no_generated_columns(scans)),
+        ("последовательности переставлены после своих строк",
+         *sequence_checks.check_sequences_are_repositioned(contents)),
         ("citation: режим — решение владельца, не --policy-override",
          *citation_policy_check.check_policy_is_the_owners(manifest)),
         ("citation: схема/счётчики совпадают с манифестом",

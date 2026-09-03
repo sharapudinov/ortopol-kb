@@ -53,26 +53,54 @@ class TableScan:
     rows: int = 0
     # column -> number of rows where that column was SQL NULL / empty.
     nulls: dict[str, int] = field(default_factory=dict)
+    # Which line the block's terminator was on, so a statement can be
+    # placed before or after it. A setval that ran BEFORE its own COPY
+    # block leaves the sequence exactly where it was.
+    ended_at: int = 0
 
 
 @dataclass
 class DumpContents:
-    """What ONE pass over the dump found: the COPY blocks, and every schema
-    the file names.
+    """What ONE pass over the dump found: the COPY blocks, and everything
+    the STATEMENTS between them say.
 
-    Both answers come off the same decompression because both are read from
-    the same lines. Asked separately they were two full gzip inflates of a
-    file that carries every source PDF as hex -- the second one re-parsing
-    the very COPY headers the first had already parsed.
+    Every answer comes off the same decompression because every one of them
+    is read from the same lines. Asked separately they were a full gzip
+    inflate each, of a file that carries every source PDF as hex -- each
+    re-parsing the very lines the one before had already parsed.
+
+    `sequence_columns` is every "<schema>.<table>.<column>" the dump's own
+    DDL declares sequence-owned, and `sequence_resets` maps such a column to
+    the line its setval sits on. Read from the file rather than from a list
+    of table names on either side of the boundary: which columns own a
+    sequence is a fact about the schema the artifact CARRIES, and a
+    hand-kept copy of it is silent about exactly the column that was added
+    after the copy was written.
     """
 
     tables: dict[str, TableScan]
     schemas: set[str]
+    sequence_columns: set[str]
+    sequence_resets: dict[str, int]
 
 
 CREATE_SCHEMA = re.compile(rf"^CREATE SCHEMA (?:IF NOT EXISTS )?({_NAME});")
 QUALIFIED = re.compile(rf"^(?:CREATE TABLE|CREATE SEQUENCE|COPY|ALTER TABLE(?: ONLY)?) "
                        rf"({_NAME})\.")
+# Which column a sequence belongs to, in pg_dump's own words. Both dump
+# flavours carry it: the public profile's DDL is real pg_dump --schema-only
+# output (public_dump.py), and the full profile is pg_dump throughout.
+SEQUENCE_OWNER = re.compile(
+    rf"^ALTER SEQUENCE ({_NAME})\.({_NAME}) OWNED BY ({_NAME})\.({_NAME})\.({_NAME});")
+# The two spellings of "reposition this sequence". schema_catalog.setval_sql()
+# names the table and the column (pg_get_serial_sequence), because the
+# sequence's NAME is pg_dump's business; pg_dump names the sequence, which
+# SEQUENCE_OWNER above is what resolves back to a column.
+SETVAL_BY_COLUMN = re.compile(
+    rf"^SELECT (?:pg_catalog\.)?setval\(pg_get_serial_sequence\('({_NAME})\.({_NAME})', "
+    rf"'({_NAME})'\)")
+SETVAL_BY_SEQUENCE = re.compile(
+    rf"^SELECT (?:pg_catalog\.)?setval\('({_NAME})\.({_NAME})'")
 
 
 def _schema_of(line: str) -> str | None:
@@ -81,10 +109,79 @@ def _schema_of(line: str) -> str | None:
     return match.group(1) if match else None
 
 
+class StatementReader:
+    """What the lines BETWEEN the COPY blocks say.
+
+    The scan used to model data blocks and nothing else, so every fact
+    carried by a statement needed a pass of its own -- and the one fact that
+    matters most at the recipient's end is a statement: a sequence left
+    where the restore found it hands their first insert an id already taken,
+    which is a failure that shows up on their side, days later, with no
+    error at restore time to point at it.
+
+    Fed one line at a time with the ordinal of that line, so a caller can
+    ask not only WHETHER a sequence was repositioned but whether it happened
+    after the rows arrived.
+    """
+
+    def __init__(self):
+        self.schemas: set[str] = set()
+        self.sequence_columns: set[str] = set()
+        self.sequence_resets: dict[str, int] = {}
+        self._owned_by: dict[str, str] = {}
+
+    def read(self, line: str, ordinal: int) -> None:
+        schema = _schema_of(line)
+        if schema:
+            self.schemas.add(schema)
+        owner = SEQUENCE_OWNER.match(line)
+        if owner:
+            self._owned_by[".".join(owner.group(1, 2))] = ".".join(owner.group(3, 4, 5))
+            self.sequence_columns.add(".".join(owner.group(3, 4, 5)))
+            return
+        column = self._repositioned(line)
+        if column:
+            # The first setval is the one that counts: a second pass over
+            # the same sequence can only move it further along, and the
+            # question is whether the rows were followed by one at all.
+            self.sequence_resets.setdefault(column, ordinal)
+
+    def _repositioned(self, line: str) -> str | None:
+        """Which "<schema>.<table>.<column>" this line's setval moves, if
+        it is one. A sequence named by name is resolved through the OWNED BY
+        the dump declared earlier -- pg_dump writes the ownership in the DDL
+        section and the setval in the data section, in that order.
+        """
+        by_column = SETVAL_BY_COLUMN.match(line)
+        if by_column:
+            return ".".join(by_column.group(1, 2, 3))
+        by_sequence = SETVAL_BY_SEQUENCE.match(line)
+        if by_sequence:
+            return self._owned_by.get(".".join(by_sequence.group(1, 2)))
+        return None
+
+
 def _decompress_lines(dump_path: Path) -> Iterator[str]:
     with gzip.open(dump_path, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
             yield line.rstrip("\n")
+
+
+def _statements(dump_path: Path) -> StatementReader:
+    """The statement half of the pass, for a caller that has only that
+    question.
+
+    scan() is the whole reader and the one the verification path goes
+    through. This driver runs the SAME StatementReader over the same lines
+    without the COPY-block state machine, so there is still exactly one
+    place that knows what a setval or a CREATE SCHEMA looks like -- and so
+    a question about statements stays answerable on a file whose data
+    section is truncated or is simply not the subject.
+    """
+    reader = StatementReader()
+    for ordinal, line in enumerate(_decompress_lines(dump_path)):
+        reader.read(line, ordinal)
+    return reader
 
 
 def schema_names(dump_path: Path) -> set[str]:
@@ -92,16 +189,12 @@ def schema_names(dump_path: Path) -> set[str]:
     / COPY statements. Used to assert that the public artifact carries no
     measurements schema at all -- not merely no measurements rows.
 
-    A pass of its own, for a caller that wants only this answer. The
-    verification path does NOT use it: profile_checks.py reads
+    One line of convenience over the shared statement reader, for a caller
+    that wants only this answer and has no pass of its own. The
+    verification path does NOT come through here: profile_checks.py reads
     DumpContents.schemas off the pass it already makes.
     """
-    return {schema for schema in (_schema_of(line) for line in _decompress_lines(dump_path))
-            if schema}
-
-
-SETVAL = re.compile(
-    rf"^SELECT setval\(pg_get_serial_sequence\('({_NAME})\.({_NAME})', '({_NAME})'\)")
+    return _statements(dump_path).schemas
 
 
 def sequence_resets(dump_path: Path) -> set[str]:
@@ -111,15 +204,14 @@ def sequence_resets(dump_path: Path) -> set[str]:
     and lets the restore-side DEFAULT assign it, both leave a sequence whose
     position the recipient inherits; the setval() is what makes that position
     right, and it is the kind of statement whose absence nothing notices --
-    the restore succeeds and the FIRST INSERT afterwards collides. Read here
-    so the assertion is about the shipped bytes, like every other question
-    this module answers.
+    the restore succeeds and the FIRST INSERT afterwards collides.
 
-    Only the form schema_catalog.setval_sql() writes: pg_dump emits its own,
-    keyed by sequence NAME, for the profile it produces whole.
+    Both spellings, so the answer is about the dump rather than about which
+    writer produced it. Through the same StatementReader the verification
+    pass uses, for the same reason schema_names() is: one reader of what a
+    statement says, whatever drives it over the lines.
     """
-    return {f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
-            for m in (SETVAL.match(line) for line in _decompress_lines(dump_path)) if m}
+    return set(_statements(dump_path).sequence_resets)
 
 
 def scan(
@@ -128,10 +220,11 @@ def scan(
 ) -> DumpContents:
     """One pass over the dump: every COPY block, and every schema it names.
 
-    `tables` is {"<schema>.<table>": TableScan}; `schemas` is what
-    schema_names() answers on a pass of its own, collected here instead
-    because the caller that needs both (profile_checks.py) reads the same
-    lines for both.
+    `tables` is {"<schema>.<table>": TableScan}; everything the statements
+    between the blocks say -- the schema names, which columns own a
+    sequence, and where each of those sequences was repositioned -- is
+    StatementReader's, collected on the same lines because the caller that
+    needs them (profile_checks.py) is reading those lines anyway.
 
     row_visitors maps "<schema>.<table>" to a callable invoked with each row
     as {column: raw COPY field}. Raw on purpose: the checks care about
@@ -142,15 +235,13 @@ def scan(
     """
     visitors = row_visitors or {}
     scans: dict[str, TableScan] = {}
-    schemas: set[str] = set()
+    statements = StatementReader()
     current: TableScan | None = None
     visitor: Callable[[dict[str, str]], None] | None = None
 
-    for line in _decompress_lines(dump_path):
+    for ordinal, line in enumerate(_decompress_lines(dump_path)):
         if current is None:
-            schema = _schema_of(line)
-            if schema:
-                schemas.add(schema)
+            statements.read(line, ordinal)
             match = COPY_HEADER.match(line)
             if not match:
                 continue
@@ -163,6 +254,7 @@ def scan(
             visitor = visitors.get(key)
             continue
         if line == COPY_TERMINATOR:
+            current.ended_at = ordinal
             current, visitor = None, None
             continue
         fields = line.split("\t")
@@ -183,4 +275,6 @@ def scan(
             f"dump ends inside the {current.schema}.{current.table} COPY block "
             "(truncated artifact?)"
         )
-    return DumpContents(tables=scans, schemas=schemas)
+    return DumpContents(tables=scans, schemas=statements.schemas,
+                        sequence_columns=statements.sequence_columns,
+                        sequence_resets=statements.sequence_resets)
