@@ -47,7 +47,7 @@ def _results(builder: ArtifactBuilder) -> dict[str, tuple[bool, str]]:
 
 
 class DumpScanTests(unittest.TestCase):
-    def test_counts_rows_and_nulls_per_column(self):
+    def test_counts_rows_and_names_the_columns_of_each_block(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = ArtifactBuilder(Path(tmp)).write()
             contents = dump_scan.scan(directory / "01_dump.sql.gz")
@@ -55,8 +55,30 @@ class DumpScanTests(unittest.TestCase):
         documents = scans["corpus.documents"]
         self.assertEqual(documents.rows, 3)
         self.assertEqual(documents.columns, DOCUMENT_COLUMNS)
-        self.assertEqual(documents.nulls["source_blob"], 1)  # the metadata-only one
-        self.assertEqual(scans["corpus.pages"].nulls["body"], 2)
+        self.assertEqual(scans["corpus.pages"].rows, 4)
+
+    def test_a_visitor_is_how_a_caller_asks_what_a_column_held(self):
+        """Per-column emptiness is a question the ROW VISITORS answer, and
+        the only mechanism that answers it: the scan itself keeps no tally
+        of its own, so a block nobody registered a visitor for costs one
+        line split and nothing else.
+        """
+        empty = {"corpus.documents": 0, "corpus.pages": 0}
+
+        def counter(table: str, column: str):
+            def visit(row: dict) -> None:
+                if row[column] in (dump_scan.NULL_FIELD, ""):
+                    empty[table] += 1
+            return visit
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = ArtifactBuilder(Path(tmp)).write()
+            dump_scan.scan(directory / "01_dump.sql.gz", {
+                "corpus.documents": counter("corpus.documents", "source_blob"),
+                "corpus.pages": counter("corpus.pages", "body"),
+            })
+        self.assertEqual(empty["corpus.documents"], 1)  # the metadata-only one
+        self.assertEqual(empty["corpus.pages"], 2)
 
     def test_schema_names_sees_ddl_and_copy_statements(self):
         with tempfile.TemporaryDirectory() as tmp:

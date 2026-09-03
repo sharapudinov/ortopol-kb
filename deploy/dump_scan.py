@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import gzip
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -51,8 +51,6 @@ class TableScan:
     table: str
     columns: list[str]
     rows: int = 0
-    # column -> number of rows where that column was SQL NULL / empty.
-    nulls: dict[str, int] = field(default_factory=dict)
     # Which line the block's terminator was on, so a statement can be
     # placed before or after it. A setval that ran BEFORE its own COPY
     # block leaves the sequence exactly where it was.
@@ -248,8 +246,7 @@ def scan(
             schema, table, column_list = match.groups()
             columns = [c.strip() for c in column_list.split(",")]
             key = f"{schema}.{table}"
-            current = TableScan(schema=schema, table=table, columns=columns,
-                                nulls={c: 0 for c in columns})
+            current = TableScan(schema=schema, table=table, columns=columns)
             scans[key] = current
             visitor = visitors.get(key)
             continue
@@ -264,9 +261,6 @@ def scan(
                 f"{current.schema}.{current.table} row {current.rows}: "
                 f"{len(fields)} field(s) for {len(current.columns)} declared column(s)"
             )
-        for column, value in zip(current.columns, fields):
-            if value == NULL_FIELD or value == "":
-                current.nulls[column] += 1
         if visitor is not None:
             visitor(dict(zip(current.columns, fields)))
 
