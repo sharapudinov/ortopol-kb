@@ -1,17 +1,17 @@
-"""Unit tests for deploy/artifact_bundle.py: bundling the
-runtime files into the artifact workdir, and streaming pg_dump through
-gzip without a real Postgres/pg_dump.
+"""Unit tests for deploy/artifact_bundle.py: bundling the runtime files
+into the artifact workdir and packaging them.
+
+The other half of the module -- dump_schemas(), the full profile's pg_dump
+streamed through gzip -- is tests/test_dump_schemas.py (kb/CLAUDE.md
+FILE_SIZE, and two different questions).
 """
 from __future__ import annotations
 
-import gzip
 import hashlib
-import io
 import re
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,9 +20,6 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import artifact_bundle
-import dump_scan
-from copy_rows import DumpedRows
-from manifest_contract import CitationMode, Profile, schemas_for
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv
 
@@ -53,207 +50,6 @@ class BundleRuntimeFilesTests(unittest.TestCase):
                 bundled = (workdir / "corpus_lib" / name).read_bytes()
                 source = (artifact_bundle.CORPUS_DIR / name).read_bytes()
                 self.assertEqual(bundled, source)
-
-
-class FakeProc:
-    def __init__(self, stdout: bytes, stderr: bytes = b"", returncode: int = 0):
-        self.stdout = io.BytesIO(stdout)
-        self._stderr = io.BytesIO(stderr)
-        self._returncode = returncode
-
-    @property
-    def stderr(self):
-        return self._stderr
-
-    def wait(self):
-        return self._returncode
-
-
-class DumpSchemasTests(unittest.TestCase):
-    """pg_dump is stubbed here; nothing else is. The full profile's row
-    counts are READ BACK OFF the file it wrote, so a stubbed pg_dump output
-    carrying real COPY blocks is the whole input the count needs -- there is
-    no second database read left to stub.
-    """
-
-    # A miniature pg_dump output: two COPY blocks, one per schema the
-    # manifest is stamped from, plus a table of neither.
-    DUMP = (b"CREATE SCHEMA corpus;\n"
-            b"COPY corpus.documents (id) FROM stdin;\n2009_isu34\n1997_sm280\n\\.\n"
-            b"COPY citation.work (id) FROM stdin;\n1\n2\n3\n\\.\n"
-            b"COPY measurements.run (id) FROM stdin;\n7\n\\.\n")
-
-    def test_the_dump_reports_what_the_manifest_will_declare(self):
-        """Both writers answer with {table: rows} per schema: the packager
-        stamps it into the manifest, and the recipient's gate holds the
-        shipped bytes to it. Here the answer IS the shipped bytes.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                    return_value=FakeProc(self.DUMP)):
-                carried = artifact_bundle.dump_schemas(
-                    {}, gz_path, CitationMode.FULL_SKELETON)
-        self.assertEqual(carried.citation, {"work": 3})
-        self.assertEqual(carried.corpus, {"documents": 2})
-
-    def test_a_dump_carrying_no_citation_block_reports_no_citation_table(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                    return_value=FakeProc(b"-- fake\n")):
-                carried = artifact_bundle.dump_schemas({}, gz_path, CitationMode.NONE)
-        self.assertEqual(carried.citation, {})
-        self.assertEqual(carried.corpus, {})
-
-    def test_the_stream_is_counted_once_and_the_file_never_reopened(self):
-        """The counts are the bytes' own, and reading them costs no second
-        inflate: gzip.open is called exactly once for the whole build -- the
-        write. Re-read afterwards, a full-profile dump that carries every
-        source PDF as hex is decompressed and line-split a second time for
-        numbers the stream had already gone past.
-        """
-        opened = []
-        real_open = gzip.open
-
-        def counting_open(*args, **kwargs):
-            opened.append(args[0])
-            return real_open(*args, **kwargs)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                    return_value=FakeProc(self.DUMP)), \
-                 mock.patch.object(gzip, "open", side_effect=counting_open):
-                artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
-        self.assertEqual(opened, [gz_path])
-
-    def test_the_streamed_count_is_the_one_the_finished_file_reads_back(self):
-        """Two readings of one dump: the state machine in the stream, and
-        the artifact-side reader over the bytes it wrote. They are the same
-        recognition (dump_scan's COPY_HEADER and terminator), so the
-        manifest and the recipient's gate cannot drift apart.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                    return_value=FakeProc(self.DUMP)):
-                streamed = artifact_bundle.dump_schemas(
-                    {}, gz_path, CitationMode.FULL_SKELETON)
-            read_back = DumpedRows.from_contents(dump_scan.scan(gz_path))
-        self.assertEqual(streamed, read_back)
-
-    # The counters themselves -- block recognition, the kept prefix, the
-    # census -- are tests/test_copy_rows.py: this module is about what
-    # dump_schemas() assembles, not about the seam it streams through.
-
-    def test_no_count_is_asked_of_the_live_database_at_all(self):
-        """The read that used to follow pg_dump is gone, not merely
-        unused: a count from a fresh connection describes whatever the
-        database held at that moment, and the gate demands it equal the
-        file.
-        """
-        self.assertFalse(hasattr(artifact_bundle, "live_row_counts"))
-
-    def test_the_dump_asks_for_exactly_what_the_manifest_declares(self):
-        """One source of truth for "which schemas does this profile ship":
-        manifest.json's schemas[] and pg_dump's --schema arguments are the
-        same list from schemas_for(), not two lists kept equal by hand.
-        """
-        for mode in CitationMode.ALL:
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
-                gz_path = Path(tmp) / "dump.sql.gz"
-                with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                        return_value=FakeProc(b"-- fake\n")) as popen_mock:
-                    artifact_bundle.dump_schemas({}, gz_path, citation_mode=mode)
-                (argv,), _kwargs = popen_mock.call_args
-                asked = [a.split("=", 1)[1] for a in argv if a.startswith("--schema=")]
-                self.assertEqual(asked, schemas_for(Profile.FULL, mode))
-
-    def test_the_owners_own_backup_carries_the_citation_schema(self):
-        # The full profile applies no legal or policy cut: whenever the
-        # schema exists at all (i.e. the mode is not NONE) it ships whole.
-        self.assertIn("citation", schemas_for(Profile.FULL, CitationMode.FULL_SKELETON))
-        self.assertNotIn("citation", schemas_for(Profile.FULL, CitationMode.NONE))
-
-    def test_dumps_never_carry_age_catalog(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                    return_value=FakeProc(b"-- fake\n")) as popen_mock:
-                artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
-            (argv,), _kwargs = popen_mock.call_args
-        self.assertIn("--exclude-schema=citation_graph", argv)
-        self.assertIn("--exclude-schema=ag_catalog", argv)
-        self.assertIn("--schema=citation", argv)
-
-    def test_streams_pg_dump_stdout_through_gzip(self):
-        payload = b"-- fake pg_dump output\n" * 1000
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                    return_value=FakeProc(payload)):
-                artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
-            self.assertTrue(gz_path.is_file())
-            with gzip.open(gz_path, "rb") as f:
-                self.assertEqual(f.read(), payload)
-
-    def test_pg_dump_failure_raises_and_removes_partial_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            with mock.patch.object(
-                artifact_bundle.subprocess, "Popen",
-                return_value=FakeProc(b"partial", stderr=b"connection refused", returncode=1),
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
-            self.assertIn("connection refused", str(ctx.exception))
-            self.assertFalse(gz_path.exists())
-
-    def test_large_stderr_output_does_not_deadlock(self):
-        # 16bd7012: with both stdout and stderr as pipes and nothing
-        # draining stderr while the main thread blocks copying stdout, a
-        # child that writes enough to stderr (NOTICE/WARNING lines are
-        # routine on a large multi-schema pg_dump) to fill the OS pipe
-        # buffer (~64KB on Linux) would deadlock -- the child blocks
-        # writing to stderr, the parent blocks reading stdout, forever. A
-        # real subprocess is required to reproduce that: FakeProc's
-        # in-memory BytesIO has no OS pipe buffer to fill. Popen is
-        # redirected to a real python3 -c script instead of the real
-        # "pg_dump" argv (not installed, and irrelevant to the pipe
-        # mechanics under test); the whole call is run on a background
-        # thread with a bounded join() so an actual deadlock fails this
-        # test instead of hanging the suite forever.
-        script = (
-            "import sys\n"
-            "sys.stderr.write('E' * 200000)\n"
-            "sys.stderr.flush()\n"
-            "sys.stdout.buffer.write(b'ok')\n"
-        )
-        real_argv = [sys.executable, "-c", script]
-        real_popen = subprocess.Popen  # captured before patching -- see below
-
-        def fake_popen(_argv, **kwargs):
-            # NOT subprocess.Popen: mock.patch.object below patches the
-            # Popen attribute on the actual subprocess module (the same
-            # object artifact_bundle.subprocess IS), so calling
-            # subprocess.Popen from inside this function would recurse into
-            # itself instead of spawning the real interpreter.
-            return real_popen(real_argv, **kwargs)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            gz_path = Path(tmp) / "dump.sql.gz"
-            done = threading.Event()
-            with mock.patch.object(artifact_bundle.subprocess, "Popen", side_effect=fake_popen):
-                worker = threading.Thread(
-                    target=lambda: (artifact_bundle.dump_schemas(
-                        {}, gz_path, CitationMode.FULL_SKELETON), done.set()),
-                )
-                worker.start()
-                worker.join(timeout=10)
-            self.assertTrue(done.is_set(), "dump_schemas deadlocked on large stderr output")
-            with gzip.open(gz_path, "rb") as f:
-                self.assertEqual(f.read(), b"ok")
 
 
 class PackageTests(unittest.TestCase):
