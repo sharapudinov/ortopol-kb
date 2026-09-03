@@ -26,8 +26,8 @@ from .mathnet import MathnetClient, mathnet_id
 from .zbmath_client import ZbmathClient, ZbmathUnavailable, abstract_of
 
 
-def zbmath_abstracts(env, documents, matches, *, cache, writer=None,
-                     crawl_id=None, log=print) -> dict[str, tuple[str, str]]:
+def zbmath_abstracts(env, documents, matches, *, cache, writer, crawl_id,
+                     log=print) -> dict[str, tuple[str, str]]:
     """document_id -> (abstract, zbmath id) for seeds OpenAlex left blank.
 
     Called for every seed matched in zbMATH; the crawl decides per node
@@ -44,12 +44,20 @@ def zbmath_abstracts(env, documents, matches, *, cache, writer=None,
     provenance) is used as it stands, and everything else goes through the
     client's disk cache. What is left is genuinely new.
 
-    `cache` is a citations/http_cache.py object with no default, exactly as
-    `writer` is a store.Writer: the cache lives in the data tree, --dry-run
+    `cache` is a citations/http_cache.py object and `writer` a store.Writer,
+    both keyword-only and neither with a default, and `crawl_id` names the
+    run their rows belong to. The cache lives in the data tree, --dry-run
     writes nothing there, and the run says which cache that is by handing
-    one over. A mode travelling as a defaulted flag would give a caller with
-    no command line -- the very caller this module advertises -- a writing
-    cache by forgetting a keyword. Hits are served in either mode.
+    one over; the writer is the same seam one channel over. A mode
+    travelling as a defaulted keyword would give a caller with no command
+    line -- the very caller this module advertises -- a writing cache, or a
+    silently discarded journal, by forgetting one. Writing nothing is a
+    property of the OBJECT (dry_store.DryRunWriter), never of an omitted
+    argument. Hits are served in either mode.
+
+    writer.journal() is therefore called unconditionally: an empty error
+    list is a no-op at both writers, and a branch here would be the flag
+    the seam exists to remove.
     """
     zb_matches = seed_matches(env, COVERAGE_RUN, "zbmath")
     stored = stored_zbmath_abstracts(env)
@@ -69,8 +77,7 @@ def zbmath_abstracts(env, documents, matches, *, cache, writer=None,
         text, _types = abstract_of(record)
         if text:
             out[document] = (text, zb_matches[document])
-    if errors and writer is not None:
-        writer.journal(errors)
+    writer.journal(errors)
     log(f"zbMATH: рефератов добыто {len(out)} за {client.n_requests} запросов "
         f"(из кэша: {client.n_cache_hits}, уже в базе: {len(stored)})")
     if client.failures:

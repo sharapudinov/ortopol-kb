@@ -206,10 +206,13 @@ class ZbmathAbstractsJournalTests(unittest.TestCase):
     class _Writer:
         def __init__(self):
             self.steps = []
+            self.calls = []
 
         def journal(self, steps):
-            self.steps += list(steps)
-            return len(steps)
+            batch = list(steps)
+            self.calls.append(batch)
+            self.steps += batch
+            return len(batch)
 
     def _run(self, document_side_effect, stored=None):
         writer = self._Writer()
@@ -249,6 +252,30 @@ class ZbmathAbstractsJournalTests(unittest.TestCase):
         self.assertEqual([s["action"] for s in writer.steps], ["error"])
         self.assertEqual(writer.steps[0]["frontier_key"], "1997_sm280")
         self.assertIn("429", writer.steps[0]["reason"])
+
+    def test_the_journal_is_written_through_the_seam_either_way(self):
+        """No branch on the writer: an empty batch is a no-op at both
+        writers, and a `if writer is not None` here is the flag the seam
+        exists to remove. The call happens; what it costs is the object's
+        business.
+        """
+        _out, quiet, _client = self._run(lambda _id: None)
+        self.assertEqual(quiet.calls, [[]])
+        _out, loud, _client = self._run(ZbmathUnavailable("1234.56789: HTTP 429"))
+        self.assertEqual(len(loud.calls), 1)
+        self.assertEqual([s["action"] for s in loud.calls[0]], ["error"])
+
+    def test_neither_the_writer_nor_the_run_may_be_forgotten(self):
+        """The caller this module advertises has no command line, and an
+        omitted seam must be a TypeError rather than a run whose failures
+        vanish (or journal rows detached from their crawl).
+        """
+        for omit in ("writer", "crawl_id"):
+            keywords = {"cache": None, "writer": self._Writer(), "crawl_id": "t",
+                        "log": lambda *_: None}
+            del keywords[omit]
+            with self.subTest(omitted=omit), self.assertRaises(TypeError):
+                seed_metadata.zbmath_abstracts({}, [], {}, **keywords)
 
 
 class MathnetNamesTests(unittest.TestCase):

@@ -17,6 +17,7 @@ diverged.
 from __future__ import annotations
 
 import ast
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -101,6 +102,54 @@ class CacheModeIsAnObjectTests(unittest.TestCase):
             self.assertIn("cache", defaults, f"{name}: no cache argument at all")
             self.assertIsNone(defaults["cache"],
                               f"{name}: a defaulted cache is a writing cache")
+
+
+class NoSeamHasADefaultTests(unittest.TestCase):
+    """All THREE channels answer the same way, everywhere under citations/.
+
+    The cache scan above was written on the stated grounds that "`writer`
+    and `measurements` have no such default" -- and one function had one:
+    zbmath_abstracts(..., writer=None, crawl_id=None), whose error rows a
+    programmatic re-seed silently discarded by omitting a keyword. A
+    guarantee a test names is a guarantee a test has to check.
+    """
+
+    # `cache` is not here: a session given no cache genuinely HAS none
+    # (http_session.HttpSession documents that state), so None is a value
+    # rather than a silent writing default. Where a cache MUST arrive --
+    # the two seeders -- the test above asserts it by name. A writer that
+    # is None is not a state; it is a discarded write.
+    SEAMS = ("writer", "measurements", "crawl_id")
+
+    def _defaulted(self, path: Path) -> list[str]:
+        found = []
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            positional = node.args.posonlyargs + node.args.args
+            defaulted = [a.arg for a in positional[len(positional) - len(node.args.defaults):]]
+            defaulted += [a.arg for a, default
+                          in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                          if default is not None]
+            found += [f"{node.name}({name}=...)" for name in defaulted
+                      if name in self.SEAMS]
+        return found
+
+    def test_no_function_defaults_a_seam(self):
+        for path in SOURCES:
+            self.assertEqual(
+                self._defaulted(path), [],
+                f"{path.name}: у канала записи нет умолчания — режим приезжает объектом")
+
+    def test_the_scan_catches_one(self):
+        """Positive control: the signature this scan was written for."""
+        with tempfile.NamedTemporaryFile("w", suffix=".py", encoding="utf-8",
+                                         delete=False) as handle:
+            handle.write("def f(env, *, cache, writer=None, crawl_id=None):\n    pass\n")
+            probe = Path(handle.name)
+        self.addCleanup(probe.unlink)
+        self.assertEqual(self._defaulted(probe),
+                         ["f(writer=...)", "f(crawl_id=...)"])
 
     # Four channels, five construction sites: the response cache is built
     # once for the hub measurement's own branch and once for the crawl.
