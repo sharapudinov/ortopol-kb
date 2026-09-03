@@ -26,6 +26,12 @@ contributing row visitors to that same pass:
   profile is in the vocabulary manifest_classes.check_profile_is_known --
                                every check below picks its strictness off
                                it, so an unknown one stops the pass
+  legal vocabulary is known    manifest_classes.
+                               check_legal_vocabulary_is_known -- the two
+                               distribution lists the legal checks derive
+                               their whole expectation from name only
+                               classes this profile may carry, and neither
+                               is empty
   citation block is a block    citation_policy_check.
                                check_citation_block_is_shaped -- the pass
                                reads manifest.citation.mode before any
@@ -92,7 +98,7 @@ import column_class_checks
 import corpus_content_checks
 import dump_scan
 import sequence_checks
-from manifest_classes import check_profile_is_known
+from manifest_classes import check_legal_vocabulary_is_known, check_profile_is_known
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
 
 
@@ -177,6 +183,14 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         # at once, and a column of passes underneath is a certification of
         # nothing.
         return [version, known]
+    vocabulary = ("правовой словарь манифеста известен",
+                  *check_legal_vocabulary_is_known(manifest))
+    if not vocabulary[1]:
+        # The same polarity one field further in, and the field the legal
+        # checks below derive their whole expectation from: an unknown or
+        # over-broad distribution shrinks what they look for, and a shrunken
+        # expectation is satisfied by an artifact nobody verified.
+        return [version, known, vocabulary]
     shaped = ("манифест несёт блок citation словарём",
               *citation_policy_check.check_citation_block_is_shaped(manifest))
     if not shaped[1]:
@@ -187,7 +201,7 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         # its own list with ours (smoke_test.py) then aborts with a traceback
         # and no results at all -- the failure mode the profile gate above
         # exists to prevent, one key over.
-        return [version, known, shaped]
+        return [version, known, vocabulary, shaped]
     dump_path = artifact_dir / manifest[Key.DUMP][Key.FILE]
     contents, facts = _visit(dump_path, manifest)
     scans = contents.tables
@@ -195,6 +209,7 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
     return [
         version,
         known,
+        vocabulary,
         shaped,
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(contents, manifest)),
         ("каждая колонка дампа классифицирована",

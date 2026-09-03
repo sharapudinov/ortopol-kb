@@ -15,7 +15,7 @@ backup, and the legal cut is the public profile's job alone.
 from __future__ import annotations
 
 from manifest_keys import Key
-from manifest_contract import Profile
+from manifest_contract import Distribution, Profile
 
 
 def classes(manifest: dict) -> tuple[dict[str, list[str]], list[str], list[str]]:
@@ -85,3 +85,54 @@ def check_profile_is_known(manifest: dict) -> tuple[bool, str]:
                 f"{Profile.ALL}"
                 + ("" if ok else " — профиль вне словаря, остальные проверки "
                                  "не запускались"))
+
+
+# What each list may contain, per profile. shipped_distributions decides
+# which documents the certification expects to FIND and which it demands are
+# absent, so on the public profile it is held to what the packager is
+# allowed to ship at all (Distribution.SHIPPED) rather than merely to the
+# vocabulary: `excluded` is a perfectly well-known class, and a manifest
+# naming it here empties the `absent` set -- "excluded: not a document row,
+# not a page" then certifies [OK] on an artifact shipping excluded
+# third-party documents in full. The full profile carries the whole corpus
+# whatever the classification says, so its lists describe rather than
+# decide, and the vocabulary is all that can be asked of them.
+_ALLOWED = {
+    Key.SHIPPED_DISTRIBUTIONS: {Profile.PUBLIC: Distribution.SHIPPED,
+                                Profile.FULL: Distribution.ALL},
+    Key.FULL_CONTENT_DISTRIBUTIONS: {Profile.PUBLIC: Distribution.FULL_CONTENT,
+                                     Profile.FULL: Distribution.FULL_CONTENT},
+}
+
+
+def check_legal_vocabulary_is_known(manifest: dict) -> tuple[bool, str]:
+    """Both legal lists name only classes this reader knows the profile may
+    carry, and neither is empty.
+
+    classes() reads them raw from manifest.json and expected_ids() /
+    content_expectation() derive the ENTIRE legal expectation of this
+    checker from them. Nothing else validates them: check_classification_
+    complete() asks only that the key is present, and run_checks() gates the
+    profile, the version and the citation block's shape. So an unknown
+    string, an over-broad list or an empty one all shrink the expectation
+    silently, and a shrunken expectation is what a column of [OK] against a
+    package nobody verified looks like.
+
+    Empty is refused rather than read as a cut for the same reason
+    classes() refuses to substitute the vocabulary's default: an artifact
+    that silently dropped a class would look exactly like one that carries
+    none.
+    """
+    profile = manifest.get(Key.PROFILE)
+    legal = manifest.get(Key.LEGAL, {})
+    problems = []
+    for key, per_profile in _ALLOWED.items():
+        allowed = per_profile[profile]
+        declared = legal.get(key, [])
+        unknown = sorted(set(declared) - set(allowed))
+        if unknown:
+            problems.append(f"{key}: {unknown} вне {list(allowed)}")
+        elif not declared:
+            problems.append(f"{key}: пуст — держать дамп не к чему")
+    return not problems, (
+        f"профиль {profile!r}: " + ("; ".join(problems) or "оба списка в словаре"))

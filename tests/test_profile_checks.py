@@ -22,6 +22,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import corpus_content_checks
 import citation_policy_check
 import dump_scan
 import profile_checks
@@ -260,11 +261,18 @@ class PublicProfileChecksTests(unittest.TestCase):
     def test_a_manifest_without_shipped_distributions_is_refused(self):
         # An artifact that cannot say which classes it carries cannot be
         # verified at all -- and must not be read as carrying everything.
+        # The legal-vocabulary gate stops the pass on it before a check
+        # about the dump runs (tests/test_manifest_classes.py); asked of the
+        # check that reads the block, the refusal is the same one.
         with tempfile.TemporaryDirectory() as tmp:
             builder = ArtifactBuilder(Path(tmp))
             builder.shipped = None
             results = _results(builder)
-        ok, detail = results["правовая классификация полна"]
+            manifest = json.loads((builder.directory / "manifest.json").read_text())
+        ok, detail = results["правовой словарь манифеста известен"]
+        self.assertFalse(ok)
+        self.assertIn("shipped_distributions", detail)
+        ok, detail = corpus_content_checks.check_classification_complete(manifest, {})
         self.assertFalse(ok)
         self.assertIn("shipped_distributions", detail)
 

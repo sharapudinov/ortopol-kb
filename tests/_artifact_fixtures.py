@@ -100,6 +100,7 @@ class ArtifactBuilder:
             "excluded": [EXCLUDED_DOC],
         }
         self.shipped = ["full-text", "metadata-only", "internal"]
+        self.full_content = ["full-text", "internal"]
         self.unclassified = 0
         self.extra_sql = ""
         # None = this build shipped no citation schema; the manifest still
@@ -148,7 +149,7 @@ class ArtifactBuilder:
             "unclassified_documents": self.unclassified,
             "class_counts": [],
             "documents_by_distribution": self.by_distribution,
-            "full_content_distributions": ["full-text", "internal"],
+            "full_content_distributions": self.full_content,
         }
         if self.shipped is not None:
             legal["shipped_distributions"] = self.shipped
