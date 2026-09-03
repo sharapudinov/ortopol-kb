@@ -320,7 +320,7 @@ class RowCountsTests(unittest.TestCase):
     def test_the_count_asks_the_same_cut_the_copy_block_does(self):
         for table in DUMPED_TABLES:
             with self.subTest(table=table):
-                counted = citation_dump.count_select(table)
+                counted = citation_dump.count_expression(table)
                 first = next(iter(citation_columns.CITATION_COLUMN_CLASS[table]))
                 copied = citation_dump.copy_select(
                     table, [first], CitationMode.FULL_SKELETON)
@@ -336,7 +336,7 @@ class RowCountsTests(unittest.TestCase):
         itself derives: without the prefix the count is not a slower answer
         but an invalid statement.
         """
-        counted = citation_dump.count_select("crawl_step")
+        counted = citation_dump.count_expression("crawl_step")
         self.assertTrue(counted.startswith("WITH cut_documents AS MATERIALIZED"))
         self.assertIn("cut_steps", counted)
 
@@ -344,26 +344,44 @@ class RowCountsTests(unittest.TestCase):
         """count(*) and ORDER BY cannot share a level -- the source clause
         carries the order the dump needs, so the count wraps it.
         """
-        counted = citation_dump.count_select("work")
+        counted = citation_dump.count_expression("work")
         self.assertIn("FROM (SELECT 1 FROM citation.work w", counted)
         self.assertLess(counted.index("ORDER BY w.id"), counted.index(") shipped"))
 
-    def test_one_count_per_block_and_nothing_for_a_plan_that_ships_nothing(self):
-        asked = []
+    PLAN = citation_dump.CitationPlan(True, (
+        citation_dump.CopyBlock("work", ["id"], (), "COPY ..."),
+        citation_dump.CopyBlock("crawl_step", ["id"], (), "COPY ..."),
+    ))
 
-        def scalar(_env, sql, **_kwargs):
-            asked.append(sql)
-            return str(len(asked))
-
-        plan = citation_dump.CitationPlan(True, (
-            citation_dump.CopyBlock("work", ["id"], (), "COPY ..."),
-            citation_dump.CopyBlock("crawl_step", ["id"], (), "COPY ..."),
-        ))
-        with mock.patch.object(citation_dump, "scalar", side_effect=scalar):
-            counts = citation_dump.plan_row_counts({}, plan)
+    def test_every_block_is_counted_in_one_round_trip(self):
+        """A psql process, a temp script and a connection per block was the
+        cost live_row_counts() twenty lines below already refuses to pay --
+        and the journal's block pays it over the whole crawl_step cut.
+        """
+        with mock.patch.object(citation_dump, "scalar_row",
+                               return_value=["1", "2"]) as row:
+            counts = citation_dump.plan_row_counts({}, self.PLAN)
         self.assertEqual(counts, {"work": 1, "crawl_step": 2})
-        self.assertEqual(len(asked), 2)
-        with mock.patch.object(citation_dump, "scalar") as never:
+        row.assert_called_once()
+        statement = row.call_args.args[1]
+        self.assertEqual(row.call_args.kwargs["expected_columns"], 2)
+        for table in ("work", "crawl_step"):
+            self.assertIn(citation_dump.count_expression(table), statement)
+
+    def test_the_one_statement_carries_each_cut_as_its_own_subquery(self):
+        """The journal's WITH belongs to the expression that reads it, not
+        to the statement: two blocks derive two different cuts, and hoisting
+        either would make the other's count answer someone else's question.
+        """
+        with mock.patch.object(citation_dump, "scalar_row", return_value=["1", "2"]) as row:
+            citation_dump.plan_row_counts({}, self.PLAN)
+        statement = row.call_args.args[1]
+        self.assertTrue(statement.startswith("SELECT (SELECT count(*)"), statement[:40])
+        self.assertIn("(WITH cut_documents AS MATERIALIZED", statement)
+        self.assertTrue(statement.endswith(";"), statement[-40:])
+
+    def test_a_plan_that_ships_nothing_asks_nothing(self):
+        with mock.patch.object(citation_dump, "scalar_row") as never:
             self.assertEqual(
                 citation_dump.plan_row_counts({}, citation_dump.CitationPlan(False, ())), {})
         never.assert_not_called()

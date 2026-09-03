@@ -44,7 +44,7 @@ from __future__ import annotations
 from typing import IO, NamedTuple
 
 from citation_columns import CITATION_COLUMN_CLASS, blanked_value
-from pg_common import scalar, scalar_row
+from pg_common import scalar_row
 from schema_catalog import (
     classified_tables,
     columns_of,
@@ -151,7 +151,7 @@ def copy_select(table: str, columns: list[str], mode: str) -> str:
     return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
-def count_select(table: str) -> str:
+def count_expression(table: str) -> str:
     """How many rows this table's COPY block will write, asked with the
     block's OWN cut -- the same _SOURCE clause and the same CTE prefix, so
     the number and the rows cannot describe two different policies.
@@ -159,22 +159,35 @@ def count_select(table: str) -> str:
     Wrapped in a subquery because the source clause carries the ORDER BY the
     dump needs and an aggregate cannot: what is counted is the row set, the
     order is the block's business.
+
+    An EXPRESSION, not a statement: the counts of a plan travel in one
+    statement (plan_row_counts), and the journal's WITH belongs to the
+    expression that reads it -- two blocks derive two different cuts, and a
+    hoisted one would have the other count someone else's row set.
     """
     prefix = _QUERY_PREFIX[table]() if table in _QUERY_PREFIX else ""
-    return f"{prefix}SELECT count(*) FROM (SELECT 1 {_source_clause(table)}) shipped;"
+    return f"{prefix}SELECT count(*) FROM (SELECT 1 {_source_clause(table)}) shipped"
 
 
 def plan_row_counts(env: dict, plan: CitationPlan) -> dict[str, int]:
-    """{table: rows} for every block the plan carries.
+    """{table: rows} for every block the plan carries, in ONE statement.
 
     Read BEFORE the dump file is opened, beside the plan itself, and handed
     back to the caller for the manifest: MANIFEST_DESCRIBES_ARTIFACT means
     every number in manifest.json is about the package, and the recipient's
     check compares exactly these against the COPY blocks the file turns out
     to contain (deploy/citation_cut_checks.py).
+
+    One statement, the way live_row_counts() below asks its own: a psql
+    process, a temp script and a fresh connection per block is the cost
+    this module family prices explicitly elsewhere, and it grows with every
+    table the schema gains.
     """
-    return {block.table: int(scalar(env, count_select(block.table)))
-            for block in plan.blocks}
+    if not plan.blocks:
+        return {}
+    projection = ", ".join(f"({count_expression(block.table)})" for block in plan.blocks)
+    counts = scalar_row(env, f"SELECT {projection};", expected_columns=len(plan.blocks))
+    return {block.table: int(count) for block, count in zip(plan.blocks, counts)}
 
 
 def live_row_counts(env: dict) -> dict[str, int]:
