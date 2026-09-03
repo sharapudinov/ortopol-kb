@@ -67,8 +67,13 @@ DEPLOY_FILES = [
     # on this side could only agree with the producer by accident, which is
     # exactly the case the check exists to catch.
     "corpus_columns.py",
-    # ... and the engine both classifications are declared through.
+    # ... and the engine both classifications are declared through ...
     "column_classes.py",
+    # ... and the one check that holds a shipped COPY column list to those
+    # maps, for BOTH schemas at once. The producer refuses to dump a column
+    # nobody classified; this is the same question asked of the file, which
+    # is the only side a recipient of an unsigned manifest can ask it from.
+    "column_class_checks.py",
     # ... and the manifest-only legal vocabulary its checks reason over,
     # split off for module size: without it profile_checks.py does not
     # import at all on the recipient's side.

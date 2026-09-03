@@ -182,6 +182,14 @@ def check_no_generated_columns(scans: dict) -> tuple[bool, str]:
     COPY column list would either fail to restore or, worse, carry text
     content that no longer matches body -- the exact leak the public profile
     exists to prevent.
+
+    Naming tsv is what makes the verdict actionable; it is NOT what makes
+    the question complete. A generated column is in no classification map,
+    so column_class_checks.check_columns_are_classified() fails on it (and
+    on every other unnamed column) whether or not anyone thought to name it
+    here -- this check would otherwise be a two-name denylist on the
+    artifact side of exactly the polarity column_classes.py exists to
+    invert.
     """
     pages = scans.get(PAGES_TABLE)
     columns = pages.columns if pages else []

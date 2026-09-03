@@ -71,10 +71,41 @@ class ColumnClasses:
                 f"угадывать, уезжает ли новая колонка в public-артефакт"
             ) from None
 
+    def knows(self, table: str) -> bool:
+        return table in self.classes
+
     def content_columns(self, table: str) -> tuple[str, ...]:
-        """The columns a cut withholds in `table`, in declaration order."""
+        """The columns a cut withholds in `table`, in declaration order.
+
+        Refuses an unclassified TABLE the way class_of() refuses an
+        unclassified column: a bare KeyError here read as a crash rather
+        than as the one answer this map is allowed to give, and the caller
+        that would have hit it (the artifact-side checker, holding a dumped
+        COPY block to this map) is precisely the one that has to report it.
+        """
+        if not self.knows(table):
+            raise ColumnUnclassified(
+                f"таблица {self.schema}.{table} не классифицирована -- {self.hint}"
+            )
         return tuple(column for column, kind in self.classes[table].items()
                      if kind == CONTENT)
+
+    def unknown_columns(self, table: str, columns) -> tuple[str, ...]:
+        """Which of `columns` this map has no class for -- ALL of them when
+        the table itself is unclassified.
+
+        The producer side of the polarity is class_of()/withheld_value():
+        a column nobody named stops the build. This is the same question
+        asked of a FINISHED dump, by the checker that travels inside the
+        artifact: manifest.json is unsigned, so "every shipped column was
+        classified" has to be answerable from the file rather than from the
+        packager's intentions. Returns rather than raises, because the
+        answer is a check result naming the difference, not a refusal.
+        """
+        known = self.classes.get(table)
+        if known is None:
+            return tuple(columns)
+        return tuple(column for column in columns if column not in known)
 
     def withheld_value(self, table: str, column: str) -> str | None:
         """The SQL that stands in for this column's value, or None to ship

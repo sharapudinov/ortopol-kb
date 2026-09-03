@@ -32,6 +32,13 @@ contributing row visitors to that same pass:
                                check runs, so a field that is not a mapping
                                has to stop the pass rather than raise
                                through it
+  every column is classified   column_class_checks.py: each COPY block of
+                               schema corpus/citation carries only columns
+                               the bundled classification maps name -- the
+                               producer-side polarity (an unnamed column
+                               stops the build) asked of the finished file,
+                               which is the side an unsigned manifest
+                               leaves to the recipient
   corpus content holds         corpus_content_checks.py (module size):
                                classification complete, excluded left no
                                trace, metadata-only stripped, full-text
@@ -75,6 +82,7 @@ from pathlib import Path
 import citation_content_checks
 import citation_cut_checks
 import citation_policy_check
+import column_class_checks
 import corpus_content_checks
 import dump_scan
 from manifest_classes import check_profile_is_known
@@ -163,6 +171,8 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         known,
         shaped,
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(contents, manifest)),
+        ("каждая колонка дампа классифицирована",
+         *column_class_checks.check_columns_are_classified(scans)),
         ("правовая классификация полна",
          *corpus_content_checks.check_classification_complete(manifest, scans)),
         ("excluded: ни строки документа, ни страниц",
