@@ -55,17 +55,20 @@ compose своим `--env-file` не разворачивает `$` и до `PGP
 
 ## Самопроверка развёртывания
 
-Пакет несёт собственный смок-тест: `smoke_test.py` и модули, которые он
-импортирует (`smoke_stack.py`, `smoke_checks.py`, `vector_probe_check.py`,
-`blob_integrity_checks.py`, `bundled_files_check.py`, `manifest_contract.py`,
-`manifest_keys.py`, `compose_lifecycle.py`, `dump_integrity.py`, `deploy_pathfix.py`,
-`ollama_registry.py`, `drift_probe.py`, `profile_checks.py`, `dump_scan.py`,
-`pg_rank_probe.py`), а также копии общих модулей репозитория
-(`corpus_lib/pg_common.py`, `corpus_lib/pg_search.py`,
-`corpus_lib/pg_graph_common.py`, `corpus_lib/pg_graph.py`,
-`corpus_lib/pg_graph_candidates.py`,
-`corpus_lib/pg_graph_cocitation.py`, `corpus_lib/pg_graph_cypher.py`) лежат прямо
-здесь, рядом с дампом и `manifest.json` — запускаются без доступа к репозиторию:
+Пакет несёт собственный смок-тест: `smoke_test.py`, модули, которые он
+импортирует, и копии общих модулей репозитория (в подкаталоге `corpus_lib/`) —
+всё лежит прямо здесь, рядом с дампом и `manifest.json`, и запускается без
+доступа к репозиторию. ЧТО именно приехало, перечислено в самом пакете:
+`manifest.json` → ключ `files` называет каждый файл вместе с его sha256, а
+`bundled_files_check` сверяет распакованный каталог с этим списком (пропавший,
+подменённый и лишний файл — три отдельных вердикта). Список здесь не
+дублируется: пакет несёт около полусотни файлов, и второй перечень в прозе
+устаревает молча — гайд обещал бы файлы, которых нет, и умалчивал о тех,
+что есть.
+
+```bash
+python3 -c "import json; print('\n'.join(sorted(json.load(open('manifest.json'))['files'])))"
+```
 
 ```bash
 python3 smoke_test.py
