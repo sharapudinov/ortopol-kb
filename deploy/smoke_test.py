@@ -38,7 +38,6 @@ import compose_lifecycle as lifecycle
 import drift_probe
 import profile_checks
 import smoke_checks as checks
-from dump_integrity import check_dump_matches_manifest
 from manifest_keys import Key
 from manifest_contract import Profile
 from smoke_stack import (
@@ -124,18 +123,6 @@ def main(argv: list[str] | None = None) -> int:
         ))
 
         if schema_ok:
-            # Verify the extracted dump against the manifest BEFORE letting
-            # Postgres load it -- a corrupted/truncated/tampered dump should
-            # be caught here, not discovered as a mysteriously-wrong row
-            # count three checks later.
-            #
-            # The comparison itself is dump_integrity's, and profile_checks
-            # runs the SAME one as its last gate: the question belongs to
-            # the package, not to the Docker path, and two spellings of
-            # "the dump is the declared one" agree only by accident. So the
-            # row is printed here only when the static pass below is not
-            # going to run at all.
-            dump_ok, dump_detail = check_dump_matches_manifest(manifest, extract_dir)
             results.append(("файлы манифеста совпадают с распаковкой",
                              *checks.check_bundled_files(extract_dir, manifest, pristine=pristine)))
 
@@ -143,14 +130,12 @@ def main(argv: list[str] | None = None) -> int:
             # invariants are a property of the artifact, so they are checked
             # against its bytes and hold (or fail) whether or not Docker is
             # available at all. Also runnable on its own --
-            # `python3 profile_checks.py --artifact-dir DIR`.
-            if dump_ok:
-                results.extend(profile_checks.run_checks(extract_dir))
-            else:
-                results.append(("дамп — тот, что описан манифестом (размер, sha256)",
-                                 False, dump_detail))
-                results.append(("профиль: содержимое дампа = манифест", False,
-                                 "дамп не сошёлся с манифестом, статические проверки пропущены"))
+            # `python3 profile_checks.py --artifact-dir DIR`. Its gate
+            # ladder ends with the dump-vs-manifest comparison (size and
+            # sha256), so a corrupted, truncated or tampered dump is caught
+            # here, before Postgres loads it, and hashed exactly once: the
+            # question belongs to the package, not to the Docker path.
+            results.extend(profile_checks.run_checks(extract_dir))
 
             # The extracted artifact's OWN docker-compose.yml, not this
             # checkout's copy -- their relative bind mounts (init/, the

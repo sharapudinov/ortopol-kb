@@ -42,12 +42,23 @@ class FieldTally:
         self.index = columns.index(self.column) if self.column in columns else None
 
     def line(self, line: bytes) -> None:
+        # Walk tab offsets to the one field this tally reads instead of
+        # splitting the row: the census block is the one whose rows carry
+        # evidence blobs and a rendered embedding, and this runs on the
+        # seam every byte of the dump passes through.
         if self.index is None:
             return
-        fields = line.split(b"\t")
-        if self.index < len(fields):
-            value = fields[self.index].decode("utf-8", "replace")
-            self.counts[value] = self.counts.get(value, 0) + 1
+        start = 0
+        for _ in range(self.index):
+            tab = line.find(b"\t", start)
+            if tab < 0:
+                return
+            start = tab + 1
+        stop = line.find(b"\t", start)
+        if stop < 0:
+            stop = len(line)
+        value = line[start:stop].decode("utf-8", "replace")
+        self.counts[value] = self.counts.get(value, 0) + 1
 
 
 class BlockCensus(NamedTuple):
