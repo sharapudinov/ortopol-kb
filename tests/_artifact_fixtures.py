@@ -22,6 +22,7 @@ import corpus_content_checks
 import dump_scan
 import profile_checks
 from citation_columns import CENSUS_COLUMN
+from dump_integrity import sha256_file
 from manifest_contract import CitationMode
 from manifest_keys import MANIFEST_SCHEMA_VERSION
 
@@ -224,8 +225,15 @@ class ArtifactBuilder:
             "legal": legal,
         }
         if self.dump_key:
+            # Length and digest of the file this fixture just wrote: the
+            # certifier holds the dump to them before reading a byte of its
+            # contents (dump_integrity.check_dump_matches_manifest), so a
+            # package built here has to be internally honest the way the
+            # packager's is. A test about TAMPERING edits one of them (or
+            # the file) itself.
             manifest["dump"] = self.dump if self.dump is not None else {
-                "file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"}
+                "file": dump_path.name, "bytes": dump_path.stat().st_size,
+                "sha256": sha256_file(dump_path)}
         source = "owner" if self.profile == "public" else "not-applicable"
         if self.citation_block:
             citation = self.citation or {"mode": "none", "work_count": 0, "cites_count": 0}

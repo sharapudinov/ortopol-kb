@@ -48,6 +48,14 @@ contributing row visitors to that same pass:
                                nothing (or a file the package does not
                                carry) stops the pass with a row, not a
                                traceback
+  the dump is the declared one dump_integrity.
+                               check_dump_matches_manifest -- the file's
+                               length and sha256 against the block that
+                               names it. Every check below reads the dump's
+                               CONTENTS, so without this they describe
+                               whatever file sits at that path; the same
+                               implementation smoke_test.py runs before it
+                               lets Postgres restore anything
   every column is classified   column_class_checks.py: each COPY block of
                                schema corpus/citation carries only columns
                                the bundled classification maps name -- the
@@ -114,9 +122,8 @@ import corpus_content_checks
 import dump_scan
 import sequence_checks
 import table_rows_check
-from manifest_classes import (check_legal_vocabulary_is_known, check_profile_is_known,
-                              cut_applies)
-from manifest_gates import check_dump_block_is_shaped, check_manifest_version
+from manifest_classes import cut_applies
+from manifest_gates import run_gates
 from manifest_contract import required_schemas
 from manifest_keys import Key
 
@@ -188,59 +195,19 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, Dum
 
 def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
     manifest = json.loads((artifact_dir / "manifest.json").read_text())
-    version = ("версия манифеста = версия проверяльщика", *check_manifest_version(manifest))
-    if not version[1]:
-        # Nothing below is meaningful against a manifest this reader cannot
-        # read, and a list of passes underneath a failed gate reads as a
-        # certification. The gate is the whole answer.
-        return [version]
-    known = ("манифест называет известный профиль", *check_profile_is_known(manifest))
-    if not known[1]:
-        # Every check below picks its strictness off this string; read as
-        # anything but a declared profile they all take the lenient branch
-        # at once, and a column of passes underneath is a certification of
-        # nothing.
-        return [version, known]
-    vocabulary = ("правовой словарь манифеста известен",
-                  *check_legal_vocabulary_is_known(manifest))
-    if not vocabulary[1]:
-        # The same polarity one field further in, and the field the legal
-        # checks below derive their whole expectation from: an unknown or
-        # over-broad distribution shrinks what they look for, and a shrunken
-        # expectation is satisfied by an artifact nobody verified.
-        return [version, known, vocabulary]
-    shaped = ("манифест несёт блок citation словарём",
-              *citation_policy_check.check_citation_block_is_shaped(manifest))
-    if not shaped[1]:
-        # The same polarity one field further in, and this one is not merely
-        # about strictness: _visit() reads manifest.citation.mode to wire the
-        # citation visitors, so a field that is not a mapping raises out of
-        # run_checks() before a single result exists. A caller that extends
-        # its own list with ours (smoke_test.py) then aborts with a traceback
-        # and no results at all -- the failure mode the profile gate above
-        # exists to prevent, one key over.
-        return [version, known, vocabulary, shaped]
-    named = ("манифест несёт блок dump с существующим файлом",
-             *check_dump_block_is_shaped(manifest, artifact_dir))
-    if not named[1]:
-        # The same polarity one key over from the citation block, and the
-        # same failure it prevents: the line below builds the path it opens
-        # out of this block, so a `dump` that is absent, a string or a list
-        # raises out of run_checks() before a single result exists, and a
-        # name pointing at nothing raises from inside gzip.open. A caller
-        # that extends its own list with ours aborts with a traceback and
-        # no results at all.
-        return [version, known, vocabulary, shaped, named]
+    gates = run_gates(manifest, artifact_dir)
+    if not all(ok for _name, ok, _detail in gates):
+        # A column of passes underneath a failed gate reads as a
+        # certification of the package. The gate is the whole answer, and
+        # WHICH preconditions there are, in what order, is manifest_gates'
+        # (see run_gates: each one is a field this wiring itself reads).
+        return gates
     dump_path = artifact_dir / manifest[Key.DUMP][Key.FILE]
     contents, facts = _visit(dump_path, manifest)
     scans = contents.tables
     profile = manifest.get(Key.PROFILE)
     return [
-        version,
-        known,
-        vocabulary,
-        shaped,
-        named,
+        *gates,
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(contents, manifest)),
         ("каждая колонка дампа классифицирована",
          *column_class_checks.check_columns_are_classified(scans)),

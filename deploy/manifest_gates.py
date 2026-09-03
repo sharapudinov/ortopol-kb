@@ -1,13 +1,15 @@
-"""The two manifest fields profile_checks.py's own wiring reads before any
-check can run: the version it is written against, and the dump block whose
-path it opens.
+"""The preconditions of the artifact-side pass: the ones with no
+subject-module of their own, and the ORDER every one of them runs in.
 
-Split out of profile_checks.py for module size (kb/CLAUDE.md FILE_SIZE)
-along the seam the other gates already have -- check_profile_is_known lives
-with the readings that branch on the profile (manifest_classes.py) and
+Two gates are declared here -- the manifest version this reader is written
+against, and the dump block whose path the pass opens -- and run_gates()
+below is the ladder itself, which also calls the gates that DO have a
+subject (check_profile_is_known next door in manifest_classes.py,
 check_citation_block_is_shaped with the module that owns the citation
-policy (citation_policy_check.py). These two belong to no subject: nothing
-downstream reasons about them, the PASS does.
+policy, check_dump_matches_manifest with the module that hashes the file).
+The ladder belongs here rather than in profile_checks.py for the same
+reason the two gates do: a precondition is this module's subject, while
+that one owns the pass and the checks it feeds.
 
 Both are gates rather than checks, and the difference is the failure they
 prevent. A check that fails prints a red row; a field the wiring itself
@@ -22,6 +24,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import citation_policy_check
+from dump_integrity import check_dump_matches_manifest
+from manifest_classes import check_legal_vocabulary_is_known, check_profile_is_known
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
 
 
@@ -85,3 +90,70 @@ def check_dump_block_is_shaped(manifest: dict, artifact_dir: Path) -> tuple[bool
             "пакет не несёт (остальные проверки не запускались)"
         )
     return True, f"{name}: файл на месте"
+
+
+def run_gates(manifest: dict, artifact_dir: Path) -> list[tuple[str, bool, str]]:
+    """Every precondition the pass has, in the order they must hold, and
+    stopping at the first that fails.
+
+    Here rather than in profile_checks.py because these are this module's
+    subject: a field the WIRING itself reads, checked before it is read.
+    The order is part of the answer -- each gate is what makes the next one
+    meaningful -- and the caller's contract is simply "if any row is False,
+    that list is the whole verdict".
+    """
+    version = ("версия манифеста = версия проверяльщика", *check_manifest_version(manifest))
+    if not version[1]:
+        # Nothing below is meaningful against a manifest this reader cannot
+        # read, and a list of passes underneath a failed gate reads as a
+        # certification. The gate is the whole answer.
+        return [version]
+    known = ("манифест называет известный профиль", *check_profile_is_known(manifest))
+    if not known[1]:
+        # Every check below picks its strictness off this string; read as
+        # anything but a declared profile they all take the lenient branch
+        # at once, and a column of passes underneath is a certification of
+        # nothing.
+        return [version, known]
+    vocabulary = ("правовой словарь манифеста известен",
+                  *check_legal_vocabulary_is_known(manifest))
+    if not vocabulary[1]:
+        # The same polarity one field further in, and the field the legal
+        # checks below derive their whole expectation from: an unknown or
+        # over-broad distribution shrinks what they look for, and a shrunken
+        # expectation is satisfied by an artifact nobody verified.
+        return [version, known, vocabulary]
+    shaped = ("манифест несёт блок citation словарём",
+              *citation_policy_check.check_citation_block_is_shaped(manifest))
+    if not shaped[1]:
+        # The same polarity one field further in, and this one is not merely
+        # about strictness: _visit() reads manifest.citation.mode to wire the
+        # citation visitors, so a field that is not a mapping raises out
+        # of the pass before a single result exists. A caller that extends
+        # its own list with ours (smoke_test.py) then aborts with a traceback
+        # and no results at all -- the failure mode the profile gate above
+        # exists to prevent, one key over.
+        return [version, known, vocabulary, shaped]
+    named = ("манифест несёт блок dump с существующим файлом",
+             *check_dump_block_is_shaped(manifest, artifact_dir))
+    if not named[1]:
+        # The same polarity one key over from the citation block, and the
+        # same failure it prevents: the pass builds the path it opens out
+        # of this block, so a `dump` that is absent, a string or a list
+        # raises before a single result exists, and a name pointing at
+        # nothing raises from inside gzip.open. A caller
+        # that extends its own list with ours aborts with a traceback and
+        # no results at all.
+        return [version, known, vocabulary, shaped, named]
+    intact = ("дамп — тот, что описан манифестом (размер, sha256)",
+              *check_dump_matches_manifest(manifest, artifact_dir))
+    if not intact[1]:
+        # The last gate, and the one that makes every check below a
+        # statement about THIS package: they all read the dump's contents,
+        # and contents nobody tied to the manifest's own numbers are the
+        # contents of whatever file sits at that path. Checked here rather
+        # than only in smoke_test.py, because a recipient runs this module
+        # standalone (AGENT_GUIDE.md) and Docker is not what makes an
+        # artifact's bytes worth certifying.
+        return [version, known, vocabulary, shaped, named, intact]
+    return [version, known, vocabulary, shaped, named, intact]

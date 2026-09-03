@@ -38,7 +38,7 @@ import compose_lifecycle as lifecycle
 import drift_probe
 import profile_checks
 import smoke_checks as checks
-from dump_integrity import sha256_file
+from dump_integrity import check_dump_matches_manifest
 from manifest_keys import Key
 from manifest_contract import Profile
 from smoke_stack import (
@@ -128,18 +128,14 @@ def main(argv: list[str] | None = None) -> int:
             # Postgres load it -- a corrupted/truncated/tampered dump should
             # be caught here, not discovered as a mysteriously-wrong row
             # count three checks later.
-            dump = manifest[Key.DUMP]
-            dump_path = extract_dir / dump[Key.FILE]
-            dump_ok = (
-                dump_path.is_file()
-                and dump_path.stat().st_size == dump[Key.BYTES]
-                and sha256_file(dump_path) == dump[Key.SHA256]
-            )
-            dump_detail = (
-                f"{dump_path.name}: {dump_path.stat().st_size} bytes (manifest {dump[Key.BYTES]})"
-                if dump_path.is_file() else f"{dump_path.name}: missing"
-            )
-            results.append(("дамп sha256 совпадает с манифестом", dump_ok, dump_detail))
+            #
+            # The comparison itself is dump_integrity's, and profile_checks
+            # runs the SAME one as its last gate: the question belongs to
+            # the package, not to the Docker path, and two spellings of
+            # "the dump is the declared one" agree only by accident. So the
+            # row is printed here only when the static pass below is not
+            # going to run at all.
+            dump_ok, dump_detail = check_dump_matches_manifest(manifest, extract_dir)
             results.append(("файлы манифеста совпадают с распаковкой",
                              *checks.check_bundled_files(extract_dir, manifest, pristine=pristine)))
 
@@ -151,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
             if dump_ok:
                 results.extend(profile_checks.run_checks(extract_dir))
             else:
+                results.append(("дамп — тот, что описан манифестом (размер, sha256)",
+                                 False, dump_detail))
                 results.append(("профиль: содержимое дампа = манифест", False,
                                  "дамп не сошёлся с манифестом, статические проверки пропущены"))
 
