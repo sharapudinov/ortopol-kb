@@ -32,6 +32,26 @@ from __future__ import annotations
 
 from citation_vocab import CrawlAction
 
+from .scoring import NO_TEXT_SCORE
+
+# The two sentences a `drop` row can carry. Spelled here, next to the
+# builder that chooses between them, and mirrored by the one-time rewrite of
+# the rows written before the distinction existed
+# (pg_schema_citation_backfill.sql, crawl_step_no_text_reason).
+NO_TEXT_REASON = "no text to embed"
+BELOW_THRESHOLD_REASON = "below-threshold"
+
+
+def drop_reason(score) -> str:
+    """Which of the two a candidate with this score earned.
+
+    A score at or under NO_TEXT_SCORE is the crawl saying "nothing to
+    measure", not "measured and too far": scores_of() never saw the
+    candidate, because it had no title to embed.
+    """
+    return (NO_TEXT_REASON if score is not None and score <= NO_TEXT_SCORE
+            else BELOW_THRESHOLD_REASON)
+
 
 def _step(crawl_id, depth, action, **fields) -> dict:
     """One journal row, with its action checked against the vocabulary.
@@ -94,10 +114,19 @@ def keep(crawl_id, depth, candidate_key, node_key, score, tau, relation,
 def drop(crawl_id, depth, candidate_key, score, tau, relation,
          frontier_key=None) -> dict:
     """No node_key: a dropped candidate becomes no node, which is exactly
-    what the empty column says about it."""
+    what the empty column says about it.
+
+    Two prose reasons for one action, told apart by the SCORE column and by
+    nothing else (JOURNAL_FACTS_ARE_COLUMNS): a candidate carrying
+    NO_TEXT_SCORE was never measured against tau at all -- it had no title
+    to embed (citations/candidates.py) -- and calling that "below-threshold"
+    reports a relevance verdict the crawl never reached. Same row, same
+    action, same columns; only the sentence a human reads differs, which is
+    all `reason` is for.
+    """
     return _step(crawl_id, depth, CrawlAction.DROP, frontier_key=frontier_key or None,
                  candidate_key=candidate_key, score=score, tau=tau,
-                 relation=relation, reason="below-threshold")
+                 relation=relation, reason=drop_reason(score))
 
 
 def fetch(crawl_id, depth, frontier_key, n_found, n_kept) -> dict:

@@ -18,7 +18,7 @@ from __future__ import annotations
 from .gathering import principal_hit
 from .openalex_client import short_id
 from .registry import scoring_fields
-from .scoring import cosine_unit
+from .scoring import NO_TEXT_SCORE, cosine_unit
 
 
 def scores_of(vectors_for, centroid, tau, holders) -> dict[str, tuple[float, list[float] | None]]:
@@ -49,9 +49,11 @@ def score(registry, measure, candidates) -> list[dict]:
     binds scores_of() above with its own centroid and tau.
 
     A candidate with no title carries no semantic content (the predicate
-    pg_embed.py applies to a page) and is scored -1.0 rather than embedded:
-    an empty string would land somewhere arbitrary on the sphere instead of
-    being visibly unusable.
+    pg_embed.py applies to a page) and is scored NO_TEXT_SCORE rather than
+    embedded: an empty string would land somewhere arbitrary on the sphere
+    instead of being visibly unusable. The journal says the same thing in
+    words off that same number (citations/journal.drop) -- "below-threshold"
+    would report a relevance verdict on a candidate nothing was measured on.
 
     `hits` travels through unchanged -- the whole set of frontier nodes the
     candidate was reached from -- and `discovered_from` is the one name the
@@ -71,7 +73,7 @@ def score(registry, measure, candidates) -> list[dict]:
     out = []
     for record, relation, hits in fresh:
         key = short_id(record.get("id"))
-        value, vector = scored.get(key, (-1.0, None))
+        value, vector = scored.get(key, (NO_TEXT_SCORE, None))
         out.append({
             "record": record, "relation": relation, "hits": hits,
             "discovered_from": principal_hit(hits),

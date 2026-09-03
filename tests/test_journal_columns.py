@@ -18,7 +18,10 @@ import unittest
 
 import _pathfix  # noqa: F401
 import pg_graph_common
-from citations import journal, store
+from _citation_fixtures import work
+from citations import candidates, journal, store
+from citations.registry import WorkRegistry
+from citations.scoring import NO_TEXT_SCORE
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
@@ -302,6 +305,109 @@ class BackfillRegistryTests(unittest.TestCase):
             extra_args=["-t", "-A"],
         ).stdout.strip()
         self.assertEqual(out, "1")
+
+
+class DropReasonSaysWhichDropItWasTests(unittest.TestCase):
+    """Offline: the one journal builder whose prose is not a constant.
+
+    `action` and `score` are the columns; the sentence beside them is what a
+    human reads, and it was wrong on one whole class of row -- a candidate
+    with no title is never measured against tau (citations/candidates.py
+    scores it NO_TEXT_SCORE), so "below-threshold" claimed a comparison the
+    crawl never made. Everything machine-readable stays where it was: the
+    two cases are told apart by the score column, here and in the schema's
+    one-time rewrite alike.
+    """
+
+    def test_a_candidate_that_failed_tau_says_so(self):
+        step = journal.drop("c", 1, "W1", 0.4001, 0.5, "cites")
+        self.assertEqual(step["reason"], journal.BELOW_THRESHOLD_REASON)
+        self.assertEqual(step["score"], 0.4001)
+
+    def test_a_candidate_with_nothing_to_embed_says_that_instead(self):
+        step = journal.drop("c", 1, "W1", NO_TEXT_SCORE, 0.5, "cites")
+        self.assertEqual(step["reason"], journal.NO_TEXT_REASON)
+        self.assertEqual(step["score"], NO_TEXT_SCORE)
+        self.assertEqual(step["action"], journal.CrawlAction.DROP)
+
+    def test_the_untitled_candidate_the_crawl_produces_is_that_case(self):
+        """Not a hand-built number: the score comes from the scoring pass
+        itself, for a record with no title at all.
+        """
+        registry = WorkRegistry()
+        untitled = work("W_NO_TEXT", title="")
+        scored = candidates.score(registry, lambda holders: {}, [(untitled, "cites", ())])
+        self.assertEqual([item["score"] for item in scored], [NO_TEXT_SCORE])
+        self.assertEqual(journal.drop_reason(scored[0]["score"]), journal.NO_TEXT_REASON)
+
+
+class NoTextReasonBackfillTests(unittest.TestCase):
+    """The live half of the same distinction: the rows written before the
+    builder made it.
+
+    Applied as the schema applies it -- the whole file, guarded by
+    citation.schema_backfill -- inside a rolled-back transaction, so neither
+    the live journal nor the live registry is touched.
+    """
+
+    NAME = "crawl_step_no_text_reason"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+        cls.schema = pg_graph_common.SCHEMA_BACKFILL.read_text(encoding="utf-8")
+
+    FIXTURE = f"""
+    INSERT INTO citation.crawl_step (crawl_id, depth, candidate_key, action,
+                                     score, tau, relation, reason)
+    VALUES ('test:no-text', 2, 'W_A', 'drop', -1, 0.5, 'cites', 'below-threshold'),
+           ('test:no-text', 2, 'W_B', 'drop', 0.4001, 0.5, 'cites', 'below-threshold'),
+           ('test:no-text', 2, 'W_C', 'drop', -1, 0.5, 'cites', 'что-то своё');
+    """
+    PROBE = ("SELECT candidate_key, reason FROM citation.crawl_step "
+             "WHERE crawl_id = 'test:no-text' ORDER BY candidate_key;")
+
+    def _probe(self, script: str) -> list[str]:
+        out = run_sql(self.env, "BEGIN;\n" + script + "\nROLLBACK;\n",
+                      extra_args=["-t", "-A", "-F", FIELD_SEP]).stdout
+        return [line for line in out.splitlines() if line.strip()]
+
+    def _forget(self) -> str:
+        return f"DELETE FROM citation.schema_backfill WHERE name = '{self.NAME}';"
+
+    def test_only_the_unmeasured_row_is_reworded(self):
+        rows = self._probe(self._forget() + self.FIXTURE + self.schema + self.PROBE)
+        self.assertEqual(rows, [
+            FIELD_SEP.join(["W_A", journal.NO_TEXT_REASON]),
+            FIELD_SEP.join(["W_B", journal.BELOW_THRESHOLD_REASON]),
+            FIELD_SEP.join(["W_C", "что-то своё"]),
+        ])
+
+    def test_a_recorded_rewrite_does_no_work_at_all(self):
+        rows = self._probe(self._forget() + self.schema
+                           + self.FIXTURE + self.schema + self.PROBE)
+        self.assertEqual(rows[0], FIELD_SEP.join(["W_A", journal.BELOW_THRESHOLD_REASON]))
+
+    def test_the_live_database_carries_the_record(self):
+        """A property of THIS instance, like the parse's own: applied here,
+        or the 14 rows it exists for still misname themselves.
+        """
+        out = run_sql(
+            self.env,
+            "SELECT count(*) FROM citation.schema_backfill "
+            f"WHERE name = '{self.NAME}';",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        self.assertEqual(out, "1")
+
+    def test_no_drop_row_in_the_live_journal_still_misnames_itself(self):
+        out = run_sql(
+            self.env,
+            "SELECT count(*) FROM citation.crawl_step WHERE action = 'drop' "
+            f"AND score <= -1 AND reason = '{journal.BELOW_THRESHOLD_REASON}';",
+            extra_args=["-t", "-A"],
+        ).stdout.strip()
+        self.assertEqual(out, "0")
 
 
 class StepColumnsTests(unittest.TestCase):

@@ -26,6 +26,7 @@ import unittest
 import _pathfix  # noqa: F401
 
 import pg_graph_common
+from citations import journal
 
 SCHEMA = pg_graph_common.SCHEMA_BACKFILL.read_text(encoding="utf-8")
 
@@ -127,10 +128,17 @@ class ParseShapeIsIdempotentTests(unittest.TestCase):
     """
 
     def _update_blocks(self) -> list[str]:
+        """The UPDATEs of the PARSE, and only those. The file carries a
+        second one-time block (crawl_step_no_text_reason, next class), whose
+        statement fills no column out of prose and answers to different
+        rules; scoped by the parse's own DO block so neither can be read as
+        the other.
+        """
+        parse = SCHEMA[SCHEMA.index("DO $backfill$"):SCHEMA.index("$backfill$;")]
         blocks, at = [], 0
-        while (start := SCHEMA.find("UPDATE citation.crawl_step SET", at)) != -1:
-            at = SCHEMA.index(";", start) + 1
-            blocks.append(SCHEMA[start:at])
+        while (start := parse.find("UPDATE citation.crawl_step SET", at)) != -1:
+            at = parse.index(";", start) + 1
+            blocks.append(parse[start:at])
         return blocks
 
     def test_the_registry_short_circuits_the_whole_block(self):
@@ -177,6 +185,56 @@ class ParseShapeIsIdempotentTests(unittest.TestCase):
             assigned |= set(re.findall(r"^\s*(\w+) = coalesce\(", block, re.M))
         self.assertEqual(assigned, {"node_key", "score", "tau", "relation",
                                     "cited_by_count"})
+
+
+class NoTextReasonBlockTests(unittest.TestCase):
+    """The second one-time block: the prose on drop rows nothing was
+    measured on.
+
+    A candidate with no title is scored NO_TEXT_SCORE and never compared
+    with tau, but every drop row said "below-threshold" -- a relevance
+    verdict on a candidate no relevance was computed for.
+    citations/journal.drop_reason() tells them apart now, and this block is
+    the rows written before it did.
+    """
+
+    NAME = "crawl_step_no_text_reason"
+
+    def _block(self) -> str:
+        start = SCHEMA.index("DO $no_text_reason$")
+        return SCHEMA[start:SCHEMA.index("$no_text_reason$;", start)]
+
+    def test_the_block_is_guarded_by_its_own_registry_name(self):
+        block = self._block()
+        self.assertIn(self.NAME, block)
+        self.assertLess(block.index("IF EXISTS"), block.index("UPDATE citation"))
+        self.assertIn("RETURN;", block[:block.index("UPDATE citation")])
+
+    def test_it_records_itself_under_a_name_of_its_own(self):
+        self.assertIn("INSERT INTO citation.schema_backfill (name) VALUES "
+                      f"('{self.NAME}');", self._block())
+        self.assertNotIn("crawl_step_reason_parse", self._block())
+
+    def test_the_score_column_decides_and_the_prose_only_narrows(self):
+        """The distinguishing fact is a COLUMN (JOURNAL_FACTS_ARE_COLUMNS):
+        `score <= -1` is the same test journal.drop_reason() makes, and the
+        reason is compared by equality only so a row somebody has already
+        reworded is left alone. No substring, no regex.
+        """
+        statement = self._block()[self._block().index("UPDATE citation"):]
+        self.assertIn("score <= -1", statement)
+        self.assertIn(f"reason = '{journal.BELOW_THRESHOLD_REASON}'", statement)
+        self.assertIn(f"SET reason = '{journal.NO_TEXT_REASON}'", statement)
+        for forbidden in ("substring(", "split_part(", "strpos(", "regexp_"):
+            self.assertNotIn(forbidden, statement)
+
+    def test_a_second_apply_would_find_nothing_even_without_the_guard(self):
+        """Value-idempotent as well as work-idempotent: the rows it rewrites
+        stop matching its own WHERE the moment it has rewritten them.
+        """
+        statement = self._block()[self._block().index("UPDATE citation"):]
+        self.assertNotEqual(journal.NO_TEXT_REASON, journal.BELOW_THRESHOLD_REASON)
+        self.assertIn(f"reason = '{journal.BELOW_THRESHOLD_REASON}'", statement)
 
 
 if __name__ == "__main__":

@@ -73,3 +73,34 @@ BEGIN
     INSERT INTO citation.schema_backfill (name) VALUES ('crawl_step_reason_parse');
 END
 $backfill$;
+
+-- One-time rewrite of the `reason` prose on drop rows that were never
+-- measured at all. A candidate with no title has nothing to embed, so the
+-- crawl scores it NO_TEXT_SCORE (citations/scoring.py) and never compares it
+-- with tau -- but the journal called every drop "below-threshold", i.e.
+-- reported a relevance verdict on a candidate no relevance was computed
+-- for. citations/journal.drop_reason() tells the two apart now; these are
+-- the rows written before it did.
+--
+-- The score COLUMN is what decides, never the prose: `score <= -1` is the
+-- same test the Python side makes, and `reason = 'below-threshold'` only
+-- keeps the rewrite off a row somebody has already worded differently. No
+-- substring, no regex -- the fact was a column all along
+-- (kb/CLAUDE.md JOURNAL_FACTS_ARE_COLUMNS).
+--
+-- Guarded by the same registry as the parse above, and for the same reason:
+-- the rows it can change are a fixed prefix that only shrinks, so the second
+-- apply has nothing to find and does not go looking.
+DO $no_text_reason$
+BEGIN
+    IF EXISTS (SELECT 1 FROM citation.schema_backfill
+               WHERE name = 'crawl_step_no_text_reason') THEN
+        RETURN;
+    END IF;
+
+    UPDATE citation.crawl_step SET reason = 'no text to embed'
+    WHERE action = 'drop' AND score <= -1 AND reason = 'below-threshold';
+
+    INSERT INTO citation.schema_backfill (name) VALUES ('crawl_step_no_text_reason');
+END
+$no_text_reason$;
