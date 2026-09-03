@@ -16,7 +16,13 @@
 
 services:
   kb-pg:
-    image: pgvector/pgvector:pg17
+    # Built from the bundled pg/Dockerfile (Postgres 17 + pgvector + Apache
+    # AGE), not pulled: no registry publishes this pairing, and the citation
+    # graph (schema citation) needs AGE present before the dump is
+    # restored. `up` builds it once (~1 min: apt-installs pgvector on top of
+    # apache/age); the tag is the one pg/README.md names.
+    build: ./pg
+    image: ortopol-pg:17-age1.7.0-pgvector0.8.6
     environment:
       POSTGRES_USER: ${PGUSER:-ortopol}
       POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD in .pgenv, see .pgenv.example}
@@ -30,6 +36,9 @@ services:
       # build_package.py's artifact_bundle): 01_dump.sql.gz sits right next
       # to this docker-compose.yml, not in a separate directory.
       - ${KB_ARTIFACT_DIR:-.}/01_dump.sql.gz:/docker-entrypoint-initdb.d/01_dump.sql.gz:ro
+      # Rebuilds citation_graph after the restore above (a no-op when the
+      # dump carries no citation schema -- see the script's own comment).
+      - ./init/02_project_graph.sql:/docker-entrypoint-initdb.d/02_project_graph.sql:ro
     healthcheck:
       # -h 127.0.0.1 is load-bearing, not decoration: Postgres's own
       # docker-entrypoint restores 01_dump.sql.gz against a TEMPORARY

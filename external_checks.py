@@ -36,9 +36,8 @@ from external_registry import (
     registry_problems,
 )
 from paths import EXTERNAL_SOURCE_DIR
-from pg_common import run_sql
+from pg_common import FIELD_SEP, run_sql
 
-FIELD_SEP = "\x1f"
 
 _DB_SQL = (
     "SELECT id, coalesce(source_url, ''), coalesce(legal_class, ''), "

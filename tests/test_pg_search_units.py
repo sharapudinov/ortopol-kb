@@ -61,6 +61,57 @@ class EmbedWithTests(unittest.TestCase):
             self.assertIsNone(pg_search.embed_with("bge-m3", 2, "запрос"))
 
 
+class EmbedBatchTests(unittest.TestCase):
+    """The many-texts entry point of the same seam: batching, order, and the
+    two checks a crawl cannot do without.
+    """
+
+    MODEL, DIMS = "bge-m3", 4
+
+    def _opener(self, calls):
+        def opener(request, timeout=None):
+            payload = json.loads(request.data)
+            calls.append(payload["input"])
+            return _fake_response(
+                {"embeddings": [[float(len(text))] * self.DIMS for text in payload["input"]]})
+        return opener
+
+    def test_texts_are_batched_and_come_back_in_order(self):
+        calls = []
+        out = pg_search.embed_batch(self.MODEL, self.DIMS, ["a", "bb", "ccc", "dddd"],
+                                    batch=2, opener=self._opener(calls))
+        self.assertEqual(calls, [["a", "bb"], ["ccc", "dddd"]])
+        self.assertEqual([v[0] for v in out], [1.0, 2.0, 3.0, 4.0])
+
+    def test_fewer_vectors_than_texts_is_a_failure_not_a_shift(self):
+        def opener(_request, timeout=None):
+            return _fake_response({"embeddings": [[0.0] * self.DIMS]})
+        with self.assertRaises(RuntimeError) as ctx:
+            pg_search.embed_batch(self.MODEL, self.DIMS, ["a", "b"], opener=opener)
+        self.assertIn("1 векторов на 2 текстов", str(ctx.exception))
+
+    def test_a_wrong_width_is_a_failure(self):
+        def opener(_request, timeout=None):
+            return _fake_response({"embeddings": [[0.0] * 768]})
+        with self.assertRaises(RuntimeError) as ctx:
+            pg_search.embed_batch(self.MODEL, self.DIMS, ["a"], opener=opener)
+        self.assertIn("ожидалось 4 измерений, пришло 768", str(ctx.exception))
+
+    def test_an_unreachable_service_raises_instead_of_answering_none(self):
+        """embed_with() returns None so a search can fall back to full-text;
+        a crawl has nothing to fall back to and must not score silently."""
+        def opener(_request, timeout=None):
+            raise OSError("connection refused")
+        with self.assertRaises(OSError):
+            pg_search.embed_batch(self.MODEL, self.DIMS, ["a"], opener=opener)
+
+    def test_no_texts_asks_nothing(self):
+        calls = []
+        self.assertEqual(pg_search.embed_batch(self.MODEL, self.DIMS, [],
+                                               opener=self._opener(calls)), [])
+        self.assertEqual(calls, [])
+
+
 class EmbedQueryComposesResolveAndEmbedTests(unittest.TestCase):
     """embed_query() is now a thin composition of resolve_model() +
     embed_with() -- must still work unchanged for one-off callers that

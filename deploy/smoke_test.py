@@ -38,8 +38,8 @@ import compose_lifecycle as lifecycle
 import drift_probe
 import profile_checks
 import smoke_checks as checks
-from dump_integrity import sha256_file
-from manifest_contract import Key, Profile
+from manifest_keys import Key
+from manifest_contract import Profile
 from smoke_stack import (
     OLLAMA_PORT,
     PROJECT,
@@ -123,22 +123,6 @@ def main(argv: list[str] | None = None) -> int:
         ))
 
         if schema_ok:
-            # Verify the extracted dump against the manifest BEFORE letting
-            # Postgres load it -- a corrupted/truncated/tampered dump should
-            # be caught here, not discovered as a mysteriously-wrong row
-            # count three checks later.
-            dump = manifest[Key.DUMP]
-            dump_path = extract_dir / dump[Key.FILE]
-            dump_ok = (
-                dump_path.is_file()
-                and dump_path.stat().st_size == dump[Key.BYTES]
-                and sha256_file(dump_path) == dump[Key.SHA256]
-            )
-            dump_detail = (
-                f"{dump_path.name}: {dump_path.stat().st_size} bytes (manifest {dump[Key.BYTES]})"
-                if dump_path.is_file() else f"{dump_path.name}: missing"
-            )
-            results.append(("дамп sha256 совпадает с манифестом", dump_ok, dump_detail))
             results.append(("файлы манифеста совпадают с распаковкой",
                              *checks.check_bundled_files(extract_dir, manifest, pristine=pristine)))
 
@@ -146,12 +130,12 @@ def main(argv: list[str] | None = None) -> int:
             # invariants are a property of the artifact, so they are checked
             # against its bytes and hold (or fail) whether or not Docker is
             # available at all. Also runnable on its own --
-            # `python3 profile_checks.py --artifact-dir DIR`.
-            if dump_ok:
-                results.extend(profile_checks.run_checks(extract_dir))
-            else:
-                results.append(("профиль: содержимое дампа = манифест", False,
-                                 "дамп не сошёлся с манифестом, статические проверки пропущены"))
+            # `python3 profile_checks.py --artifact-dir DIR`. Its gate
+            # ladder ends with the dump-vs-manifest comparison (size and
+            # sha256), so a corrupted, truncated or tampered dump is caught
+            # here, before Postgres loads it, and hashed exactly once: the
+            # question belongs to the package, not to the Docker path.
+            results.extend(profile_checks.run_checks(extract_dir))
 
             # The extracted artifact's OWN docker-compose.yml, not this
             # checkout's copy -- their relative bind mounts (init/, the
@@ -190,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
                     ollama_url = f"http://127.0.0.1:{OLLAMA_PORT}/api/embed"
                     results.append(("число документов/страниц = манифест", *checks.check_counts(penv, manifest)))
                     results.append(("fulltext находит документы", *checks.check_fulltext(penv, manifest)))
+                    results.append(("citation-граф спроецирован",
+                                     *checks.check_citation_projection(penv, manifest)))
                     if ollama_healthy:
                         results.append(("vector находит релевантное без совпадения слов",
                                          *checks.check_vector(penv, manifest, ollama_url)))

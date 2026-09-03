@@ -27,10 +27,11 @@ from pathlib import Path
 
 from external_registry import REGISTRY_FILENAME
 from external_checks import external_problems
+from citation_checks import citation_state
 from paths import data_root, default_corpus_dir
-from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
-
-FIELD_SEP = "\x1f"
+from pg_common import (
+    FIELD_SEP, PostgresUnavailable, check_postgres_available, load_pgenv, run_sql,
+)
 
 # Правила классификации, в порядке применения. Первое совпавшее решает.
 # (предикат по относительному пути, вердикт, причина/вид)
@@ -175,6 +176,11 @@ def main(argv: list[str] | None = None) -> int:
     # противоречит LEGAL_IS_DATA).
     problems += external_problems(args.theory_dir, env)
 
+    # Citation graph: its own structure (a graph, not a file tree), its own
+    # predicates (citation_checks.py explains each one).
+    citation = citation_state(env)
+    problems += citation.problems
+
     dangling = run_sql(env,
         "SELECT r.spike || ' -> ' || e.doc_id "
         "FROM measurements.run r, unnest(r.evidence_docs) AS e(doc_id) "
@@ -198,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{counts['include-metadata']} metadata, "
           f"{counts['include-external']} external), "
           f"{counts['exclude']} исключено с причиной")
+    print(citation.summary)
     if problems:
         print(f"\nПОЛНОТА НЕ ДОКАЗАНА — {len(problems)} проблем(ы):")
         for p in problems:

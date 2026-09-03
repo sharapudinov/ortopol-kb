@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import secrets
 import subprocess
 import tempfile
@@ -39,22 +40,50 @@ class ArtifactUnavailable(RuntimeError):
     """
 
 
+# An artifact's name in full: kb-<profile>-<8-digit date>.tar.zst, with the
+# profile a single word. Matched rather than globbed, and anchored at both
+# ends, because everything a glob would let through here is a real name a
+# build can produce. `kb-{profile}-*` matched kb-public-override-<date>,
+# the name override builds used to carry -- and then sorted it AFTER the
+# genuine same-date artifact ('o' > '2'), so "the newest public artifact"
+# resolved to the override every time. build_package.py now names such a
+# build kb-override-<profile>-<date>, outside the profile's namespace
+# altogether; this pattern is the second line rather than the only one, and
+# it still holds for the names already lying in a deploy directory: the
+# profile group cannot contain a hyphen, so no tag glued to a profile can
+# ever answer to that profile's name.
+_ARTIFACT_NAME = re.compile(r"\Akb-(?P<profile>[a-z]+)-[0-9]{8}\.tar\.zst\Z")
+
+
 def latest_artifact(corpus_dir: Path, profile: str | None = None) -> Path:
     """The newest artifact under corpus_dir/deploy/, optionally restricted to
     one profile.
 
     The profile filter is not cosmetic: artifacts are named
-    kb-<profile>-<date>.tar.zst, so a bare `kb-*.tar.zst` sort returns
+    kb-<profile>-<date>.tar.zst, so an unrestricted sort returns
     kb-public-<date> ahead of kb-full-<date> for the SAME date (lexical
     order, 'p' > 'f') -- auto-discovery would silently smoke-test the public
     package when asked for nothing in particular. Callers say which one they
     mean; smoke_test.py defaults to full.
     """
-    pattern = f"kb-{profile}-*.tar.zst" if profile else "kb-*.tar.zst"
-    candidates = sorted((corpus_dir / "deploy").glob(pattern))
+    deploy_dir = corpus_dir / "deploy"
+    candidates = []
+    # An absent deploy/ is "no artifact", not a crash: before the first
+    # build nothing has created it, and iterdir() raises there where glob()
+    # simply yielded nothing. The refusal below is the one a caller can
+    # act on -- it names what it was looking for and where.
+    try:
+        entries = list(deploy_dir.iterdir())
+    except FileNotFoundError:
+        entries = []
+    for path in entries:
+        match = _ARTIFACT_NAME.match(path.name)
+        if match and (profile is None or match.group("profile") == profile):
+            candidates.append(path)
     if not candidates:
-        raise ArtifactUnavailable(f"no {pattern} found under {corpus_dir / 'deploy'}")
-    return candidates[-1]
+        wanted = f"kb-{profile or '<profile>'}-<YYYYMMDD>.tar.zst"
+        raise ArtifactUnavailable(f"no {wanted} found under {deploy_dir}")
+    return sorted(candidates)[-1]
 
 
 @contextlib.contextmanager

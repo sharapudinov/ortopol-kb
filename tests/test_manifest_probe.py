@@ -5,18 +5,27 @@ transport/matching logic is tested directly in test_ollama_registry.py.
 """
 from __future__ import annotations
 
+import ast
+import inspect
+import json
+import pathlib
 import unittest
 from unittest import mock
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import legal_profile
+import manifest_citation
 import manifest_probe
+import manifest_rows
+import probe_overlap
+from copy_rows import DumpedRows
 
 
 class StemmedTokenOverlapTests(unittest.TestCase):
-    """_stemmed_token_overlap() delegates the actual stemming/intersection
-    to a single SQL round trip (see _TOKEN_OVERLAP_SQL) -- scalar() is
+    """probe_overlap.stemmed_token_overlap() delegates the actual stemming
+    and intersection to one SQL round trip (TOKEN_OVERLAP_SQL) -- scalar() is
     stubbed here to return the FIELD_SEP-joined lexeme string Postgres would
     produce, so only the Python-side split/sort is under test; the SQL
     itself is exercised for real by GatherManifestErrorPathsTests below via
@@ -25,25 +34,27 @@ class StemmedTokenOverlapTests(unittest.TestCase):
     """
 
     def test_empty_result_means_no_overlap(self):
-        with mock.patch.object(manifest_probe, "scalar", return_value=""):
-            overlap = manifest_probe._stemmed_token_overlap({}, "q", "doc1", 5)
+        with mock.patch.object(probe_overlap, "scalar", return_value=""):
+            overlap = probe_overlap.stemmed_token_overlap({}, "q", "doc1", 5)
         self.assertEqual(overlap, [])
 
     def test_splits_and_sorts_multiple_lexemes(self):
-        with mock.patch.object(manifest_probe, "scalar", return_value="полином\x1fвеличин"):
-            overlap = manifest_probe._stemmed_token_overlap({}, "q", "doc1", 5)
+        with mock.patch.object(probe_overlap, "scalar", return_value="полином\x1fвеличин"):
+            overlap = probe_overlap.stemmed_token_overlap({}, "q", "doc1", 5)
         self.assertEqual(overlap, ["величин", "полином"])
 
     def test_variables_carry_query_document_and_page(self):
-        with mock.patch.object(manifest_probe, "scalar", return_value="") as scalar_mock:
-            manifest_probe._stemmed_token_overlap({}, "запрос", "2015_demr1", 69)
+        with mock.patch.object(probe_overlap, "scalar", return_value="") as scalar_mock:
+            probe_overlap.stemmed_token_overlap({}, "запрос", "2015_demr1", 69)
         _, kwargs = scalar_mock.call_args
         self.assertEqual(kwargs["variables"], {"q": "запрос", "doc": "2015_demr1", "page": "69"})
 
 
-# A well-formed 8-column row for _MANIFEST_SCALARS_SQL: documents_count,
-# pages_count, model, dims, runs_count, blob_len, blob_sha, fulltext_hits.
-_GOOD_ROW = ["70", "2462", "bge-m3", "1024", "5", "12345", "a" * 64, "3"]
+# A well-formed 6-column row for _MANIFEST_SCALARS_SQL: model, dims,
+# runs_count, blob_len, blob_sha, fulltext_hits. The document and page
+# counts are NOT among them any more -- how many rows the artifact carries
+# is answered by the artifact (manifest_rows.py), after the dump exists.
+_GOOD_ROW = ["bge-m3", "1024", "5", "12345", "a" * 64, "3"]
 
 # What legal_profile.legal_summary() returns, stubbed: it is four independent
 # SQL reads of its own, tested against the real database shape in
@@ -64,6 +75,12 @@ _LEGAL_SUMMARY = {
 }
 
 
+# The resolution's output, spelled at every call site: gather_manifest()
+# takes the pair as required keywords, so there is no shape of the call
+# that leaves either half to a default.
+_RESOLVED = {"citation_mode": "full-skeleton", "policy_source": "owner"}
+
+
 class GatherManifestErrorPathsTests(unittest.TestCase):
     """gather_manifest()'s guard branches -- previously untested, so a
     regression in any of them (e.g. the overlap check silently passing a
@@ -77,62 +94,65 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
             mock.patch.object(manifest_probe, "served_model_digest", return_value=digest),
             mock.patch.object(manifest_probe.legal_profile, "legal_summary",
                               return_value=dict(_LEGAL_SUMMARY)),
+            # The classification gate runs on both profiles now, so it is
+            # part of every prelude rather than of the public one alone.
+            mock.patch.object(manifest_probe.legal_profile, "require_classified"),
         )
 
     def test_embedding_service_unreachable_raises(self):
-        scalar_row_p, digest_p, legal_p = self._patch_prelude()
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude()
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("unreachable", str(ctx.exception))
 
     def test_no_embedded_pages_raises(self):
-        scalar_row_p, digest_p, legal_p = self._patch_prelude()
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude()
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("no embedded rows", str(ctx.exception))
 
     def test_lexical_overlap_raises(self):
         nearest = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
-        scalar_row_p, digest_p, legal_p = self._patch_prelude()
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude()
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
-             mock.patch.object(manifest_probe, "scalar", return_value="модуль"):
+             mock.patch.object(probe_overlap, "scalar", return_value="модуль"):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("token", str(ctx.exception))
         self.assertIn("модуль", str(ctx.exception))
 
     def test_missing_embedding_model_row_raises_informative_error(self):
-        row = ["70", "2462", "", "", "5", "12345", "a" * 64, "3"]  # NULL model/dims
-        scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
-        with scalar_row_p, digest_p, legal_p:
+        row = ["", "", "5", "12345", "a" * 64, "3"]  # NULL model/dims
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude(row=row)
+        with scalar_row_p, digest_p, legal_p, classified_p:
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("embedding_model is empty", str(ctx.exception))
 
     def test_missing_blob_probe_document_raises_informative_error(self):
-        row = ["70", "2462", "bge-m3", "1024", "5", "", "", "3"]  # NULL blob columns
-        scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
-        with scalar_row_p, digest_p, legal_p:
+        row = ["bge-m3", "1024", "5", "", "", "3"]  # NULL blob columns
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude(row=row)
+        with scalar_row_p, digest_p, legal_p, classified_p:
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn(manifest_probe.BLOB_PROBE_DOC, str(ctx.exception))
 
     def test_happy_path_records_digest_in_manifest(self):
         nearest = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
-        scalar_row_p, digest_p, legal_p = self._patch_prelude(digest=("sha256:deadbeef", 1157672605))
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude(digest=("sha256:deadbeef", 1157672605))
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.55), \
-             mock.patch.object(manifest_probe, "scalar", return_value=""):
-            manifest = manifest_probe.gather_manifest({}, "http://x/api/embed")
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
+            manifest = manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertEqual(manifest["embedding_model"]["digest"], "sha256:deadbeef")
         self.assertEqual(manifest["embedding_model"]["size_bytes"], 1157672605)
         self.assertEqual(manifest["vector_probe"]["token_overlap"], [])
@@ -152,7 +172,7 @@ class ProfileAwarenessTests(unittest.TestCase):
 
     NEAREST = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
 
-    def _gather(self, profile):
+    def _gather(self, profile, citation_mode="full-skeleton", policy_source="owner"):
         with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)) as row_mock, \
              mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
              mock.patch.object(manifest_probe.legal_profile, "legal_summary",
@@ -161,29 +181,53 @@ class ProfileAwarenessTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
-             mock.patch.object(manifest_probe, "scalar", return_value=""):
-            manifest = manifest_probe.gather_manifest({}, "http://x/api/embed", profile=profile)
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
+            manifest = manifest_probe.gather_manifest(
+                {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
+                policy_source=policy_source)
         return manifest, row_mock, classified_mock
 
     def test_full_profile_is_the_default_and_keeps_both_schemas(self):
         manifest, row_mock, classified_mock = self._gather("full")
         self.assertEqual(manifest["profile"], "full")
-        self.assertEqual(manifest["schemas"], ["corpus", "measurements"])
-        self.assertEqual(manifest["measurements_run_count"], int(_GOOD_ROW[4]))
+        # citation appended: the resolved mode this build was handed is a
+        # shipping one, so the schema is declared (schemas_for()).
+        self.assertEqual(manifest["schemas"], ["corpus", "measurements", "citation"])
+        self.assertEqual(manifest["citation"]["mode"], "full-skeleton")
+        self.assertEqual(manifest["measurements_run_count"], int(_GOOD_ROW[2]))
         self.assertEqual(manifest["blob_probe"]["document_id"], manifest_probe.BLOB_PROBE_DOC)
-        # No legal gate on the full profile: it never leaves the owner's
-        # machines, and refusing to back up an unclassified corpus would be
-        # the wrong incentive entirely.
-        classified_mock.assert_not_called()
+        # The legal gate applies here as well: the full profile decides
+        # nothing by the classification, but the checker bundled into the
+        # artifact is profile-blind and demands unclassified_documents == 0
+        # whichever profile produced the package.
+        classified_mock.assert_called_once()
         sql = row_mock.call_args[0][1]
         self.assertIn("AND TRUE", sql)
 
     def test_public_profile_declares_corpus_only_and_zero_measurements(self):
-        manifest, row_mock, classified_mock = self._gather("public")
+        # citation_mode "none" here: this test is about the corpus half.
+        manifest, row_mock, classified_mock = self._gather("public", citation_mode="none")
         self.assertEqual(manifest["profile"], "public")
         self.assertEqual(manifest["schemas"], ["corpus"])
         self.assertEqual(manifest["measurements_run_count"], 0)
         classified_mock.assert_called_once()
+
+    def test_an_unclassified_document_refuses_the_build_on_both_profiles(self):
+        """The refusal legal_profile.py's own docstring already promised.
+
+        Gated on the public path only, a full build over an unclassified
+        document reported success and then failed the certification its own
+        package carries (corpus_content_checks.check_classification_complete
+        has no profile branch), which is precisely the shape
+        classification_gate.py was added to close one level down.
+        """
+        for profile in ("full", "public"):
+            with self.subTest(profile=profile):
+                with mock.patch.object(manifest_probe.legal_profile, "require_classified",
+                                       side_effect=legal_profile.Unclassified("нет класса")):
+                    with self.assertRaises(legal_profile.Unclassified):
+                        manifest_probe.gather_manifest(
+                            {}, "http://x/api/embed", profile=profile, **_RESOLVED)
 
     def test_public_profile_probes_a_blob_it_actually_ships(self):
         manifest, _row_mock, _classified = self._gather("public")
@@ -201,21 +245,19 @@ class ProfileAwarenessTests(unittest.TestCase):
         self.assertIn("public_distribution IN ('full-text', 'internal')", sql)
         self.assertIn("JOIN corpus.documents", sql)
 
-    def test_public_counts_leave_out_the_documents_the_artifact_omits(self):
-        # Counting the live corpus would describe a package that does not
-        # exist: an excluded document contributes neither a documents row
-        # nor a page row to the public dump.
-        _manifest, row_mock, _classified = self._gather("public")
-        sql = row_mock.call_args[0][1]
-        shipped = "public_distribution IN ('full-text', 'metadata-only', 'internal')"
-        self.assertIn(f"FROM corpus.documents WHERE {shipped}", sql)
-        self.assertEqual(sql.count(shipped), 2)  # documents and pages alike
-
-    def test_full_counts_are_unrestricted(self):
-        _manifest, row_mock, _classified = self._gather("full")
-        sql = row_mock.call_args[0][1]
-        self.assertIn("FROM corpus.documents WHERE TRUE", sql)
-        self.assertNotIn("'metadata-only'", sql)
+    def test_the_row_counts_are_not_read_here_at_all(self):
+        """Counting the live corpus described a package that did not exist
+        yet, and the recipient's gate then demanded the dump agree with it.
+        The probe declares the keys and stamps nothing into them; the
+        numbers arrive from what the dump wrote.
+        """
+        for profile in ("public", "full"):
+            with self.subTest(profile=profile):
+                manifest, row_mock, _classified = self._gather(profile)
+                self.assertEqual(manifest["documents_count"], 0)
+                self.assertEqual(manifest["pages_count"], 0)
+                sql = row_mock.call_args[0][1]
+                self.assertNotIn("count(*) FROM corpus.documents", sql)
 
     def test_public_refuses_a_vector_probe_naming_a_document_it_omits(self):
         # Recording it would produce a manifest the artifact's own smoke
@@ -228,19 +270,21 @@ class ProfileAwarenessTests(unittest.TestCase):
              mock.patch.object(manifest_probe.legal_profile, "require_classified"), \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=excluded), \
-             mock.patch.object(manifest_probe, "scalar", return_value=""):
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
             with self.assertRaises(RuntimeError) as ctx:
-                manifest_probe.gather_manifest({}, "http://x/api/embed", profile="public")
+                manifest_probe.gather_manifest({}, "http://x/api/embed", profile="public",
+                                               **_RESOLVED)
             self.assertIn("2016_vmj598", str(ctx.exception))
             # The same probe is fine for the full profile, which ships it.
             with mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance",
                                     return_value=0.5):
-                manifest = manifest_probe.gather_manifest({}, "http://x/api/embed")
+                manifest = manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertEqual(manifest["vector_probe"]["document_id"], "2016_vmj598")
 
     def test_unknown_profile_refused(self):
         with self.assertRaises(ValueError) as ctx:
-            manifest_probe.gather_manifest({}, "http://x/api/embed", profile="sort-of-public")
+            manifest_probe.gather_manifest({}, "http://x/api/embed",
+                                           profile="sort-of-public", **_RESOLVED)
         self.assertIn("sort-of-public", str(ctx.exception))
 
     def test_legal_block_is_carried_into_the_manifest(self):
@@ -248,15 +292,156 @@ class ProfileAwarenessTests(unittest.TestCase):
         self.assertEqual(manifest["legal"], _LEGAL_SUMMARY)
 
 
-class ManifestScalarsSqlTests(unittest.TestCase):
-    def test_embedding_model_reads_are_filtered_by_id_1(self):
-        # a0d70129: must match pg_search.embed_query's WHERE id = 1 -- an
-        # unfiltered read against a table that (before pg_schema.sql's
-        # CHECK (id = 1)) could hold more than one row fails with a bare
-        # Postgres "more than one row" error instead of naming a model.
-        sql = manifest_probe._MANIFEST_SCALARS_SQL
-        self.assertIn("SELECT model FROM corpus.embedding_model WHERE id = 1", sql)
-        self.assertIn("SELECT dims FROM corpus.embedding_model WHERE id = 1", sql)
+class CitationManifestTests(unittest.TestCase):
+    """The citation{} block describes the PACKAGE, never the live database
+    -- MANIFEST_DESCRIBES_ARTIFACT applied to the citation schema. The mode
+    itself arrives resolved (see build_package.main); what this module still
+    decides is what to COUNT under it.
+    """
+
+    NEAREST = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
+
+    def _gather(self, profile="public", citation_mode="topology-only",
+                policy_source="owner"):
+        with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)), \
+             mock.patch.object(manifest_probe, "served_model_digest", return_value=("d", 1)), \
+             mock.patch.object(manifest_probe.legal_profile, "legal_summary",
+                                return_value=dict(_LEGAL_SUMMARY)), \
+             mock.patch.object(manifest_probe.legal_profile, "require_classified"), \
+             mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
+             mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
+             mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
+            return manifest_probe.gather_manifest(
+                {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
+                policy_source=policy_source,
+            )
+
+    def test_manifest_counts_describe_package(self):
+        manifest = self._gather()
+        self.assertEqual(manifest["citation"], {
+            "mode": "topology-only", "policy_source": "owner",
+            # Every one of them declared zero/empty here and stamped by
+            # build_package.main() from what the dump actually wrote: this
+            # function runs before the dump exists, and a live count would
+            # describe a package nobody has produced yet -- and would count
+            # the same cut row sets a second time to arrive at it.
+            "work_count": 0, "cites_count": 0,
+            "work_by_kind": {}, "table_rows": {},
+        })
+        self.assertEqual(manifest["schemas"], ["corpus", "citation"])
+
+    def test_the_corpus_block_declares_its_shape_and_no_numbers(self):
+        """The corpus half of the per-table declaration is written here and
+        filled by the dump, exactly as the citation block beside it: this
+        function runs before the file exists.
+        """
+        self.assertEqual(self._gather()["corpus"], {"table_rows": {}})
+
+    def test_the_citation_block_reads_the_database_for_nothing_at_all(self):
+        """The kind census was the last live read here, and the last number
+        no artifact-side check re-derived. `kind` is TOPOLOGY and travels
+        under every shipping mode, so the census comes off the COPY stream
+        like every other number in the block (copy_rows.FieldTally) and
+        citation_cut_checks holds the dumped rows to it.
+        """
+        tree = ast.parse(pathlib.Path(manifest_citation.__file__).read_text(encoding="utf-8"))
+        imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        imported |= {alias.name for node in ast.walk(tree)
+                     if isinstance(node, ast.Import) for alias in node.names}
+        self.assertEqual(imported, {"__future__", "manifest_keys"})
+        self.assertNotIn("env", inspect.signature(manifest_citation.citation_block).parameters)
+
+    @staticmethod
+    def _blank_manifest() -> dict:
+        return {"documents_count": 0, "pages_count": 0,
+                "corpus": {"table_rows": {}},
+                "citation": {"work_count": 0, "cites_count": 0, "work_by_kind": {},
+                             "table_rows": {}}}
+
+    def test_the_dumps_answer_is_what_every_count_is_stamped_from(self):
+        manifest = self._blank_manifest()
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(
+            corpus={"documents": 70, "pages": 2462},
+            citation={"work": 438, "cites": 2425, "crawl_step": 5},
+            work_by_kind={"external-skeleton": 382, "our-document": 56}))
+        self.assertEqual(manifest, {
+            "documents_count": 70, "pages_count": 2462,
+            "corpus": {"table_rows": {"documents": 70, "pages": 2462}},
+            "citation": {"work_count": 438, "cites_count": 2425,
+                         "work_by_kind": {"external-skeleton": 382, "our-document": 56},
+                         "table_rows": {"work": 438, "cites": 2425, "crawl_step": 5}}})
+
+    def test_a_dump_that_carried_no_such_table_stamps_a_zero(self):
+        manifest = self._blank_manifest()
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(corpus={}, citation={}))
+        self.assertEqual(manifest, self._blank_manifest())
+
+    def test_a_live_count_cannot_reach_the_manifest_any_more(self):
+        """The whole point: whatever the database says at any other moment,
+        the stamped numbers are the dump's. A "live" tally that disagrees
+        with what was written changes nothing here, because nothing reads
+        it.
+        """
+        manifest = self._blank_manifest()
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(
+            corpus={"documents": 70, "pages": 2462}, citation={"work": 438}))
+        stamped = json.loads(json.dumps(manifest))
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(
+            corpus={"documents": 70, "pages": 2462}, citation={"work": 438}))
+        self.assertEqual(manifest, stamped)
+        self.assertEqual(manifest["documents_count"], 70)
+        self.assertEqual(manifest["citation"]["work_count"], 438)
+
+    def test_the_manifest_records_whose_decision_the_mode_was(self):
+        """The filename is not part of the package; this field is. Without
+        it an override build and an owner-classified one are byte-for-byte
+        the same artifact to every consumer that reads manifest.json.
+        """
+        manifest = self._gather(policy_source="override")
+        self.assertEqual(manifest["citation"]["policy_source"], "override")
+
+    def test_neither_half_of_the_pair_can_be_omitted(self):
+        """A call that names no mode and no provenance does not produce a
+        manifest at all. Both are the resolution's output, and a default
+        would let a second entry point certify "the owner decided" by
+        saying nothing -- the one claim manifest.json exists to carry.
+        """
+        for kwargs in ({}, {"citation_mode": "none"}, {"policy_source": "owner"}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(TypeError):
+                    manifest_probe.gather_manifest({}, "http://x/api/embed", **kwargs)
+
+    def test_the_cut_is_applied_by_the_dump_the_numbers_come_from(self):
+        """A work row naming an excluded document does not ship
+        (citation_dump.py), so the manifest must not count it either. It
+        cannot: the block leaves every number for the dump to fill, whatever
+        the profile, so there is no reading here for a cut to be forgotten
+        in.
+        """
+        for profile, mode in (("public", "topology-only"), ("full", "full-skeleton")):
+            with self.subTest(profile=profile):
+                block = self._gather(profile=profile, citation_mode=mode)["citation"]
+                self.assertEqual((block["work_count"], block["cites_count"],
+                                  block["work_by_kind"], block["table_rows"]),
+                                 (0, 0, {}, {}))
+
+    def test_none_mode_records_zero_counts_and_no_schema(self):
+        """A FULL build whose database carries no citation schema: full
+        applies no policy and describes the database as it is, so the mode
+        is "none" and the provenance is "not-applicable" --
+        citation_profile.full_profile_mode() reads no owner row at all, and
+        the manifest may not claim one on its behalf. (A PUBLIC build
+        against such a database does not get here at all: it is refused,
+        see citation_profile.resolve_citation_mode.)
+        """
+        manifest = self._gather(profile="full", citation_mode="none",
+                                policy_source="not-applicable")
+        self.assertEqual(manifest["citation"],
+                          {"mode": "none", "policy_source": "not-applicable",
+                           "work_count": 0, "cites_count": 0, "work_by_kind": {},
+                           "table_rows": {}})
+        self.assertEqual(manifest["schemas"], ["corpus", "measurements"])
 
 
 if __name__ == "__main__":

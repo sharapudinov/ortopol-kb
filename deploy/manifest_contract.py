@@ -1,90 +1,46 @@
-"""Shared build/verify contract for the deploy artifact.
+"""Shared build/verify contract for the deploy artifact: the vocabularies
+a build decides by, and the two questions asked of them.
 
-MANIFEST_SCHEMA_VERSION and VECTOR_PROBE_QUERY are read by both the
-producer of manifest.json (manifest_probe.py, build-time only, deliberately
-NOT bundled into the artifact -- see artifact_bundle.DEPLOY_FILES) and its
-two verifiers (smoke_checks.py, drift_probe.py, both bundled). Previously
-smoke_checks.py defined MANIFEST_SCHEMA_VERSION and manifest_probe.py
-imported it from there -- the producer depending on its own verifier, and
-dragging in pg_rank_probe/pg_search/blob_integrity_checks/ollama_registry
-just to read one int. VECTOR_PROBE_QUERY was independently duplicated
-verbatim as drift_probe.DEFAULT_QUERY, kept in sync only by a comment.
+manifest.json's own shape -- its key names and MANIFEST_SCHEMA_VERSION --
+is next door in manifest_keys.py (kb/CLAUDE.md FILE_SIZE, and a different
+responsibility: what the FILE looks like against what a BUILD makes of the
+policy). Both are read by the producer (manifest_probe.py, build-time only,
+deliberately NOT bundled into the artifact -- see
+artifact_bundle.DEPLOY_FILES) and by its verifiers (smoke_checks.py,
+profile_checks.py, drift_probe.py, all bundled). Previously smoke_checks.py
+defined MANIFEST_SCHEMA_VERSION and manifest_probe.py imported it from
+there -- the producer depending on its own verifier, and dragging in
+pg_rank_probe/pg_search/blob_integrity_checks/ollama_registry just to read
+one int. The probe's query had the same problem and the same answer, in
+probe_query.py.
 
-This module holds no logic and imports nothing else, so every one of its
-three importers can depend on it without pulling anything else along.
+schemas_for() joined them for the same reason: "which schemas does this
+profile ship" was answered independently by the dumper (a tuple in
+artifact_bundle.py, and another in public_dump.py) and by the manifest (a
+dict plus a function in manifest_probe.py), with different conditionality
+on the citation mode. They agreed only because both happened to key off
+the same external fact by different routes, and pg_dump tolerates a
+--schema pattern that matches nothing -- so a divergence would have
+produced a manifest describing a schema set its own dump lacks, which is
+what MANIFEST_DESCRIBES_ARTIFACT exists to forbid.
+
+Beyond schemas_for(), base_schemas_for(), required_schemas(),
+ships_citation() and strips_content() -- each of
+them a question two sides of the build would otherwise answer independently
+-- this module holds no logic, and imports only citation_vocab and
+manifest_keys, neither of which imports anything at all:
+the citation mode is a DB column's closed vocabulary, and
+VOCABULARY_ONE_DECLARATION puts every such vocabulary in that one root
+module. Importers still pull nothing along.
 """
 from __future__ import annotations
 
+from deploy_pathfix import ensure_corpus_importable
 
-class Key:
-    """manifest.json's key names, named once for its producer
-    (manifest_probe.gather_manifest, build_package.py) and every consumer
-    (smoke_checks.py, vector_probe_check.py, blob_integrity_checks.py,
-    bundled_files_check.py, smoke_test.py, drift_probe.py) to share,
-    instead of each re-typing the same string literal independently.
-    Adding, renaming or nesting a field is then a single-file edit here
-    that fails loudly (NameError/AttributeError) at the first stale call
-    site, rather than a KeyError discovered mid-smoke-run against whichever
-    consumer someone forgot to grep for.
+ensure_corpus_importable()
 
-    Plain string constants, no logic -- consistent with the rest of this
-    module (see its own docstring).
-    """
-
-    # Top level.
-    SCHEMA_VERSION = "schema_version"
-    PROFILE = "profile"
-    SCHEMAS = "schemas"
-    LEGAL = "legal"
-    CREATED_AT = "created_at"
-    DOCUMENTS_COUNT = "documents_count"
-    PAGES_COUNT = "pages_count"
-    EMBEDDING_MODEL = "embedding_model"
-    MEASUREMENTS_RUN_COUNT = "measurements_run_count"
-    BLOB_PROBE = "blob_probe"
-    FULLTEXT_PROBE = "fulltext_probe"
-    VECTOR_PROBE = "vector_probe"
-    FILES = "files"
-    DUMP = "dump"
-
-    # embedding_model{}.
-    MODEL = "model"
-    DIMS = "dims"
-    DIGEST = "digest"
-    SIZE_BYTES = "size_bytes"
-
-    # blob_probe{}; document_id/sha256 also occur in vector_probe{}/dump{}
-    # respectively, with the same meaning (an id, a hex digest) -- one
-    # constant covers both rather than a redundant near-duplicate name.
-    DOCUMENT_ID = "document_id"
-    BYTE_LENGTH = "byte_length"
-    SHA256 = "sha256"
-
-    # fulltext_probe{}; query also occurs in vector_probe{} with the same
-    # meaning (the probe's search string).
-    QUERY = "query"
-    HITS = "hits"
-
-    # vector_probe{} (beyond QUERY/DOCUMENT_ID above).
-    PAGE_NUMBER = "page_number"
-    RANK = "rank"
-    DISTANCE = "distance"
-    RUNNER_UP_DISTANCE = "runner_up_distance"
-    TOKEN_OVERLAP = "token_overlap"
-
-    # dump{} (beyond SHA256 above).
-    FILE = "file"
-    BYTES = "bytes"
-
-    # legal{} -- the classification this build applied, produced by
-    # legal_profile.legal_summary() and verified statically by
-    # profile_checks.py.
-    VERIFY_QUERY = "verify_query"
-    UNCLASSIFIED_DOCUMENTS = "unclassified_documents"
-    CLASS_COUNTS = "class_counts"
-    DOCUMENTS_BY_DISTRIBUTION = "documents_by_distribution"
-    FULL_CONTENT_DISTRIBUTIONS = "full_content_distributions"
-    SHIPPED_DISTRIBUTIONS = "shipped_distributions"
+from citation_vocab import PublicPolicyMode  # noqa: E402
+from manifest_keys import Key  # noqa: E402
 
 
 class Profile:
@@ -100,6 +56,36 @@ class Profile:
     FULL = "full"
     PUBLIC = "public"
     ALL = (FULL, PUBLIC)
+
+
+class PolicySource:
+    """Whose decision manifest.citation.mode records.
+
+    OWNER: read from citation.public_policy, i.e. the corpus owner's row --
+    the only provenance a publishable artifact may carry
+    (PUBLIC_APPROVED_BY_OWNER, CITATION_POLICY_IS_DATA).
+    OVERRIDE: forced at the command line by --policy-override, which exists
+    so the packaging and smoke pipeline can be exercised before that
+    decision is made. Never publishable, and profile_checks.py fails on it.
+    NOT_APPLICABLE: this profile applies no citation policy at all. Only
+    the public profile has one to apply -- full carries the whole schema
+    whatever the owner's row says, which is why its answer comes from
+    citation_profile.full_profile_mode() and reads citation.public_policy
+    not at all, while resolve_citation_mode() answers for public alone.
+    Naming the owner here would put a decision nobody made into the one
+    field designed to be non-fabricable.
+
+    In the manifest rather than only in the filename because the filename
+    is not part of the package: it is renamed by a copy, and it is not what
+    a recipient (or a later session) reads to learn what they are holding.
+    The name still differs -- see build_package.py -- but the refusal rests
+    on this field.
+    """
+
+    OWNER = "owner"
+    OVERRIDE = "override"
+    NOT_APPLICABLE = "not-applicable"
+    ALL = (OWNER, OVERRIDE, NOT_APPLICABLE)
 
 
 class Distribution:
@@ -126,33 +112,143 @@ class Distribution:
     SHIPPED = (FULL_TEXT, METADATA_ONLY, INTERNAL)
 
 
-# 4: added profile/schemas/legal to the manifest (two-profile packager). A
-# profile-unaware artifact cannot be verified by profile_checks.py at all,
-# so an older manifest must fail the version gate rather than be read with
-# defaults.
-# 5: added legal.shipped_distributions. Without it a reader cannot tell an
-# artifact that carries every classified document from one that leaves a
-# whole class out on purpose -- documents_by_distribution lists the corpus,
-# and only this field says which of those lists the package actually
-# contains. Read with a default it would silently turn a deliberate
-# exclusion into an unexplained gap, so a v4 manifest fails the gate.
-MANIFEST_SCHEMA_VERSION = 5
+class CitationMode(PublicPolicyMode):
+    """The packager's view of citation.public_policy.mode. WHICH modes exist
+    is the column's own vocabulary (citation_vocab.PublicPolicyMode, which
+    the SQL CHECK mirrors and a live test holds it to); this class adds only
+    what a BUILD makes of each. Restated here it would have been a third
+    spelling of a closed DB vocabulary, outside the one mechanism that
+    compares such a spelling with the database's.
 
-# A paraphrase of "an algebraic polynomial bounded from its values on a
-# uniform grid" (the recurring theme of 1997_sm280 and related papers) with
-# genuinely ZERO shared stemmed lexeme against its own nearest page's
-# wording -- not merely zero shared surface forms, and not excusing the
-# domain noun either: earlier wordings that kept "полином"/"величина"/
-# "оценить" etc. kept landing on pages that use the exact same word, which
-# the stemmed check (manifest_probe._stemmed_token_overlap) correctly
-# rejected. This wording was accepted only after gather_manifest ran clean
-# against the live corpus (verified: phraseto_tsquery also finds "no
-# matches" for it). Nearest page can legitimately drift as the corpus/model
-# change -- gather_manifest() re-checks the invariant against whatever page
-# is actually nearest on every build and refuses to record a pair that
-# overlaps, rather than trusting this comment to still hold.
-VECTOR_PROBE_QUERY = (
-    "какое предельное значение по абсолютной величине допускает "
-    "рациональная форма, заданная своими данными на равноотстоящих "
-    "узлах отрезка"
-)
+    The refusal to guess about anything outside ALL lives in
+    deploy/citation_profile.py; citation_dump.py applies the mode to the
+    dump, citation_content_checks.py verifies it against the dump's bytes.
+    """
+
+    # Modes whose dump carries the citation schema at all -- read by
+    # schemas_for() below (does the manifest declare it) and by
+    # citation_dump.dump_citation() (does the dump write it), which is the
+    # whole of the question in both places. Hand-written on purpose: a mode
+    # added to the DB vocabulary and not to this tuple ships NOTHING and
+    # declares nothing, which is the safe half of being unheard-of.
+    SHIPPED = (PublicPolicyMode.FULL_SKELETON, PublicPolicyMode.TOPOLOGY_ONLY)
+    # Modes whose citation.work/cites rows carry abstract/evidence. The
+    # dump and the artifact-side hunt both read it through strips_content()
+    # below rather than testing a mode by name.
+    FULL_CONTENT = (PublicPolicyMode.FULL_SKELETON,)
+
+
+def ships_citation(mode: str | None) -> bool:
+    """Whether an artifact built under `mode` carries the citation schema at
+    all -- the one authority for that question, read by the bytes
+    (citation_dump.dump_citation), by their description (schemas_for below,
+    manifest_probe._citation_block) and by both verifiers
+    (citation_content_checks, deploy/smoke_checks).
+
+    Asked as "is this mode declared shipping", never as "is it NONE".
+    CitationMode.ALL is INHERITED from the column's own vocabulary and grows
+    with it; SHIPPED is hand-written on purpose, so a mode nobody here has
+    heard of ships nothing and declares nothing. Spelled `!= NONE` at four
+    of the six sites, the halves disagreed the moment a fifth mode existed:
+    the dump wrote no citation byte while the manifest stamped the live
+    work/cites counts into it -- MANIFEST_DESCRIBES_ARTIFACT broken by the
+    packager silently, and certification failed at the recipient on a build
+    reported as successful.
+    """
+    return mode in CitationMode.SHIPPED
+
+
+def strips_content(mode: str | None) -> bool:
+    """Whether a dump built under `mode` must blank the content columns.
+
+    Asked as "is this mode declared full-content", never as "is it
+    topology-only". A mode added to CitationMode and forgotten at one of
+    the two call sites -- citation_dump._select_expression (what the COPY
+    projects) and citation_content_checks.attach_visitors (whether the
+    artifact-side hunt runs at all) -- would otherwise ship abstracts AND
+    be exempt from the check that would catch it. Anti-default per mode,
+    as citation_columns.blanked_cast() is per column.
+    """
+    return mode not in CitationMode.FULL_CONTENT
+
+
+# Schemas each profile's dump carries BEFORE the citation mode is applied.
+# The public profile leaves measurements behind entirely (it is the record
+# of our own research, not of the corpus); the full profile is the owner's
+# own backup and carries both.
+_PROFILE_BASE_SCHEMAS = {
+    Profile.FULL: ("corpus", "measurements"),
+    Profile.PUBLIC: ("corpus",),
+}
+
+
+def base_schemas_for(profile: str) -> tuple[str, ...]:
+    """The profile's schemas BEFORE the citation mode is applied.
+
+    Exported because one caller genuinely wants this and not the whole
+    list: public_dump._dump_ddl() asks pg_dump for the schemas whose DDL it
+    writes itself, and the citation schema's DDL is written separately by
+    citation_dump.dump_ddl() under the mode. Asked for by naming a mode
+    that happens to ship nothing, the dependency was invisible from this
+    side -- nothing here recorded that a caller relies on that mode never
+    adding `citation`, so a change to SHIPPED or to the map below would
+    have put the citation DDL into the file twice, and a dump with
+    duplicated CREATE statements aborts at the recipient's restore.
+
+    Same closed-vocabulary refusal schemas_for() makes, and for the same
+    reason: an unknown profile decided by omission is a schema set nobody
+    chose.
+    """
+    if profile not in Profile.ALL:
+        raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
+    return _PROFILE_BASE_SCHEMAS[profile]
+
+
+def schemas_for(profile: str, citation_mode: str) -> list[str]:
+    """The schemas an artifact of this profile carries under this citation
+    mode -- read by the dumpers (artifact_bundle.dump_schemas,
+    public_dump._dump_ddl + citation_dump) and declared verbatim in
+    manifest.json (manifest_probe.gather_manifest). One list, so the
+    package and its manifest cannot describe different schema sets.
+
+    The base half is base_schemas_for()'s answer, so the relationship
+    "everything the profile carries anyway, plus citation when the mode
+    ships it" is written once and holds for both callers.
+
+    Refuses an unknown profile or mode rather than defaulting: both
+    vocabularies are closed (Profile.ALL, CitationMode.ALL), and guessing
+    here would decide by omission what the owner decides by data.
+    """
+    schemas = list(base_schemas_for(profile))
+    if citation_mode not in CitationMode.ALL:
+        raise ValueError(
+            f"unknown citation mode {citation_mode!r} -- expected one of {CitationMode.ALL}")
+    if ships_citation(citation_mode):
+        schemas.append("citation")
+    return schemas
+
+
+def required_schemas(manifest: dict) -> tuple[frozenset[str] | None, str]:
+    """schemas_for() asked of a MANIFEST's own two fields, as a verdict
+    instead of an exception -- what the artifact side needs to re-derive
+    the rule rather than trust the list a builder wrote down.
+
+    manifest.json is not signed and the verifiers travel inside the package
+    (ARTIFACT_SIDE_FAILS_CLOSED), so "which schemas does this profile ship"
+    has to be ANSWERED on the recipient's side, not read there. Every
+    producer already goes through schemas_for(); a verifier comparing the
+    dump with manifest.schemas alone compares a builder's claim with the
+    same builder's bytes, and a build that got the rule wrong agrees with
+    itself perfectly.
+
+    None (with the reason) rather than a raise, because both readers of
+    this answer are checks that must return a row: an unknown profile or
+    mode has to arrive as a red line, not as a traceback out of a pass that
+    then reports nothing at all.
+    """
+    citation = manifest.get(Key.CITATION)
+    mode = citation.get(Key.CITATION_MODE) if isinstance(citation, dict) else None
+    try:
+        return frozenset(schemas_for(manifest.get(Key.PROFILE), mode)), ""
+    except ValueError as exc:
+        return None, str(exc)

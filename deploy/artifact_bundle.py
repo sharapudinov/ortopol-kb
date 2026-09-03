@@ -11,7 +11,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from citation_columns import CENSUS_COLUMN, CENSUS_TABLE
+from block_census import BlockCensus, FieldTally
+from classification_gate import require_classified_schemas
+from copy_rows import CITATION_SCHEMA, CopyBlockCounter, DumpedRows
 from dump_integrity import sha256_file
+from manifest_contract import Profile, schemas_for
 from pg_stream import CommandFailed, stream_stdout
 
 # Paths are relative to this file's own directory (deploy/).
@@ -21,6 +26,10 @@ CORPUS_DIR = DEPLOY_DIR.parent
 DEPLOY_FILES = [
     "docker-compose.yml",
     "init/00_extensions.sql",
+    # kb-pg is built, not pulled (see docker-compose.yml): the recipient
+    # needs the Dockerfile to get the same AGE+pgvector pairing.
+    "pg/Dockerfile",
+    "pg/README.md",
     "ollama-entrypoint.sh",
     ".pgenv.example",
     "AGENT_GUIDE.md",
@@ -36,6 +45,11 @@ DEPLOY_FILES = [
     "ollama_registry.py",
     "drift_probe.py",
     "manifest_contract.py",
+    # ... and, beside it, the manifest's own key names and version, which
+    # every bundled verifier reads and none of them may spell itself.
+    "manifest_keys.py",
+    # The probe question itself, which drift_probe.py defaults to.
+    "probe_query.py",
     "pg_rank_probe.py",
     # The static profile/legal verification, and the dump reader it uses:
     # bundled so the recipient of an artifact can re-answer "does this
@@ -45,14 +59,111 @@ DEPLOY_FILES = [
     # corpus, which is the builder's job, not the recipient's.
     "profile_checks.py",
     "dump_scan.py",
+    # ... and the wire format that reader meets line by line: the NULL
+    # marker, the block terminator and one COPY line read by column
+    # without copying it. Split off for module size -- without it
+    # profile_checks.py does not import at all on the recipient's side.
+    "copy_row.py",
+    # ... and the one check that reads no COPY row at all: the statements
+    # BETWEEN the blocks, and whether each sequence the dump's own DDL
+    # declares was repositioned after the rows that consumed it. Split off
+    # because it is the schema's question rather than either schema's --
+    # without it profile_checks.py does not import at all.
+    "sequence_checks.py",
+    # ... and the corpus half of what it checks: the document/page visitors
+    # and the six checks that hold the dump to the legal classification.
+    # Split off for module size, like the citation half below -- without it
+    # profile_checks.py does not import at all on the recipient's side.
+    "corpus_content_checks.py",
+    # ... and the topology/content classification of schema corpus that
+    # those checks read, for the same reason citation_columns.py travels
+    # below: the SAME map the builder's public_dump.py cut by. A second copy
+    # on this side could only agree with the producer by accident, which is
+    # exactly the case the check exists to catch.
+    "corpus_columns.py",
+    # ... and the engine both classifications are declared through ...
+    "column_classes.py",
+    # ... and the one check that holds a shipped COPY column list to those
+    # maps, for BOTH schemas at once. The producer refuses to dump a column
+    # nobody classified; this is the same question asked of the file, which
+    # is the only side a recipient of an unsigned manifest can ask it from.
+    "column_class_checks.py",
+    # ... and its neighbour one level up: the per-table row counts each
+    # classified schema's manifest block declares, held to the COPY blocks
+    # the file turns out to have. Both schemas from one engine -- without it
+    # profile_checks.py does not import at all on the recipient's side.
+    "table_rows_check.py",
+    # ... and the manifest-only legal vocabulary its checks reason over,
+    # split off for module size: without it profile_checks.py does not
+    # import at all on the recipient's side.
+    "manifest_classes.py",
+    # ... and the two fields the PASS itself reads before any check can
+    # run: the manifest version it is written against and the dump block
+    # whose path it opens. Gates, not checks -- a field the wiring cannot
+    # find raises instead of printing a row.
+    "manifest_gates.py",
+    # Static verification of the citation-schema slice of the dump:
+    # profile_checks.py's run_checks() calls into it ...
+    "citation_content_checks.py",
+    # ... beside the module that asks the other question of the facts it
+    # collects: does everything that shipped name only what this package
+    # carries (work -> document, edge -> work, journal -> neither).
+    "citation_cut_checks.py",
+    # ... and, beside it, the one citation check that reads no dump byte:
+    # whose decision the mode was (manifest.citation.policy_source). Split
+    # off for module size and because it answers a different question --
+    # without it profile_checks.py does not import at all.
+    "citation_policy_check.py",
+    # ... and the topology/content classification it checks against. The
+    # SAME map the builder's citation_dump.py strips by: a second copy on
+    # this side could only agree with the producer by accident, and the
+    # check exists precisely to catch the case where it does not.
+    "citation_columns.py",
+    # Rebuilds citation_graph after the dump restores (see its own comment
+    # on why LOAD 'age' cannot be a bare statement inside the DO block).
+    "init/02_project_graph.sql",
 ]
 CORPUS_LIB_FILES = [
     "pg_common.py",
     "pg_search.py",
+    # smoke_checks.check_citation_projection reuses graph_exists/projection_reading/
+    # compare_counts rather than reimplementing the |V|=|work|/|E|=|cites|
+    # comparison a second time; that plumbing, and graph_sql()'s
+    # AGE-activation contract, live here (see the module's own docstring).
+    "pg_graph_common.py",
+    # The CLI over it, because AGENT_GUIDE.md documents `pg_graph.py
+    # project --check` and the four query subcommands to the recipient ...
+    "pg_graph.py",
+    # ... and the query layer behind citers/candidates/cocitation/hybrid:
+    # the relational two here, the two Cypher ones in pg_graph_cypher.py,
+    # each imported by the CLI from the module that owns it. Bundling only
+    # the CLI left every documented graph query raising ModuleNotFoundError
+    # on a package whose own guide says it can answer them.
+    "pg_graph_candidates.py",
+    # ... and the two closed vocabularies of the schema those queries name
+    # (citation.work.kind here), declared once for both sides of the
+    # boundary -- see citation_vocab.py's own docstring for why it is a
+    # root module rather than part of citations/, which deliberately does
+    # not travel.
+    "citation_vocab.py",
+    "pg_graph_cocitation.py",
+    "pg_graph_cypher.py",
+    # ... and the five schema files `pg_graph.py init` applies, in order
+    # (the schema-neutral vocabulary migrator, data definition, idempotent
+    # constraint migrations, AGE projection, journal backfill -- kb/CLAUDE.md
+    # FILE_SIZE split pg_schema_citation.sql along those seams).
+    # pg_graph_common.SCHEMA_PATHS resolves each NEXT TO
+    # THE MODULE, so all five must land in corpus_lib/ or the artifact ships
+    # a documented first subcommand that cannot run -- a module-relative
+    # dependency the bundle list has to model, since nothing in an import
+    # graph mentions it.
+    "pg_schema_vocabulary.sql",
+    "pg_schema_citation.sql",
+    "pg_schema_citation_constraints.sql",
+    "pg_schema_citation_graph.sql",
+    "pg_schema_citation_backfill.sql",
 ]
 
-
-FULL_SCHEMAS = ("corpus", "measurements")
 
 # gzip.open()'s default compresslevel is 9 (max), not the level 6 the gzip
 # CLI itself defaults to. Level 9 buys ~1-2% smaller output for 2-4x slower
@@ -64,29 +175,73 @@ FULL_SCHEMAS = ("corpus", "measurements")
 DUMP_COMPRESSLEVEL = 6
 
 
-def dump_schemas(env: dict, gz_path: Path) -> None:
-    """The FULL profile's dump: pg_dump of both schemas, streamed straight
-    through gzip into gz_path -- one pass, no uncompressed intermediate
-    file. The dump embeds every source PDF/djvu blob in the corpus (hundreds
-    of MB to several GB compressed), so writing it out uncompressed first
-    and re-reading it to compress would roughly double both wall-clock and
-    peak disk usage for no benefit.
+def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> DumpedRows:
+    """The FULL profile's dump: pg_dump of every schema the profile carries
+    (manifest_contract.schemas_for -- the same list manifest.json declares),
+    streamed straight through gzip into gz_path -- one pass, no
+    uncompressed intermediate file. Returns {table: rows} per schema for
+    what the file turned out to hold, the same answer public_dump.
+    dump_public() gives and for the same consumer: the manifest's counts,
+    which the recipient's gate holds the shipped bytes to.
+
+    Those numbers come OFF THE BYTES THIS CALL WROTE, not from the live
+    database afterwards: a count taken from a second connection describes
+    whatever the database held at that moment, and the crawl adds ~100k
+    journal rows per pass to the same instance. pg_dump owns the whole
+    file, so there is no per-block seam to count at as the public profile
+    has -- but the block structure is IN the stream, so CopyBlockCounter
+    reads it there (copy_rows.py), between the child's pipe and gzip. It
+    also answers the catalog's question rather than the classification's
+    for free: pg_dump writes a table nobody classified, and counting the
+    stream finds it.
+
+    One pass, and it has to stay one: the dump embeds every source PDF/djvu
+    blob in the corpus (hundreds of MB to several GB compressed), so both
+    an uncompressed intermediate file and a read-back of the finished one
+    cost a full inflate of that. The read-back (DumpedRows.from_contents
+    over dump_scan.scan) is still what a verifier asks the file with; it is
+    no longer what the build asks itself.
 
     The public profile's filtered equivalent lives in public_dump.py; both
     are dispatched from build_package.py by --profile, and both stream
     through pg_stream.stream_stdout (see that module on why stderr must be
     drained concurrently).
+
+    Refuses, BEFORE the file is opened, while any table or column of a
+    classified schema is outside its map (classification_gate.py). This
+    profile applies no cut and ships whatever the schemas hold, so the gate
+    decides nothing about the contents -- but the checker bundled INTO the
+    artifact holds every COPY block of schemas corpus and citation to that
+    same map whatever the profile, so without the gate a new column built
+    cleanly, reported success, and failed the package's own certification
+    afterwards.
     """
-    schema_args = [f"--schema={name}" for name in FULL_SCHEMAS]
+    schemas = schemas_for(Profile.FULL, citation_mode)
+    require_classified_schemas(env, schemas)
+    schema_args = [f"--schema={name}" for name in schemas]
+    blocks: dict[str, int] = {}
+    census = FieldTally(CENSUS_COLUMN)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
+            counter = CopyBlockCounter(
+                dst, BlockCensus(f"{CITATION_SCHEMA}.{CENSUS_TABLE}", census))
             stream_stdout(
-                ["pg_dump", "--no-owner", "--no-privileges", "--no-tablespaces", *schema_args],
-                env, dst,
+                ["pg_dump", "--no-owner", "--no-privileges", "--no-tablespaces", *schema_args,
+                 # Defensive, on top of --schema already being a whitelist:
+                 # citation_graph (AGE's own schema for graph 'citation_graph')
+                 # must never be dumped -- apache/age issue #2503, restoring a
+                 # dumped ag_graph.graphid breaks Cypher against it (see
+                 # pg_schema_citation.sql's header comment). ag_catalog is
+                 # excluded for the same reason, belt-and-braces.
+                 "--exclude-schema=citation_graph", "--exclude-schema=ag_catalog"],
+                env, counter,
             )
+            counter.finish()
+            blocks = counter.tables
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc
+    return DumpedRows.from_blocks(blocks, census.counts)
 
 
 def bundle_runtime_files(workdir: Path) -> dict[str, str]:

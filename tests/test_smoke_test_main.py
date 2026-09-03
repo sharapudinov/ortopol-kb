@@ -17,6 +17,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import dump_integrity
 import smoke_test
 
 _DEFAULT_CHECK_RESULTS = {
@@ -98,17 +99,28 @@ class ArtifactFixture:
 
 class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_dump_sha256_mismatch_fails_even_when_everything_else_is_green(self):
+        # The dump-vs-manifest comparison is the static pass's last gate
+        # (manifest_gates), so here the static pass is narrowed to exactly
+        # that gate, run for real against the fixture: main() must carry its
+        # FAIL row through to the exit code, not hash the file a second
+        # time on its own.
+        def static_pass(extract_dir):
+            manifest = json.loads((extract_dir / "manifest.json").read_text())
+            return [("дамп — тот, что описан манифестом (размер, sha256)",
+                     *dump_integrity.check_dump_matches_manifest(manifest, extract_dir))]
+
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="DIFFERENT_SHA"), \
-                 self._patched():
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="DIFFERENT_SHA"), \
+                 self._patched(), \
+                 mock.patch.object(smoke_test.profile_checks, "run_checks", side_effect=static_pass):
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
         self.assertEqual(exit_code, 1)
 
     def test_up_failure_short_circuits_health_waits_and_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(up_ok=False), \
                  mock.patch.object(smoke_test.lifecycle, "wait_healthy") as wait_mock:
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
@@ -118,7 +130,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_pg_unhealthy_skips_db_level_checks_and_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(pg_healthy=False, ollama_healthy=False), \
                  mock.patch.object(smoke_test.checks, "check_counts") as check_counts_mock:
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
@@ -128,7 +140,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_ollama_unhealthy_short_circuits_vector_and_digest_without_calling_them(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(pg_healthy=True, ollama_healthy=False), \
                  mock.patch.object(smoke_test.checks, "check_vector") as check_vector_mock, \
                  mock.patch.object(smoke_test.checks, "check_embedding_model_digest") as digest_mock:
@@ -140,7 +152,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_teardown_ok_requires_clean_down_and_no_remaining_volumes(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(remaining_volumes=["kb-smoke-pg-data"]):
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
         self.assertEqual(exit_code, 1)
@@ -148,7 +160,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_all_green_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched():
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
         self.assertEqual(exit_code, 0)
@@ -160,7 +172,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
         # manifest shape this checkout doesn't understand).
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp, schema_version=999)
-            with mock.patch.object(smoke_test, "sha256_file") as sha256_mock, \
+            with mock.patch.object(dump_integrity, "sha256_file") as sha256_mock, \
                  mock.patch.object(smoke_test.lifecycle, "up") as up_mock, \
                  mock.patch.object(smoke_test.lifecycle, "down") as down_mock, \
                  mock.patch.object(smoke_test.checks, "check_bundled_files") as bundled_mock:
@@ -174,7 +186,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_matching_schema_version_proceeds_normally(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp, schema_version=smoke_test.checks.MANIFEST_SCHEMA_VERSION)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched():
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
         self.assertEqual(exit_code, 0)
@@ -190,7 +202,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(smoke_test.drift_probe, "measure_drift", return_value=report) as drift_mock:
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir), "--measure-drift", "3"])
@@ -203,7 +215,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_measure_drift_not_called_when_ollama_unhealthy(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(ollama_healthy=False), \
                  mock.patch.object(smoke_test.drift_probe, "measure_drift") as drift_mock:
                 smoke_test.main(["--artifact-dir", str(artifact_dir), "--measure-drift", "3"])
@@ -212,7 +224,7 @@ class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_measure_drift_defaults_to_off(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(smoke_test.drift_probe, "measure_drift") as drift_mock:
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
@@ -228,7 +240,7 @@ class ProfileAwareMainTests(ArtifactFixture, unittest.TestCase):
     def test_static_profile_checks_run_before_compose_up(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(
                      smoke_test.profile_checks, "run_checks",
@@ -240,7 +252,7 @@ class ProfileAwareMainTests(ArtifactFixture, unittest.TestCase):
     def test_a_failing_static_profile_check_fails_the_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(
                      smoke_test.profile_checks, "run_checks",
@@ -255,7 +267,7 @@ class ProfileAwareMainTests(ArtifactFixture, unittest.TestCase):
         # about the package. The absence itself is asserted statically.
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp, profile="public", schemas=["corpus"])
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(smoke_test.checks, "check_measurements_run") as measurements_mock:
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
@@ -265,7 +277,7 @@ class ProfileAwareMainTests(ArtifactFixture, unittest.TestCase):
     def test_full_artifact_still_checks_measurements(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(smoke_test.checks, "check_measurements_run",
                                     return_value=(True, "ok")) as measurements_mock:
@@ -280,7 +292,7 @@ class ProfileAwareMainTests(ArtifactFixture, unittest.TestCase):
             manifest = json.loads(manifest_path.read_text())
             manifest["blob_probe"] = {"document_id": "2009_isu34"}
             manifest_path.write_text(json.dumps(manifest))
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(smoke_test.checks, "blob_sha256",
                                     return_value=(10, "sha")) as blob_mock:
@@ -299,7 +311,7 @@ class ProfileAwareMainTests(ArtifactFixture, unittest.TestCase):
                 fake_data_dir.seen = (artifact, artifact_dir_arg, profile)
                 yield artifact_dir, False
 
-            with mock.patch.object(smoke_test, "sha256_file", return_value="REAL_SHA"), \
+            with mock.patch.object(dump_integrity, "sha256_file", return_value="REAL_SHA"), \
                  self._patched(), \
                  mock.patch.object(smoke_test, "artifact_data_dir", fake_data_dir):
                 smoke_test.main(["--profile", "public"])

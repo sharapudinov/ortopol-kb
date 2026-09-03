@@ -59,6 +59,68 @@ class ManifestComparisonTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("missing required fields=2", detail)
 
+
+class CitationProjectionTests(unittest.TestCase):
+    """check_citation_projection: SKIP for an artifact that ships no
+    citation mode (older artifact, or CitationMode.NONE), otherwise the
+    reading pg_graph_common.projection_diff() owns, held against BOTH the
+    restored tables and the manifest's declared counts.
+    """
+
+    def test_skips_when_manifest_has_no_citation_block(self):
+        ok, detail = smoke_checks.check_citation_projection({}, {})
+        self.assertIsNone(ok)
+        self.assertIn("None", detail)
+
+    def test_skips_under_none_mode(self):
+        manifest = {"citation": {"mode": "none", "work_count": 0, "cites_count": 0}}
+        with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff") as diff_mock:
+            ok, _detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertIsNone(ok)
+        diff_mock.assert_not_called()
+
+    def test_fails_when_graph_was_never_projected(self):
+        manifest = {"citation": {"mode": "full-skeleton", "work_count": 5, "cites_count": 3}}
+        with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff",
+                               return_value=None):
+            ok, detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertFalse(ok)
+        self.assertIn("02_project_graph.sql", detail)
+
+    @staticmethod
+    def _seen(work_n, cites_n, vertex_n, edge_n):
+        return smoke_checks.pg_graph_common.Projection(
+            work_n, cites_n, vertex_n, edge_n, "w", "w", "c", "c")
+
+    def test_matching_counts_pass(self):
+        manifest = {"citation": {"mode": "topology-only", "work_count": 438, "cites_count": 2425}}
+        with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff",
+                               return_value=self._seen(438, 2425, 438, 2425)):
+            ok, detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertTrue(ok, detail)
+
+    def test_mismatched_counts_fail(self):
+        manifest = {"citation": {"mode": "full-skeleton", "work_count": 438, "cites_count": 2425}}
+        with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff",
+                               return_value=self._seen(438, 2425, 437, 2425)):
+            ok, detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertFalse(ok)
+        self.assertIn("diff -1", detail)
+
+    def test_dump_short_of_its_own_manifest_fails_even_with_a_faithful_projection(self):
+        """The projection reproduces whatever the tables hold, so "graph ==
+        tables" alone certifies a dump that shipped fewer rows than the
+        manifest declares. The manifest comparison is the second half.
+        """
+        manifest = {"citation": {"mode": "full-skeleton", "work_count": 438, "cites_count": 2425}}
+        with mock.patch.object(smoke_checks.pg_graph_common, "projection_diff",
+                               return_value=self._seen(430, 2425, 430, 2425)):
+            ok, detail = smoke_checks.check_citation_projection({}, manifest)
+        self.assertFalse(ok)
+        self.assertIn("манифест: work 438", detail)
+
+
+class CheckEmbeddingModelDimsTests(unittest.TestCase):
     # check_embedding_model_dims folded its two round trips (declared
     # model/dims, then the corpus.pages aggregate) into one -- see
     # smoke_checks._EMBEDDING_MODEL_DIMS_SQL -- so every case below mocks a

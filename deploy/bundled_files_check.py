@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from dump_integrity import sha256_file
-from manifest_contract import Key
+from manifest_keys import Key
 
 # Operator/runtime byproducts AGENT_GUIDE.md's own documented in-place flow
 # creates next to the artifact -- present by design in that mode, not

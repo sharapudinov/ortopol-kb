@@ -80,3 +80,24 @@ def try_default_corpus_dir() -> Path | None:
         return default_corpus_dir()
     except RuntimeError:
         return None
+
+
+def cache_dir(name: str) -> Path:
+    """Where the named cache channel lives in the data tree.
+
+    Inside the data tree, not the checkout: cached bodies are third-party
+    JSON and HTML, and CODE_ONLY keeps every byte of them out of git. Not
+    scratch either -- a wiped cache costs a day of OpenAlex quota to refill
+    (measured: one depth-2 attempt spent ~260 of a 1000-request window,
+    which then took 23 h to reset), and the other channels are bought just
+    as dearly. These are data the tree keeps.
+
+    One accessor with the channel as an argument, because that is all this
+    module knows: where a cache goes. WHY each channel is worth keeping
+    differs per channel and is prose belonging beside the code that builds
+    it -- pg_load_citations.main() builds every one of them, each through
+    the one read-only rule, so a new channel cannot arrive without meeting
+    that rule. Four functions here whose bodies differed only in the last
+    segment put four rationales in the module that shares none of them.
+    """
+    return data_root() / "corpus" / "cache" / name

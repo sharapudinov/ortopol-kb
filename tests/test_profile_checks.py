@@ -1,5 +1,6 @@
-"""Unit tests for deploy/dump_scan.py and deploy/profile_checks.py -- the
-static half of artifact verification: no Docker, no Postgres, no network.
+"""Unit tests for deploy/profile_checks.py -- the static half of artifact
+verification: no Docker, no Postgres, no network. The dump READER those
+checks run on has its own module next door (test_dump_scan.py).
 
 Every case builds a real gzipped dump (COPY blocks in Postgres' text format)
 plus a real manifest.json in a temp directory, then asks the checks about it.
@@ -12,149 +13,63 @@ has to notice.
 """
 from __future__ import annotations
 
-import gzip
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import corpus_content_checks
+import citation_policy_check
 import dump_scan
 import profile_checks
-
-DOCUMENT_COLUMNS = ["id", "filename", "legal_class", "public_distribution",
-                    "legal_note", "source_blob", "source_sha256"]
-PAGE_COLUMNS = ["document_id", "page_number", "body", "embedding"]
-
-FULL_DOC = "2009_isu34"
-META_DOC = "1997_sm280"
-INTERNAL_DOC = "INDEX"
-EXCLUDED_DOC = "2016_vmj598"
-
-
-def _document_row(doc_id, distribution, blob):
-    return [doc_id, f"{doc_id}.pdf", "cc-by-4.0", distribution, "основание",
-            blob, "a" * 64]
-
-
-def _page_row(doc_id, page, body, embedding="[0.1,0.2]"):
-    return [doc_id, str(page), body, embedding]
-
-
-def _copy_block(table, columns, rows):
-    lines = [f"COPY corpus.{table} ({', '.join(columns)}) FROM stdin;"]
-    lines += ["\t".join(row) for row in rows]
-    lines += ["\\.", ""]
-    return "\n".join(lines)
-
-
-class ArtifactBuilder:
-    """Writes a manifest + gzipped dump pair into a directory, defaulting to
-    a well-formed public artifact: one full-text document with content, one
-    metadata-only document stripped, one internal document shipped whole,
-    and one excluded document the manifest names but the dump does not
-    contain in any form.
-    """
-
-    def __init__(self, directory: Path):
-        self.directory = directory
-        self.profile = "public"
-        self.schemas = ["corpus"]
-        self.documents = [
-            _document_row(FULL_DOC, "full-text", "\\x2550"),
-            _document_row(META_DOC, "metadata-only", "\\N"),
-            _document_row(INTERNAL_DOC, "internal", "\\x2551"),
-        ]
-        self.pages = [
-            _page_row(FULL_DOC, 1, "текст статьи"),
-            _page_row(META_DOC, 1, ""),
-            _page_row(META_DOC, 2, ""),
-            _page_row(INTERNAL_DOC, 1, "наш индекс"),
-        ]
-        self.page_columns = list(PAGE_COLUMNS)
-        self.by_distribution = {
-            "full-text": [FULL_DOC], "metadata-only": [META_DOC], "internal": [INTERNAL_DOC],
-            "excluded": [EXCLUDED_DOC],
-        }
-        self.shipped = ["full-text", "metadata-only", "internal"]
-        self.unclassified = 0
-        self.extra_sql = ""
-
-    def write(self) -> Path:
-        dump_text = (
-            "CREATE SCHEMA corpus;\n"
-            "CREATE TABLE corpus.documents (id text);\n"
-            + self.extra_sql
-            + _copy_block("documents", DOCUMENT_COLUMNS, self.documents)
-            + _copy_block("pages", self.page_columns, self.pages)
-        )
-        dump_path = self.directory / "01_dump.sql.gz"
-        with gzip.open(dump_path, "wt", encoding="utf-8") as f:
-            f.write(dump_text)
-        legal = {
-            "verify_query": "SELECT count(*) ...",
-            "unclassified_documents": self.unclassified,
-            "class_counts": [],
-            "documents_by_distribution": self.by_distribution,
-            "full_content_distributions": ["full-text", "internal"],
-        }
-        if self.shipped is not None:
-            legal["shipped_distributions"] = self.shipped
-        manifest = {
-            "schema_version": 5,
-            "profile": self.profile,
-            "schemas": self.schemas,
-            "pages_count": len(self.pages),
-            "dump": {"file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"},
-            "legal": legal,
-        }
-        (self.directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False))
-        return self.directory
-
+from manifest_classes import check_profile_is_known
+from manifest_keys import Key
+from manifest_contract import CitationMode, PolicySource, Profile
+from _artifact_fixtures import (
+    ArtifactBuilder,
+    EXCLUDED_DOC,
+    FULL_DOC,
+    INTERNAL_DOC,
+    META_DOC,
+    PAGE_COLUMNS,
+    _citation_copy_block,
+    _document_row,
+    _page_row,
+)
 
 def _results(builder: ArtifactBuilder) -> dict[str, tuple[bool, str]]:
     directory = builder.write()
     return {name: (ok, detail) for name, ok, detail in profile_checks.run_checks(directory)}
 
 
-class DumpScanTests(unittest.TestCase):
-    def test_counts_rows_and_nulls_per_column(self):
+class OnePassTests(unittest.TestCase):
+    """run_checks() inflates the dump exactly once.
+
+    The schema names and the COPY headers are the same lines, and the full
+    profile's dump carries every source PDF as hex, so a second pass for
+    the schema question doubled the cost of verifying the artifact the
+    checker exists for. Counted at the only place the file is actually
+    opened.
+    """
+
+    def test_the_dump_is_decompressed_once(self):
+        opens = []
+        real_open = dump_scan.gzip.open
+
+        def counting_open(path, *args, **kwargs):
+            opens.append(Path(path).name)
+            return real_open(path, *args, **kwargs)
+
         with tempfile.TemporaryDirectory() as tmp:
             directory = ArtifactBuilder(Path(tmp)).write()
-            scans = dump_scan.scan(directory / "01_dump.sql.gz")
-        documents = scans["corpus.documents"]
-        self.assertEqual(documents.rows, 3)
-        self.assertEqual(documents.columns, DOCUMENT_COLUMNS)
-        self.assertEqual(documents.nulls["source_blob"], 1)  # the metadata-only one
-        self.assertEqual(scans["corpus.pages"].nulls["body"], 2)
-
-    def test_schema_names_sees_ddl_and_copy_statements(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            builder = ArtifactBuilder(Path(tmp))
-            builder.extra_sql = "CREATE TABLE measurements.run (id integer);\n"
-            directory = builder.write()
-            self.assertEqual(
-                dump_scan.schema_names(directory / "01_dump.sql.gz"), {"corpus", "measurements"},
-            )
-
-    def test_row_with_the_wrong_field_count_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            builder = ArtifactBuilder(Path(tmp))
-            builder.documents.append([FULL_DOC, "only-two-fields"])
-            directory = builder.write()
-            with self.assertRaises(ValueError):
-                dump_scan.scan(directory / "01_dump.sql.gz")
-
-    def test_truncated_copy_block_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dump_path = Path(tmp) / "cut.sql.gz"
-            with gzip.open(dump_path, "wt", encoding="utf-8") as f:
-                f.write("COPY corpus.pages (document_id) FROM stdin;\n2009_isu34\n")
-            with self.assertRaises(ValueError) as ctx:
-                dump_scan.scan(dump_path)
-        self.assertIn("truncated", str(ctx.exception))
+            with mock.patch.object(dump_scan.gzip, "open", counting_open):
+                results = profile_checks.run_checks(directory)
+        self.assertTrue(all(ok for _name, ok, _detail in results), results)
+        self.assertEqual(opens, ["01_dump.sql.gz"])
 
 
 class PublicProfileChecksTests(unittest.TestCase):
@@ -224,6 +139,55 @@ class PublicProfileChecksTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("measurements", detail)
 
+    def test_a_manifest_may_not_declare_a_schema_the_rule_forbids(self):
+        """The dump and the declaration agree with each other and with
+        nothing else -- one build's decision wrote both.
+
+        A public artifact carries schema corpus alone; here it carries
+        measurements as well and says so honestly, which is exactly the
+        shape a comparison of the dump against the manifest's own claim
+        certifies. The rule the producer resolved by is re-derived on this
+        side instead (manifest_contract.schemas_for).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.schemas = ["corpus", "measurements"]
+            builder.extra_sql = "CREATE SCHEMA measurements;\n"
+            results = _results(builder)
+        name = next(n for n in results if n.startswith("профиль"))
+        ok, detail = results[name]
+        self.assertFalse(ok, detail)
+        self.assertIn("measurements", detail)
+
+    def test_a_citation_mode_outside_the_vocabulary_is_a_row_not_a_raise(self):
+        """The rule cannot be derived from a mode this reader does not
+        know, and the pass still has to report that as a red line: a
+        traceback out of run_checks() leaves a caller that extends its own
+        list (smoke_test.py) with no results at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.citation = {"mode": "half-skeleton", "work_count": 0, "cites_count": 0}
+            results = _results(builder)
+        name = next(n for n in results if n.startswith("профиль"))
+        ok, detail = results[name]
+        self.assertFalse(ok, detail)
+        self.assertIn("half-skeleton", detail)
+
+    def test_a_corpus_table_declared_but_never_shipped_fails(self):
+        """The corpus half of the per-table declaration, end to end: a
+        table the manifest promises and the dump does not carry used to be
+        indistinguishable from a table correctly cut away, because only
+        documents and pages were described at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.corpus_table_rows = {"documents": 3, "pages": 4, "embedding_model": 1}
+            results = _results(builder)
+        ok, detail = results["corpus: каждая заявленная таблица приехала целиком"]
+        self.assertFalse(ok)
+        self.assertIn("corpus.embedding_model", detail)
+
     def test_tsv_in_the_page_copy_columns_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             builder = ArtifactBuilder(Path(tmp))
@@ -284,13 +248,165 @@ class PublicProfileChecksTests(unittest.TestCase):
     def test_a_manifest_without_shipped_distributions_is_refused(self):
         # An artifact that cannot say which classes it carries cannot be
         # verified at all -- and must not be read as carrying everything.
+        # The legal-vocabulary gate stops the pass on it before a check
+        # about the dump runs (tests/test_manifest_classes.py); asked of the
+        # check that reads the block, the refusal is the same one.
         with tempfile.TemporaryDirectory() as tmp:
             builder = ArtifactBuilder(Path(tmp))
             builder.shipped = None
             results = _results(builder)
-        ok, detail = results["правовая классификация полна"]
+            manifest = json.loads((builder.directory / "manifest.json").read_text())
+        ok, detail = results["правовой словарь манифеста известен"]
         self.assertFalse(ok)
         self.assertIn("shipped_distributions", detail)
+        ok, detail = corpus_content_checks.check_classification_complete(manifest, {})
+        self.assertFalse(ok)
+        self.assertIn("shipped_distributions", detail)
+
+
+class ProfileVocabularyGateTests(unittest.TestCase):
+    """The profile string is the switch every strictness in the pass reads.
+
+    `!= Profile.PUBLIC` is how expected_ids(), content_expectation() and
+    the citation policy check each pick what to demand, so one unvalidated
+    field turned the whole certification lenient at once: a manifest whose
+    profile is missing, misspelt or hand-edited printed a column of passes
+    about a package nothing had been verified against.
+    """
+
+    def _results_with_profile(self, profile):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.profile = profile
+            return _results(builder)
+
+    def test_an_unknown_profile_stops_the_pass_instead_of_relaxing_it(self):
+        for profile in ("staging", "Public", "", None):
+            with self.subTest(profile=profile):
+                results = self._results_with_profile(profile)
+                ok, detail = results["манифест называет известный профиль"]
+                self.assertFalse(ok)
+                self.assertIn(repr(profile), detail)
+                # Nothing below the gate ran: a pass printed under it reads
+                # as a verified package.
+                self.assertEqual(len(results), 2)
+
+    def test_the_policy_check_refuses_an_unknown_profile_on_its_own(self):
+        """It is called from run_checks() above the gate today; the refusal
+        belongs to the check as well, because it is the one that chooses
+        between demanding the owner's row and excusing the profile.
+        """
+        manifest = {Key.PROFILE: "staging",
+                    Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE,
+                                   Key.CITATION_POLICY_SOURCE: PolicySource.NOT_APPLICABLE}}
+        ok, detail = citation_policy_check.check_policy_is_the_owners(manifest)
+        self.assertFalse(ok, detail)
+        self.assertIn("staging", detail)
+
+    def test_a_declared_profile_still_passes_the_gate(self):
+        for profile in Profile.ALL:
+            with self.subTest(profile=profile):
+                ok, _detail = check_profile_is_known({Key.PROFILE: profile})
+                self.assertTrue(ok)
+
+
+class CitationContentChecksIntegrationTests(unittest.TestCase):
+    """The two citation checks (citation_content_checks.py) as run through
+    profile_checks.run_checks() end to end -- unit coverage of the
+    predicates themselves lives in test_citation_content_checks.py.
+    """
+
+    WORK_COLUMNS = ["id", "key", "kind", "title", "abstract", "evidence"]
+    CITES_COLUMNS = ["citing", "cited", "evidence"]
+
+    def _builder_with_citation(self, tmp, mode, work_rows, cites_rows):
+        builder = ArtifactBuilder(Path(tmp))
+        # Every mode this helper is called with ships the schema, so the
+        # artifact declares it: manifest.schemas is held to the rule now,
+        # not merely to the dump.
+        builder.schemas = ["corpus", "citation"]
+        builder.citation = {
+            "mode": mode, "work_count": len(work_rows), "cites_count": len(cites_rows),
+            "work_columns": self.WORK_COLUMNS, "cites_columns": self.CITES_COLUMNS,
+            "work": work_rows, "cites": cites_rows,
+        }
+        return builder
+
+    def test_a_build_that_ships_no_graph_still_certifies_the_decision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = _results(ArtifactBuilder(Path(tmp)))
+        self.assertTrue(results["citation: схема/счётчики совпадают с манифестом"][0])
+        self.assertTrue(results["citation: content-колонки вырезаны вне full-skeleton"][0])
+        self.assertTrue(results["citation: режим — решение владельца, не --policy-override"][0])
+
+    def test_a_manifest_with_no_citation_block_is_refused(self):
+        """The hole the defensive reads used to swallow: no block, no mode,
+        nothing shipped, "nothing to check" -- and a clean certification
+        with no statement about who decided the citation policy.
+
+        Refused by the shape gate now, which runs in front of the dump pass
+        (a `citation` field that is not a mapping would otherwise raise
+        through _visit before any result exists) and carries the same
+        verdict one row earlier.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.citation_block = False
+            results = _results(builder)
+        ok, detail = results["манифест несёт блок citation словарём"]
+        self.assertFalse(ok, detail)
+
+    def test_full_skeleton_with_matching_counts_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self._builder_with_citation(
+                tmp, "full-skeleton",
+                work_rows=[["1", "k1", "indexed", "T1", "an abstract", '{"src": "openalex"}']],
+                cites_rows=[],
+            )
+            results = _results(builder)
+        ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
+        self.assertTrue(ok, detail)
+        ok, detail = results["citation: content-колонки вырезаны вне full-skeleton"]
+        self.assertTrue(ok, detail)  # not topology-only -- nothing to strip
+
+    def test_topology_only_with_a_leaked_abstract_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self._builder_with_citation(
+                tmp, "topology-only",
+                work_rows=[["1", "k1", "indexed", "T1", "an abstract", "\\N"]],
+                cites_rows=[],
+            )
+            results = _results(builder)
+        ok, detail = results["citation: content-колонки вырезаны вне full-skeleton"]
+        self.assertFalse(ok)
+        self.assertIn("abstract", detail)
+
+    def test_topology_only_properly_stripped_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = self._builder_with_citation(
+                tmp, "topology-only",
+                work_rows=[["1", "k1", "indexed", "T1", "\\N", "\\N"]],
+                cites_rows=[["1", "2", "\\N"]],
+            )
+            results = _results(builder)
+        ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
+        self.assertTrue(ok, detail)
+        ok, detail = results["citation: content-колонки вырезаны вне full-skeleton"]
+        self.assertTrue(ok, detail)
+
+    def test_none_mode_with_a_leaked_table_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.citation = {"mode": "none", "work_count": 0, "cites_count": 0}
+            # Leak a citation.work COPY block directly, bypassing write()'s
+            # own citation-writing path (which "none" never triggers) --
+            # simulates a packager bug that shipped the table anyway.
+            builder.extra_sql = _citation_copy_block(
+                "work", self.WORK_COLUMNS, [["1", "k1", "indexed", "T1", "\\N", "\\N"]])
+            results = _results(builder)
+        ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
+        self.assertFalse(ok)
+        self.assertIn("citation.work", detail)
 
 
 class FullProfileChecksTests(unittest.TestCase):

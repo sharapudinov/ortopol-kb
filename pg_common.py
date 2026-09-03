@@ -6,7 +6,7 @@ are meant to run on their own machines, every Postgres interaction in this
 repository goes through the psql command-line client, which any Postgres
 installation already provides.
 
-Two mechanisms, both avoiding shell string interpolation of untrusted data:
+Three mechanisms, all avoiding shell string interpolation of untrusted data:
 
 - Query parameters go through psql script variables (`-v name=value`,
   referenced in SQL as `:'name'`), which only work when the SQL is read as
@@ -14,7 +14,18 @@ Two mechanisms, both avoiding shell string interpolation of untrusted data:
   the SQL to a temp file first.
 - Bulk loads go through `\\copy ... FROM 'tempfile' WITH (FORMAT csv)`,
   with the CSV built by Python's csv module (correct quoting of embedded
-  commas/quotes/newlines) and written to its own temp file.
+  commas/quotes/newlines) and written to its own temp file. That direction
+  has its own module, pg_copy.py, and runs through run_sql() like
+  everything else.
+- Where neither fits -- a LIST of values inside one statement, for which
+  psql has no binding form at all -- sql_literal() builds the quoted
+  literal, and vector_literal() the pgvector form its two writers COPY.
+  One implementation, so no call site invents an f-string.
+
+Reading psql's answer is the same kind of shared plumbing, so the row and
+field separators (FIELD_SEP/RECORD_SEP/ROW_ARGS/split_records) live here
+too, and every parser in the repository imports them rather than spelling
+the bytes again.
 """
 from __future__ import annotations
 
@@ -26,6 +37,44 @@ from pathlib import Path
 
 class PostgresUnavailable(RuntimeError):
     pass
+
+
+class EmbedderUnavailable(RuntimeError):
+    """No query vector, where a query vector is the only possible answer.
+
+    Sibling of PostgresUnavailable, and here for the same reason: the
+    service a caller could not reach is a fact the caller has to be able to
+    RETURN. pg_search.embed_query() answers None instead, deliberately -- a
+    page search falls back to full-text, which needs no model -- but a
+    ranking over vectors has no such fallback, and printing the outage
+    beside an empty list makes it indistinguishable from "nothing matched"
+    (kb/CLAUDE.md, ВЕРДИКТ БИБЛИОТЕКИ — ЗНАЧЕНИЕ, А НЕ ПЕЧАТЬ).
+
+    `what` names the query that could not run, so the one message shape is
+    written once and each caller still says which answer is missing.
+    """
+
+    def __init__(self, what: str) -> None:
+        super().__init__(f"{what}: эмбеддинги недоступны -- ollama не отвечает "
+                         "либо corpus.embedding_model пуста")
+
+
+# How a multi-row psql result is delimited, and the flags that produce it.
+# Here because it is the same kind of plumbing run_sql() is -- every reader
+# in this repository parses psql's output, and a title, a reason or a page
+# of PDF text can contain a comma, a tab and a newline, so the separators
+# are the ASCII unit/record ones no source text carries. \x1e is
+# deliberately NOT run through str.splitlines() -- that treats \x1c-\x1e and
+# \x85 as line boundaries too, which is how a multi-line title used to
+# arrive as several rows. One declaration and one splitter: a second copy
+# drifts the moment one caller's separator changes.
+FIELD_SEP = "\x1f"
+RECORD_SEP = "\x1e"
+ROW_ARGS = ["-t", "-A", "-F", FIELD_SEP, "-R", RECORD_SEP]
+
+
+def split_records(stdout: str) -> list[str]:
+    return [r.strip("\n") for r in stdout.split(RECORD_SEP) if r.strip("\n")]
 
 
 def load_pgenv(pgenv_path: Path) -> dict[str, str]:
@@ -83,16 +132,40 @@ def run_sql(
         script_path.unlink(missing_ok=True)
 
 
-def copy_csv_into(env: dict[str, str], table_columns: str, csv_text: str) -> subprocess.CompletedProcess:
-    """COPY CSV text into `table_columns`, e.g. "documents (id, filename)"."""
-    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
-        f.write(csv_text)
-        csv_path = Path(f.name)
-    try:
-        escaped_path = str(csv_path).replace("'", "''")
-        return _run(env, ["-c", f"\\copy {table_columns} FROM '{escaped_path}' WITH (FORMAT csv)"])
-    finally:
-        csv_path.unlink(missing_ok=True)
+def sql_literal(value) -> str:
+    """One value as a SQL string literal, safe to splice into a statement.
+
+    For the cases psql's own `-v name=value` / :'name' binding cannot reach:
+    it substitutes ONE value, so a list of keys inside a single statement
+    (an IN (...) list, a Cypher WHERE ... IN [...]) has no bound form. The
+    alternative every such call site would otherwise reach for is an
+    f-string, and this repository's data is third-party text.
+
+    E'' with backslash escaping rather than plain quote-doubling: E'' means
+    the same thing whatever standard_conforming_strings is set to, while a
+    plain '...' literal changes meaning with it. Backslashes are doubled
+    FIRST -- a backslash inserted while escaping a quote must not be doubled
+    afterwards, the same ordering citation.cypher_literal() documents.
+
+    A NUL byte cannot appear in a Postgres text value at all, and letting it
+    through would truncate the statement rather than fail it.
+    """
+    text = str(value)
+    if "\x00" in text:
+        raise ValueError("NUL byte cannot appear in a SQL string literal")
+    return "E'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def vector_literal(vector) -> str | None:
+    """One embedding as pgvector's own text form, or None for no vector.
+
+    The pgvector analogue of sql_literal(), and here for the same reason:
+    both writers of an embedding column (the crawl, pg_embed.py) encode a
+    vector for COPY, and neither may invent the bracket-and-comma spelling
+    at its own call site. repr(float) round-trips exactly -- a shortened
+    number would be a different vector, silently.
+    """
+    return None if vector is None else "[" + ",".join(repr(float(v)) for v in vector) + "]"
 
 
 def scalar(
@@ -115,7 +188,7 @@ def scalar_row(
     env: dict[str, str],
     sql: str,
     variables: dict[str, str] | None = None,
-    field_sep: str = "\x1f",
+    field_sep: str = FIELD_SEP,
     expected_columns: int | None = None,
 ) -> list[str]:
     """Run a SQL script expected to return exactly one row and split its

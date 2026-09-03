@@ -15,7 +15,7 @@ ensure_corpus_importable()
 
 import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
-from manifest_contract import Key  # noqa: E402
+from manifest_keys import Key  # noqa: E402
 
 # Reproducible via drift_probe.py (see that module), not by inspection:
 #   same-process determinism control, NOT drift evidence -- re-embedding

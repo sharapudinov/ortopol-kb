@@ -45,8 +45,9 @@ from deploy_pathfix import ensure_corpus_importable
 
 ensure_corpus_importable()
 
-from manifest_contract import Distribution, Key  # noqa: E402
-from pg_common import run_sql, scalar  # noqa: E402
+from manifest_keys import Key  # noqa: E402
+from manifest_contract import Distribution  # noqa: E402
+from pg_common import FIELD_SEP, run_sql, scalar  # noqa: E402
 
 # The vocabulary itself lives in manifest_contract.Distribution, shared with
 # the static verifier (profile_checks.py, which must not import anything
@@ -57,7 +58,6 @@ KNOWN_DISTRIBUTIONS = Distribution.ALL
 FULL_CONTENT_DISTRIBUTIONS = Distribution.FULL_CONTENT
 SHIPPED_DISTRIBUTIONS = Distribution.SHIPPED
 
-FIELD_SEP = "\x1f"
 
 # Multi-valued fields (a class's distinct legal_note values) come back as
 # JSON, not as a separator-joined string. The obvious separator choices are

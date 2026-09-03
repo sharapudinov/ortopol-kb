@@ -11,7 +11,7 @@ from deploy_pathfix import ensure_corpus_importable
 
 ensure_corpus_importable()
 
-from manifest_contract import Key  # noqa: E402
+from manifest_keys import Key  # noqa: E402
 from pg_common import run_sql, scalar  # noqa: E402
 
 

@@ -2,15 +2,21 @@
 return a canned CompletedProcess, so the ACTUAL "-F field_sep" split logic
 and the empty-output branch run for real, unlike the deploy tests (which
 stub scalar_row itself wholesale and never exercise this code).
+
+sql_literal is tested twice over: against the text it produces, and -- when
+Postgres is reachable -- against what the server makes of that text.
 """
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
 
 import pg_common
+from paths import default_corpus_dir
 
 
 def _completed(stdout: str):
@@ -40,6 +46,65 @@ class ScalarRowSplitTests(unittest.TestCase):
         self.assertEqual(row, ["a", "b", "c"])
         _, kwargs = run_sql_mock.call_args
         self.assertIn(",", kwargs["extra_args"])
+
+
+class RowSeparatorsHaveOneHomeTests(unittest.TestCase):
+    """The psql row/field separators are one convention, so they are one
+    declaration: pg_common's, the module every psql caller already imports.
+
+    Spelled as a check over the sources rather than agreed, because a second
+    declaration costs nothing to write and is invisible until the day the
+    convention changes in one place only. Tests are exempt: several of them
+    stub the wire format psql produces and have to spell the bytes they are
+    imitating.
+    """
+
+    ROOT = Path(pg_common.__file__).resolve().parent
+    # The byte itself, and the two SQL spellings of it. Prose about the
+    # separators is fine anywhere; only a value is a second declaration,
+    # which is why this reads string constants and not the file's text.
+    SPELLINGS = ("\x1f", "\x1e", "chr(31)", "chr(30)")
+
+    def _sources(self):
+        for directory in (self.ROOT, self.ROOT / "citations", self.ROOT / "deploy"):
+            for path in sorted(directory.glob("*.py")):
+                if path.name != "pg_common.py":
+                    yield path
+
+    def test_no_other_module_spells_a_separator_byte(self):
+        for path in self._sources():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            constants = [node.value for node in ast.walk(tree)
+                         if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+            for spelling in self.SPELLINGS:
+                self.assertTrue(
+                    all(spelling not in text for text in constants),
+                    f"{path.name} spells {spelling!r}: import it from pg_common")
+
+    def test_no_other_module_declares_the_separator_names(self):
+        owned = {"FIELD_SEP", "RECORD_SEP", "ROW_ARGS"}
+        for path in self._sources():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            assigned = {
+                target.id
+                for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                for target in node.targets if isinstance(target, ast.Name)
+            }
+            self.assertEqual(assigned & owned, set(),
+                             f"{path.name}: import the separators from pg_common")
+
+    def test_the_row_args_are_the_flags_that_produce_them(self):
+        self.assertEqual(
+            pg_common.ROW_ARGS,
+            ["-t", "-A", "-F", pg_common.FIELD_SEP, "-R", pg_common.RECORD_SEP])
+
+    def test_split_records_keeps_a_multi_line_cell_in_one_record(self):
+        stdout = (f"first{pg_common.FIELD_SEP}line one\nline two{pg_common.RECORD_SEP}"
+                  f"second{pg_common.FIELD_SEP}plain{pg_common.RECORD_SEP}")
+        self.assertEqual(
+            pg_common.split_records(stdout),
+            [f"first{pg_common.FIELD_SEP}line one\nline two",
+             f"second{pg_common.FIELD_SEP}plain"])
 
 
 class ScalarRowExpectedColumnsTests(unittest.TestCase):
@@ -101,6 +166,78 @@ class RowOrNoneTests(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("nearest_page", message)
         self.assertIn("expected 2 column", message)
+
+
+class SqlLiteralTests(unittest.TestCase):
+    """psql script variables (:'name') cover a single value; a list of them
+    inside one statement has no binding form, so the literal has to be built
+    -- once, here, rather than with an f-string at each call site.
+    """
+
+    def test_plain_value_is_quoted(self):
+        self.assertEqual(pg_common.sql_literal("30 days"), "E'30 days'")
+
+    def test_single_quote_is_escaped(self):
+        self.assertEqual(pg_common.sql_literal("o'zna"), r"E'o\'zna'")
+
+    def test_backslash_is_doubled_before_anything_else(self):
+        # Order matters: a backslash inserted while escaping a quote must
+        # not itself get doubled afterwards.
+        self.assertEqual(pg_common.sql_literal(r"a\'b"), r"E'a\\\'b'")
+
+    def test_nul_byte_is_refused_rather_than_silently_truncated(self):
+        with self.assertRaises(ValueError):
+            pg_common.sql_literal("a\x00b")
+
+
+class VectorLiteralTests(unittest.TestCase):
+    """pgvector's text form, beside sql_literal and for the same reason:
+    citation.work.embedding has two writers (the crawl and pg_embed.py) and
+    neither may spell the brackets itself.
+    """
+
+    def test_a_vector_is_pgvector_shaped(self):
+        self.assertEqual(pg_common.vector_literal([1.0, 0.5]), "[1.0,0.5]")
+
+    def test_no_vector_is_a_null_rather_than_an_empty_literal(self):
+        self.assertIsNone(pg_common.vector_literal(None))
+
+    def test_the_number_written_is_the_number_given(self):
+        """A shortened float is a different vector, and nothing downstream
+        could tell: repr() round-trips a double exactly.
+        """
+        value = 0.1234567890123456789
+        self.assertEqual(float(pg_common.vector_literal([value])[1:-1]), float(value))
+
+
+class SqlLiteralRoundTripTests(unittest.TestCase):
+    """The only assertion that matters in the end: what the SERVER reads
+    back out of the literal is the string that went in.
+    """
+
+    HOSTILE = ["o'zna", r"back\slash", r"both\'kinds", 'quote"and\'apostrophe', "перенос\nстроки"]
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            env = pg_common.load_pgenv(default_corpus_dir() / ".pgenv")
+        except pg_common.PostgresUnavailable as exc:
+            raise unittest.SkipTest(f"Postgres not configured: {exc}")
+        if not pg_common.check_postgres_available(env):
+            raise unittest.SkipTest("Postgres not reachable")
+        cls.env = env
+
+    def test_hostile_strings_survive_the_round_trip(self):
+        values = ", ".join(f"({pg_common.sql_literal(v)})" for v in self.HOSTILE)
+        out = pg_common.run_sql(
+            self.env,
+            f"SELECT string_agg(v, chr(31) ORDER BY ord) FROM "
+            f"(SELECT row_number() OVER () AS ord, v FROM (VALUES {values}) AS t(v)) s;",
+            extra_args=["-t", "-A"],
+        ).stdout
+        # The newline case makes the whole output multi-line; only the
+        # separator-joined payload is compared, not the line structure.
+        self.assertEqual(out.rstrip("\n").split("\x1f"), self.HOSTILE)
 
 
 if __name__ == "__main__":
