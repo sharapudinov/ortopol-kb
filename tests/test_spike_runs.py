@@ -27,6 +27,7 @@ import _pathfix  # noqa: F401
 
 from citations import hub_cache, hub_report, http_cache, spike_runs, threshold_store
 from paths import default_corpus_dir
+from pg_copy import CopyResult
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql, scalar
 
 ENV = {"PGHOST": "test"}
@@ -289,6 +290,77 @@ class BothWritersSeeTheSameSequenceTests(unittest.TestCase):
     def test_the_dry_read_back_is_empty_rather_than_absent(self):
         stats = spike_runs.DryRunMeasurementsWriter().hub_stats(0, 1000)
         self.assertEqual((stats.rows, stats.worst), ([], []))
+
+
+class ThresholdRowPayloadTests(unittest.TestCase):
+    """The calibration's data rows, field by field.
+
+    insert_threshold_rows() maps nine values positionally out of a dict into
+    a nine-name column list, and nothing exercised it: the dry writer's stub
+    answers len(rows), so the conformance pair above compares two numbers
+    and never a row. Two names swapped there is a distribution whose depth
+    is its year -- and the distribution is what the threshold rests on.
+    """
+
+    COLUMNS = ("run_id", "candidate_key", "depth", "relation", "score",
+               "title", "year", "has_abstract", "n_references")
+    ROW = {"candidate_key": "W1", "depth": 1, "relation": "cites",
+           "score": 0.6123, "title": "Приближение", "year": 1997,
+           "has_abstract": True, "n_references": 42}
+
+    def _captured(self, rows):
+        seen = {}
+
+        def capture(env, target, streamed, **kwargs):
+            seen["target"] = target
+            seen["rows"] = [list(row) for row in streamed]
+            return CopyResult(len(seen["rows"]), "")
+
+        with mock.patch.object(threshold_store, "copy_csv_rows", side_effect=capture):
+            written = threshold_store.insert_threshold_rows(ENV, 89, rows)
+        seen["written"] = written
+        return seen
+
+    def test_the_column_list_is_the_one_the_values_are_ordered_by(self):
+        seen = self._captured([self.ROW])
+        self.assertEqual(
+            seen["target"],
+            "measurements.citation_frontier_threshold "
+            f"({', '.join(self.COLUMNS)})")
+
+    def test_every_field_lands_in_its_own_column(self):
+        seen = self._captured([self.ROW])
+        row = dict(zip(self.COLUMNS, seen["rows"][0]))
+        self.assertEqual(len(seen["rows"][0]), len(self.COLUMNS))
+        self.assertEqual(row, {"run_id": 89, **self.ROW})
+        self.assertEqual(seen["written"], 1)
+
+    def test_the_optional_four_are_absent_as_null_not_as_a_missing_value(self):
+        """title/year/has_abstract/n_references are `.get()`: a candidate
+        OpenAlex carries no year for still owes the COPY a value, and a
+        short row fails the whole batch.
+        """
+        bare = {"candidate_key": "W2", "depth": 2, "relation": "referenced",
+                "score": 0.41}
+        row = dict(zip(self.COLUMNS, self._captured([bare])["rows"][0]))
+        self.assertEqual(row, {"run_id": 89, **bare, "title": None, "year": None,
+                               "has_abstract": None, "n_references": None})
+
+    def test_the_four_required_fields_are_not_guessed_at(self):
+        """The other four are `[...]` and not `.get()`: a row missing the
+        key, depth, relation or score of a measurement is a bug in the
+        caller, and a NULL written for it would be a data point.
+        """
+        for missing in ("candidate_key", "depth", "relation", "score"):
+            with self.subTest(field=missing):
+                short = {k: v for k, v in self.ROW.items() if k != missing}
+                with self.assertRaises(KeyError):
+                    self._captured([short])
+
+    def test_an_empty_measurement_writes_nothing_at_all(self):
+        with mock.patch.object(threshold_store, "copy_csv_rows") as copy:
+            self.assertEqual(threshold_store.insert_threshold_rows(ENV, 89, []), 0)
+        copy.assert_not_called()
 
 
 class RunRowUpdateLiveTests(unittest.TestCase):

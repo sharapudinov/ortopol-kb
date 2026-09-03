@@ -10,6 +10,7 @@ works() came to add the accumulated total on every call.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import unittest
 from unittest import mock
@@ -128,6 +129,139 @@ class WriterConformanceTests(unittest.TestCase):
         self.assertEqual(writer.works(self._nodes("W1", "W2")), 2)
         self.assertEqual(writer.works(self._nodes("W3")), 1)
         self.assertEqual(writer.counts["work"], 3)
+
+
+class RowPayloadTests(unittest.TestCase):
+    """What the writer actually puts on the wire, value by value.
+
+    The counting tests above hold the number of rows; nothing held their
+    CONTENT. _work_row() is twelve positional values against a twelve-name
+    column list -- two of them swapped is a work whose title is its abstract,
+    and every offline test would still pass -- and evidence_of() decides,
+    per field, whether it appears at all. The only assertion on that payload
+    used to require a live Postgres, i.e. was skipped on every machine
+    without the corpus container.
+    """
+
+    @staticmethod
+    def _captured(call):
+        """The rows a writer streamed, materialised from the generator it
+        handed copy_csv_rows(). Taken from the seam, not from a return
+        value: the generator IS the payload, and it is consumed inside the
+        copy the test replaces.
+        """
+        seen = {}
+
+        def capture(env, target, rows, **kwargs):
+            seen["target"] = target
+            seen["rows"] = [list(row) for row in rows]
+            return CopyResult(len(seen["rows"]), f"{len(seen['rows'])}\n")
+
+        with mock.patch.object(store, "copy_csv_rows", side_effect=capture):
+            call()
+        return seen
+
+    def _node(self):
+        """A node carrying every conditional field evidence_of() knows: an
+        abstract recovered from zbMATH rather than OpenAlex, the zbMATH id it
+        came from, how the node reached the frontier and from where, and the
+        score it passed tau with.
+        """
+        node = Node(key="W1", kind="external-skeleton", depth=1,
+                    relation="cites", discovered_from="W_SEED")
+        node.absorb(work("W1", title="Приближение", doi="10.1/x", year=1997))
+        node.abstract, node.abstract_source = "обзор zbMATH", "zbmath"
+        node.zbmath_id = "1234.56789"
+        node.score = 0.6123456789
+        node.embedding = [0.5, -0.25]
+        return node
+
+    def test_every_one_of_the_twelve_values_is_the_column_it_lands_in(self):
+        node = self._node()
+        seen = self._captured(lambda: PostgresWriter({}, source="openalex").works([node]))
+        self.assertEqual(seen["target"], f"stage_work ({', '.join(store_sql.WORK_COLUMNS)})")
+        row = dict(zip(store_sql.WORK_COLUMNS, seen["rows"][0]))
+        self.assertEqual(len(seen["rows"][0]), len(store_sql.WORK_COLUMNS))
+        self.assertEqual(row["key"], "W1")
+        self.assertEqual(row["doi"], "10.1/x")
+        self.assertEqual(row["title"], "Приближение")
+        self.assertEqual(row["abstract"], "обзор zbMATH")
+        self.assertEqual(row["year"], 1997)
+        self.assertEqual(json.loads(row["authors"]), ["I. I. Sharapudinov"])
+        self.assertEqual(json.loads(row["external_ids"])["openalex"], ["W1"])
+        self.assertEqual(row["source"], "openalex")
+        self.assertEqual(row["kind"], "external-skeleton")
+        self.assertIsNone(row["document_id"])
+        self.assertEqual(row["embedding"], "[0.5,-0.25]")
+
+    def test_the_evidence_carries_the_provenance_a_verdict_rests_on(self):
+        node = self._node()
+        seen = self._captured(lambda: PostgresWriter({}).works([node]))
+        row = dict(zip(store_sql.WORK_COLUMNS, seen["rows"][0]))
+        evidence = json.loads(row["evidence"])
+        self.assertEqual(evidence["abstract_source"], "zbmath")
+        self.assertEqual(evidence["zbmath_id"], "1234.56789")
+        self.assertEqual(evidence["relation"], "cites")
+        self.assertEqual(evidence["discovered_from"], "W_SEED")
+        self.assertEqual(evidence["frontier_score"], 0.612346)
+        self.assertEqual([r["id"] for r in evidence["records"]],
+                         ["https://openalex.org/W1"])
+        self.assertNotIn("referenced_works", evidence["records"][0],
+                         "список ссылок в evidence — самое объёмное поле записи")
+
+    def test_a_node_with_nothing_to_say_says_nothing(self):
+        """Each conditional field is absent, not null: a key present with a
+        null value asserts the crawl looked and found nothing, which is a
+        different claim from never having asked.
+        """
+        node = Node(key="W2", kind="external-skeleton", depth=1)
+        node.absorb(work("W2", title="Bare"))
+        self.assertEqual(set(PostgresWriter({}).evidence_of(node)), {"records"})
+
+    def test_a_seed_score_of_zero_is_still_a_score(self):
+        """`if node.score is not None`, not `if node.score`: 0.0 is a
+        measured cosine, and the absent key would say it was never measured.
+        """
+        node = Node(key="W3", kind="external-skeleton", depth=1)
+        node.absorb(work("W3", title="Orthogonal"))
+        node.score = 0.0
+        self.assertEqual(PostgresWriter({}).evidence_of(node)["frontier_score"], 0.0)
+
+    def test_an_edge_row_is_its_two_endpoints_the_source_and_its_evidence(self):
+        seen = self._captured(lambda: PostgresWriter({}, source="openalex").edges(
+            [("W1", "W2", "cites", "W_SEED")]))
+        self.assertEqual(seen["target"], f"stage_cites ({', '.join(store_sql.CITES_COLUMNS)})")
+        row = dict(zip(store_sql.CITES_COLUMNS, seen["rows"][0]))
+        self.assertEqual(row["citing_key"], "W1")
+        self.assertEqual(row["cited_key"], "W2")
+        self.assertEqual(row["source"], "openalex")
+        self.assertEqual(json.loads(row["evidence"]),
+                         {"relation": "cites", "fetched_from": "W_SEED"})
+
+    def test_a_journal_row_is_the_step_read_off_by_column_name(self):
+        """Positional again, and against a table this one writes directly:
+        the journal has no upsert to refuse a mis-shaped row, and its COPY is
+        all-or-nothing for the whole level.
+        """
+        step = journal.keep("c", 2, "W2", "W_NODE", 0.61, 0.5, "cites", "W_F")
+        seen = self._captured(lambda: PostgresWriter({}).journal([step]))
+        self.assertEqual(seen["target"],
+                         f"citation.crawl_step ({', '.join(store_sql.STEP_COLUMNS)})")
+        row = dict(zip(store_sql.STEP_COLUMNS, seen["rows"][0]))
+        self.assertEqual(row, {column: step.get(column) for column in store_sql.STEP_COLUMNS})
+        self.assertEqual(row["node_key"], "W_NODE")
+        self.assertEqual(row["score"], 0.61)
+        self.assertIsNone(row["cited_by_count"], "у keep-строки нет счётчика цитирующих")
+
+    def test_a_promotion_row_is_the_four_names_of_the_twin_rule(self):
+        merged = [{"key": "W_EN", "document_id": "2019_rm9846",
+                   "seed_key": "W_RU", "rule": "doi"}]
+        seen = self._captured(lambda: PostgresWriter({}).promote(merged))
+        self.assertEqual(seen["target"],
+                         f"stage_twin ({', '.join(store_sql.PROMOTE_COLUMNS)})")
+        self.assertEqual(dict(zip(store_sql.PROMOTE_COLUMNS, seen["rows"][0])),
+                         {"key": "W_EN", "document_id": "2019_rm9846",
+                          "seed_key": "W_RU", "rule": "doi"})
 
 
 class ProjectionIsAWriteThroughTheSeamTests(unittest.TestCase):
