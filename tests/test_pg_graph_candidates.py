@@ -60,17 +60,32 @@ class CandidatesSqlTests(unittest.TestCase):
         self.assertIn("LEFT JOIN LATERAL", self.SQL)
         self.assertIn("WHERE c.citing = n.id", self.SQL)
         self.assertIn("WHERE c.cited = n.id", self.SQL)
-        self.assertNotIn("UNION ALL", self.SQL)
         self.assertNotIn("GROUP BY", self.SQL)
         self.assertNotIn("c.citing = w.id OR c.cited = w.id", self.SQL)
 
-    def test_the_count_is_of_edges_to_our_own_documents(self):
-        """Whichever direction the edge runs, the OTHER endpoint is what
-        has to be one of ours -- the count is "ties to our corpus", not
-        "degree".
+    def test_the_count_is_of_our_own_documents_not_of_edge_rows(self):
+        """Whichever direction the edge runs, the OTHER endpoint is what has
+        to be one of ours -- and each such document counts ONCE.
+
+        citation.cites is keyed (citing, cited, source) on purpose: the same
+        pair attested by two crawl sources is two rows. Summed row counts
+        therefore reported a candidate tied to one document as `links = 2`
+        and let it through --min-links 2, which is documented as "at least N
+        of our own documents"; a mutual pair double-counted the same way.
         """
-        self.assertIn("o.id = c.cited AND o.kind = 'our-document'", self.SQL)
-        self.assertIn("o.id = c.citing AND o.kind = 'our-document'", self.SQL)
+        self.assertIn("count(DISTINCT e.other)", self.SQL)
+        self.assertIn("o.id = e.other AND o.kind = 'our-document'", self.SQL)
+        self.assertNotIn("count(*)", self.SQL)
+
+    def test_both_directions_reach_that_one_count_through_a_union(self):
+        """UNION ALL rather than two counts added: the addition is what
+        counted a document twice, and the union keeps each direction its own
+        index-driven scan (the shape the LATERAL exists for).
+        """
+        lateral = self.SQL[self.SQL.index("LEFT JOIN LATERAL"):]
+        self.assertIn("UNION ALL", lateral)
+        self.assertEqual(lateral.count("FROM citation.cites c"), 2)
+        self.assertNotIn(") AS n\n         + (", self.SQL)
 
     def test_min_links_is_a_filter_above_the_top_k_not_a_lookup_per_row(self):
         # Measured with EXPLAIN on this instance (enable_seqscan=off): any

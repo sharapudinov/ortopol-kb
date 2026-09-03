@@ -1,6 +1,6 @@
 """Nearest-neighbour triage over the citation graph: the external-skeleton
-nodes closest to a query (or to the corpus centroid), with the count of
-CITES edges already tying each to one of our own documents.
+nodes closest to a query (or to the corpus centroid), with the number of
+our own documents each is already tied to by a CITES edge.
 
 A plain SQL question -- a vector ranking with a 1-hop aggregate -- so it is
 answered relationally rather than through Cypher, which would buy nothing
@@ -54,23 +54,37 @@ _CENTROID_EXPR = (
 #                  construction -- computed a 1024-dimension distance for
 #                  each, shipped them all through psql and sorted them in
 #                  Python for a 20-row answer.
-#   `links`        two counts per top-K row, evaluated in a LEFT JOIN
-#                  LATERAL ABOVE the LIMIT: measured on this instance
-#                  (EXPLAIN, enable_seqscan=off) an Index Only Scan using
-#                  cites_pkey downward and a Bitmap Index Scan using
-#                  cites_cited_idx upward, both driven from that row's id.
-#                  Both earlier forms answered the same question over the
-#                  WHOLE of citation.cites: a correlated subquery whose
-#                  predicate was `citing = w.id OR cited = w.id` -- an OR
-#                  across two columns no single index scan can serve -- and
-#                  then a grouped CTE that aggregated every edge in the graph
-#                  and was joined on `l.id = n.id`, a qualifier the planner
-#                  cannot push into the grouped subquery. So the full O(|E|)
-#                  scan ran on every call, however small --top was, to
-#                  attach a number to at most :top rows.
+#   `links`        how many of OUR OWN DOCUMENTS the candidate is tied to,
+#                  evaluated in a LEFT JOIN LATERAL ABOVE the LIMIT:
+#                  measured on this instance (EXPLAIN ANALYZE,
+#                  enable_seqscan=off, --top 20) a Bitmap Index Scan using
+#                  cites_pkey downward and one using cites_cited_idx upward,
+#                  both driven from that row's id, under the LATERAL and
+#                  above the LIMIT -- 20 loops of ~11 edges, with
+#                  work_embedding_hnsw still serving the ordered scan. Both earlier forms answered the same
+#                  question over the WHOLE of citation.cites: a correlated
+#                  subquery whose predicate was `citing = w.id OR cited =
+#                  w.id` -- an OR across two columns no single index scan can
+#                  serve -- and then a grouped CTE that aggregated every edge
+#                  in the graph and was joined on `l.id = n.id`, a qualifier
+#                  the planner cannot push into the grouped subquery. So the
+#                  full O(|E|) scan ran on every call, however small --top
+#                  was, to attach a number to at most :top rows.
+#
+#                  count(DISTINCT o.id) over the UNION ALL of both
+#                  directions, not two count(*) added together: DOCUMENTS is
+#                  what the number claims to be and what --min-links filters
+#                  on, and citation.cites is keyed (citing, cited, source)
+#                  precisely because one edge can be attested by more than
+#                  one crawl source. Summed row counts therefore made a
+#                  candidate tied to ONE document by a twice-attested edge
+#                  pass --min-links 2, and a mutual pair (each citing the
+#                  other) counted the same document twice again. The UNION
+#                  ALL keeps both index scans driven from n.id -- the shape
+#                  above is what the DISTINCT is layered on, not replaced by.
 #   {links_cut}    --min-links, when asked for, filters that lateral's count
 #                  above the LIMIT: the answer is "of the K nearest, the ones
-#                  with at least N links to our own documents", so it can be
+#                  tied to at least N of our own documents", so it can be
 #                  shorter than K. The cut cannot move below the LIMIT to
 #                  decide eligibility instead: measured with EXPLAIN on this
 #                  instance (enable_seqscan=off), EVERY membership test
@@ -117,12 +131,13 @@ SELECT n.key, coalesce(n.year::text, ''), coalesce(n.title, ''),
        n.score::text, coalesce(links.n, 0)::text
 FROM nearest n
 LEFT JOIN LATERAL (
-    SELECT (SELECT count(*) FROM citation.cites c
-            JOIN citation.work o ON o.id = c.cited AND o.kind = '{our_document}'
-            WHERE c.citing = n.id)
-         + (SELECT count(*) FROM citation.cites c
-            JOIN citation.work o ON o.id = c.citing AND o.kind = '{our_document}'
-            WHERE c.cited = n.id) AS n
+    SELECT count(DISTINCT e.other) AS n
+    FROM (
+        SELECT c.cited AS other FROM citation.cites c WHERE c.citing = n.id
+        UNION ALL
+        SELECT c.citing AS other FROM citation.cites c WHERE c.cited = n.id
+    ) e
+    JOIN citation.work o ON o.id = e.other AND o.kind = '{our_document}'
 ) links ON true
 {links_cut}
 ORDER BY n.score DESC;

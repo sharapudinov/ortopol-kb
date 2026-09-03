@@ -163,6 +163,11 @@ class LiveConsumersTests(unittest.TestCase):
         of citation.cites. A grouped aggregate over every edge would show
         as a HashAggregate with a Seq/Index Scan on cites underneath it,
         and would run whatever --top asked for.
+
+        The driving column is asserted, not the alias the planner prints for
+        it: `nearest` is inlined, so the condition comes back as `citing =
+        w.id` where the statement says `n.id`, and pinning the alias would
+        be a test about EXPLAIN's rendering.
         """
         vec = "[" + ",".join(["0.1"] * 1024) + "]"
         plan = run_sql(
@@ -174,9 +179,10 @@ class LiveConsumersTests(unittest.TestCase):
         ).stdout
         self.assertIn("cites_pkey", plan, plan)
         self.assertIn("cites_cited_idx", plan, plan)
-        self.assertIn("Index Cond: (citing = n.id)", plan, plan)
-        self.assertIn("Index Cond: (cited = n.id)", plan, plan)
+        self.assertIn("Index Cond: (citing = ", plan, plan)
+        self.assertIn("Index Cond: (cited = ", plan, plan)
         self.assertNotIn("HashAggregate", plan, plan)
+        self.assertNotIn("Seq Scan on cites", plan, plan)
 
     def test_candidates_and_hybrid_answer_from_the_same_fixture(self):
         """candidates() must find an external-skeleton node linked to one of
@@ -219,6 +225,75 @@ class LiveConsumersTests(unittest.TestCase):
             self.skipTest("эмбеддинги недоступны: hybrid() нечем ранжировать")
         self.assertTrue(rows, "hybrid() не нашёл ни одного соседа по фикстуре")
         self.assertTrue(all(r["neighbor_key"] for r in rows))
+
+
+class CandidateLinksCountDocumentsLiveTests(unittest.TestCase):
+    """`links` is "how many of OUR documents is this candidate tied to", and
+    --min-links filters on it as such.
+
+    citation.cites is keyed (citing, cited, source) because one pair can be
+    attested independently by more than one crawl source, so two row counts
+    added together answered a different question: a candidate tied to a
+    SINGLE document by a twice-attested edge reported 2 and passed
+    --min-links 2. A mutual pair double-counted the same document too.
+    """
+
+    PREFIX = "test:links:"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = _live_env()
+
+    def _cleanup(self):
+        run_sql(self.env, f"DELETE FROM citation.work WHERE key LIKE '{self.PREFIX}%';")
+        pg_graph_common.project(self.env)
+
+    def _links(self, edges: str) -> dict[str, int]:
+        """Two external-skeleton candidates and one of our documents, wired
+        by `edges`; returns {key: links} as candidates() reports it."""
+        self.addCleanup(self._cleanup)
+        vec = "[" + ",".join(["0.1"] * 1024) + "]"
+        run_sql(
+            self.env,
+            f"""
+            INSERT INTO citation.work (key, title, source, kind, document_id, embedding) VALUES
+              ('{self.PREFIX}doc', 'Our doc', 'manual', 'our-document', 'INDEX', :'vec');
+            INSERT INTO citation.work (key, title, source, kind, embedding) VALUES
+              ('{self.PREFIX}cand', 'Candidate', 'manual', 'external-skeleton', :'vec');
+            {edges}
+            """,
+            variables={"vec": vec},
+        )
+        return {r["key"]: r["links"] for r in pgcand.candidates(self.env, top=400)}
+
+    _EDGE = ("INSERT INTO citation.cites (citing, cited, source) "
+             "SELECT x.id, y.id, '{source}' FROM citation.work x, citation.work y "
+             "WHERE x.key = '{prefix}{a}' AND y.key = '{prefix}{b}';")
+
+    def _edge(self, a: str, b: str, source: str) -> str:
+        return self._EDGE.format(prefix=self.PREFIX, a=a, b=b, source=source)
+
+    def test_one_edge_attested_by_two_sources_is_one_document(self):
+        links = self._links(self._edge("cand", "doc", "openalex")
+                            + self._edge("cand", "doc", "semanticscholar"))
+        self.assertEqual(links.get(f"{self.PREFIX}cand"), 1,
+                         "два источника одного ребра посчитаны как две связи")
+
+    def test_a_mutual_pair_is_one_document_too(self):
+        links = self._links(self._edge("cand", "doc", "openalex")
+                            + self._edge("doc", "cand", "openalex"))
+        self.assertEqual(links.get(f"{self.PREFIX}cand"), 1,
+                         "взаимная пара посчитана как две связи")
+
+    def test_two_distinct_documents_really_are_two(self):
+        """The control: the count must still rise with the number of
+        DOCUMENTS, or "deduplicate" would just mean "always 1"."""
+        second = ("INSERT INTO citation.work (key, title, source, kind, document_id) "
+                  f"VALUES ('{self.PREFIX}doc2', 'Our doc 2', 'manual', "
+                  "'our-document', 'THEMES');")
+        links = self._links(second + self._edge("cand", "doc", "openalex")
+                            + self._edge("cand", "doc2", "openalex"))
+        self.assertEqual(links.get(f"{self.PREFIX}cand"), 2)
 
 
 if __name__ == "__main__":
