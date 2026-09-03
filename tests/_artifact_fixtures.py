@@ -16,7 +16,27 @@ from pathlib import Path
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import citation_content_checks
+import corpus_content_checks
+import profile_checks
+from manifest_contract import CitationMode
 from manifest_keys import MANIFEST_SCHEMA_VERSION
+
+
+def dump_facts(citation=None, documents=()):
+    """The record pair profile_checks._visit() returns, for a test that
+    scans only one half of a dump.
+
+    Built through the same attach_visitors() the pass builds it with, so a
+    test cannot hand a check a shape the production pass never produces --
+    which is the whole reason the facts stopped being a dict.
+    """
+    corpus = corpus_content_checks.attach_visitors({})
+    corpus.documents.update(documents)
+    if citation is None:
+        citation = citation_content_checks.attach_visitors({}, CitationMode.TOPOLOGY_ONLY)
+    return profile_checks.DumpFacts(corpus=corpus, citation=citation)
+
 
 DOCUMENT_COLUMNS = ["id", "filename", "legal_class", "public_distribution",
                     "legal_note", "source_blob", "source_sha256"]

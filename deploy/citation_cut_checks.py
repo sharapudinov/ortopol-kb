@@ -37,6 +37,12 @@ Checks:
 "the SELECT filtered it out" is a claim about the packager; each of these is
 a claim about the file, which is the whole reason profile_checks.py travels
 inside the artifact (ARTIFACT_SIDE_FAILS_CLOSED).
+
+`facts` is the pair profile_checks._visit() returns, and the three checks
+below are the ones that read BOTH halves of it: the citation rows under
+.citation, the document ids they must name under .corpus. Read by name, so
+a half that never arrived raises here rather than passing as an empty set
+-- these checks are exactly the ones an empty set certifies.
 """
 from __future__ import annotations
 
@@ -59,7 +65,7 @@ def _ships_citation(manifest: dict) -> bool:
     return ships_citation(manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE))
 
 
-def check_work_documents_are_in_the_dump(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_work_documents_are_in_the_dump(manifest: dict, facts) -> tuple[bool, str]:
     """No citation.work row may name a document this dump does not carry.
 
     The FK (citation.work.document_id REFERENCES corpus.documents) would
@@ -69,8 +75,8 @@ def check_work_documents_are_in_the_dump(manifest: dict, facts: dict) -> tuple[b
     """
     if not _ships_citation(manifest):
         return True, "citation schema not in this profile -- nothing to check"
-    named = facts.get("citation_work_documents", {})
-    dangling = sorted(set(named) - facts.get("documents", set()))
+    named = facts.citation.work_documents
+    dangling = sorted(set(named) - facts.corpus.documents)
     ok = not dangling
     return ok, (
         f"{len(named)} document(s) named by citation.work; "
@@ -78,15 +84,15 @@ def check_work_documents_are_in_the_dump(manifest: dict, facts: dict) -> tuple[b
     )
 
 
-def check_edges_reference_shipped_works(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_edges_reference_shipped_works(manifest: dict, facts) -> tuple[bool, str]:
     """No citation.cites endpoint may name a work row the dump dropped --
     the same FK question one level down, for the edges the work cut takes
     with it.
     """
     if not _ships_citation(manifest):
         return True, "citation schema not in this profile -- nothing to check"
-    endpoints = facts.get("citation_edge_endpoints", set())
-    dangling = sorted(endpoints - facts.get("citation_work_ids", set()))
+    endpoints = facts.citation.edge_endpoints
+    dangling = sorted(endpoints - facts.citation.work_ids)
     ok = not dangling
     return ok, (
         f"{len(endpoints)} distinct endpoint(s) in citation.cites; "
@@ -155,7 +161,7 @@ def check_every_declared_table_shipped(manifest: dict, scans: dict) -> tuple[boo
     )
 
 
-def check_journal_names_nothing_cut(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_journal_names_nothing_cut(manifest: dict, facts) -> tuple[bool, str]:
     """No citation.crawl_step row may name a document this artifact does not
     carry.
 
@@ -183,11 +189,10 @@ def check_journal_names_nothing_cut(manifest: dict, facts: dict) -> tuple[bool, 
     """
     if not _ships_citation(manifest):
         return True, "citation schema not in this profile -- nothing to check"
-    keys = facts.get("citation_journal_keys", set())
+    keys = facts.citation.journal_keys
     _expected, absent = expected_ids(manifest)
     leaked = sorted(keys & absent)
-    unresolved = keys - absent - facts.get("documents", set()) - facts.get(
-        "citation_work_keys", set())
+    unresolved = keys - absent - facts.corpus.documents - facts.citation.work_keys
     ok = not leaked
     return ok, (
         f"{len(keys)} distinct name(s) in citation.crawl_step; "

@@ -23,7 +23,7 @@ import citation_content_checks
 import citation_cut_checks
 import dump_scan
 import profile_checks
-from _artifact_fixtures import ArtifactBuilder, EXCLUDED_DOC, FULL_DOC
+from _artifact_fixtures import ArtifactBuilder, dump_facts, EXCLUDED_DOC, FULL_DOC
 from manifest_keys import Key
 from manifest_contract import CitationMode
 
@@ -47,7 +47,7 @@ def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict,
         row_visitors: dict = {}
         facts = citation_content_checks.attach_visitors(row_visitors, mode)
         scans = dump_scan.scan(dump_path, row_visitors).tables
-    return scans, dict(facts)
+    return scans, dump_facts(facts)
 
 
 class CheckCitationSchemaMatchesModeTests(unittest.TestCase):
@@ -117,7 +117,7 @@ class CheckWorkDocumentsPresentTests(unittest.TestCase):
                           [["1", "k1", "1997_sm280"], ["2", "k2", "\\N"]])
         )
         _scans, facts = _scan(dump)
-        facts["documents"] = {"1997_sm280"}
+        facts.corpus.documents.add("1997_sm280")
         ok, detail = citation_cut_checks.check_work_documents_are_in_the_dump(
             self.MANIFEST, facts)
         self.assertTrue(ok, detail)
@@ -126,7 +126,7 @@ class CheckWorkDocumentsPresentTests(unittest.TestCase):
         dump = _copy_block("citation.work", ["id", "key", "document_id"],
                            [["1", "k1", "excluded_doc"]])
         _scans, facts = _scan(dump)
-        facts["documents"] = {"1997_sm280"}
+        facts.corpus.documents.add("1997_sm280")
         ok, detail = citation_cut_checks.check_work_documents_are_in_the_dump(
             self.MANIFEST, facts)
         self.assertFalse(ok)
@@ -280,7 +280,7 @@ class CheckJournalNamesNothingCutTests(unittest.TestCase):
         dump = _copy_block("citation.work", ["id", "key"], list(work_rows))
         dump += _copy_block("citation.crawl_step", JOURNAL_COLUMNS, journal_rows)
         _scans, facts = _scan(dump)
-        facts["documents"] = {FULL_DOC}
+        facts.corpus.documents.add(FULL_DOC)
         return facts
 
     def test_a_row_naming_an_excluded_document_in_frontier_key_is_a_leak(self):
@@ -391,6 +391,46 @@ class JournalCutThroughTheWholePassTests(unittest.TestCase):
             builder = self._builder(tmp, [["2", EXCLUDED_DOC, "\\N", "\\N"]])
             directory = builder.write()
             self.assertEqual(profile_checks.main(["--artifact-dir", str(directory)]), 1)
+
+
+
+
+class FactsAreReadByNameTests(unittest.TestCase):
+    """The pass hands the checks a record, so a fact that never arrived
+    raises where it is read.
+
+    Read out of a dict with a default, every check here answered "absent
+    from the dump: none" over an empty set -- a green row for a question
+    nothing had asked. The drift was not hypothetical: the six fact names
+    were spelled once in the visitor module and again in each consumer, and
+    a visitor that never fired (a COPY header spelling the table
+    differently, a checker older than the bundle it travels in) produced
+    the same empty containers as a clean dump.
+    """
+
+    MANIFEST = {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}}
+    CHECKS = ("check_work_documents_are_in_the_dump",
+              "check_edges_reference_shipped_works",
+              "check_journal_names_nothing_cut")
+
+    class _Drifted:
+        """The facts record one rename out of date: nothing this check asks
+        for is on it."""
+
+    def test_every_check_refuses_a_record_the_facts_are_not_on(self):
+        facts = profile_checks.DumpFacts(corpus=self._Drifted(), citation=self._Drifted())
+        for name in self.CHECKS:
+            with self.subTest(check=name), self.assertRaises(AttributeError):
+                getattr(citation_cut_checks, name)(self.MANIFEST, facts)
+
+    def test_a_fact_that_is_present_and_empty_is_still_the_green_answer(self):
+        """The complement: a dump that really carried nothing IS a pass.
+        What must not be reachable is the same verdict without looking."""
+        for name in self.CHECKS:
+            with self.subTest(check=name):
+                ok, detail = getattr(citation_cut_checks, name)(
+                    self.MANIFEST, dump_facts())
+                self.assertTrue(ok, detail)
 
 
 if __name__ == "__main__":

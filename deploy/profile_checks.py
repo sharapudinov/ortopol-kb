@@ -83,6 +83,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import citation_content_checks
 import citation_cut_checks
@@ -109,7 +110,24 @@ def check_schemas(contents: dump_scan.DumpContents, manifest: dict) -> tuple[boo
     return ok, f"dump carries {sorted(present)}, manifest declares {sorted(declared)}"
 
 
-def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, dict]:
+class DumpFacts(NamedTuple):
+    """What the pass collected, one record per subject.
+
+    A pair rather than one merged dict of string keys. Every check below
+    reads its input by NAME, so a fact that never arrived -- a visitor that
+    did not fire, a key renamed on one side of a module split, a bundled
+    checker older than the package it travels in -- raises where it is read
+    instead of resolving to an empty set. An empty set is precisely what
+    makes "absent from the dump: none" and "leaked 0 row(s)" true, i.e. the
+    shape in which this package certifies nothing and says [OK]
+    (ARTIFACT_SIDE_FAILS_CLOSED).
+    """
+
+    corpus: corpus_content_checks.CorpusFacts
+    citation: citation_content_checks.CitationFacts
+
+
+def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, DumpFacts]:
     """One streaming pass over the dump, with every subject's visitors on it.
 
     Called only after run_checks() has gated the fields the wiring itself
@@ -117,9 +135,11 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, dic
     handed to the citation visitors.
     """
     row_visitors: dict = {}
-    facts = corpus_content_checks.attach_visitors(row_visitors)
-    facts.update(citation_content_checks.attach_visitors(
-        row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE)))
+    facts = DumpFacts(
+        corpus=corpus_content_checks.attach_visitors(row_visitors),
+        citation=citation_content_checks.attach_visitors(
+            row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE)),
+    )
     return dump_scan.scan(dump_path, row_visitors), facts
 
 

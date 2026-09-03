@@ -28,12 +28,21 @@ Checks:
   no tsv anywhere              tsv is GENERATED from body; a dump that
                                declared it would restore stale text content
 
+`facts` below is the pair profile_checks._visit() returns -- this module's
+CorpusFacts under .corpus, citation_content_checks.CitationFacts under
+.citation -- so every check reads its input by NAME and a name that is not
+there raises instead of defaulting to nothing found.
+
 Which ids the manifest says are carried, and in which shape, is
 manifest_classes.py -- a manifest-only reading with no dump byte in it.
 Everything here is the other half: the dump held against one of those
 answers.
 """
 from __future__ import annotations
+
+from collections import Counter
+from dataclasses import dataclass
+from typing import NamedTuple
 
 import corpus_columns
 import dump_scan
@@ -58,6 +67,36 @@ DOCUMENT_CONTENT = corpus_columns.content_columns("documents")
 PAGE_CONTENT = corpus_columns.content_columns("pages")
 
 
+@dataclass
+class PageTally:
+    """How many page rows the dump carries, and how many arrived without a
+    vector. Counted rather than collected: the corpus is ~2500 pages and
+    the answer is two numbers.
+    """
+
+    rows: int = 0
+    no_embedding: int = 0
+
+
+class CorpusFacts(NamedTuple):
+    """What the corpus visitors collected on profile_checks.py's one pass.
+
+    A record with named fields, not a dict: this is the input every check
+    below reasons from, and a fact read out of a dict with a default is a
+    check that certifies [OK] having looked at nothing -- a visitor that
+    never fired, a key renamed on one side of the split, a check module
+    from an older bundle all resolve to an empty set, and an empty set
+    makes "leaked: none" true. Here a name that is not a field raises
+    where it is read (ARTIFACT_SIDE_FAILS_CLOSED).
+    """
+
+    documents: set[str]
+    page_documents: set[str]
+    with_blob: set[str]
+    with_body: set[str]
+    pages: PageTally
+
+
 def _carries_content(row: dict, columns: tuple[str, ...]) -> bool:
     r"""Does this row carry a value in ANY column the map calls content?
 
@@ -69,10 +108,10 @@ def _carries_content(row: dict, columns: tuple[str, ...]) -> bool:
                for column in columns)
 
 
-def attach_visitors(row_visitors: dict) -> dict:
+def attach_visitors(row_visitors: dict) -> CorpusFacts:
     """Registers this module's row callbacks into `row_visitors` (mutated in
-    place) and returns the fact containers they fill -- read them back after
-    dump_scan.scan() has actually run, the same contract
+    place) and returns the CorpusFacts record they fill -- read it back
+    after dump_scan.scan() has actually run, the same contract
     citation_content_checks.attach_visitors() follows.
 
     Per-document facts the content checks need: which ids the dump carries
@@ -83,7 +122,7 @@ def attach_visitors(row_visitors: dict) -> dict:
     page_documents: set[str] = set()
     with_blob: set[str] = set()
     with_body: set[str] = set()
-    pages_seen = {"rows": 0, "no_embedding": 0}
+    pages_seen = PageTally()
 
     def on_document(row: dict) -> None:
         documents.add(row[ID_COLUMN])
@@ -91,19 +130,17 @@ def attach_visitors(row_visitors: dict) -> dict:
             with_blob.add(row[ID_COLUMN])
 
     def on_page(row: dict) -> None:
-        pages_seen["rows"] += 1
+        pages_seen.rows += 1
         page_documents.add(row[DOCUMENT_ID_COLUMN])
         if row.get(EMBEDDING_COLUMN, dump_scan.NULL_FIELD) in (dump_scan.NULL_FIELD, ""):
-            pages_seen["no_embedding"] += 1
+            pages_seen.no_embedding += 1
         if _carries_content(row, PAGE_CONTENT):
             with_body.add(row[DOCUMENT_ID_COLUMN])
 
     row_visitors[DOCUMENTS_TABLE] = on_document
     row_visitors[PAGES_TABLE] = on_page
-    return {
-        "documents": documents, "page_documents": page_documents,
-        "with_blob": with_blob, "with_body": with_body, "pages": pages_seen,
-    }
+    return CorpusFacts(documents=documents, page_documents=page_documents,
+                       with_blob=with_blob, with_body=with_body, pages=pages_seen)
 
 
 def check_classification_complete(manifest: dict, scans: dict) -> tuple[bool, str]:
@@ -116,7 +153,7 @@ def check_classification_complete(manifest: dict, scans: dict) -> tuple[bool, st
     unclassified = legal.get(Key.UNCLASSIFIED_DOCUMENTS)
     by_distribution, _full_content, _shipped = classes(manifest)
     all_listed = [doc_id for ids in by_distribution.values() for doc_id in ids]
-    duplicated = sorted({i for i in all_listed if all_listed.count(i) > 1})
+    duplicated = sorted(i for i, n in Counter(all_listed).items() if n > 1)
     expected, _absent = expected_ids(manifest)
     documents = scans.get(DOCUMENTS_TABLE)
     dumped = documents.rows if documents else 0
@@ -129,15 +166,15 @@ def check_classification_complete(manifest: dict, scans: dict) -> tuple[bool, st
     )
 
 
-def check_excluded_absent(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_excluded_absent(manifest: dict, facts) -> tuple[bool, str]:
     """A document the manifest classifies outside shipped_distributions must
     have no documents row and no page row. Asserted against the dump's own
     bytes: "the SELECT filtered it out" is a claim about the packager, this
     is a claim about the file.
     """
     _expected, absent = expected_ids(manifest)
-    leaked_documents = sorted(absent & facts["documents"])
-    leaked_pages = sorted(absent & facts["page_documents"])
+    leaked_documents = sorted(absent & facts.corpus.documents)
+    leaked_pages = sorted(absent & facts.corpus.page_documents)
     ok = not leaked_documents and not leaked_pages
     return ok, (
         f"{len(absent)} excluded document(s); rows present for "
@@ -145,10 +182,10 @@ def check_excluded_absent(manifest: dict, facts: dict) -> tuple[bool, str]:
     )
 
 
-def check_metadata_only_stripped(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_metadata_only_stripped(manifest: dict, facts) -> tuple[bool, str]:
     _full_ids, stripped = content_expectation(manifest)
-    leaked_blob = sorted(stripped & facts["with_blob"])
-    leaked_body = sorted(stripped & facts["with_body"])
+    leaked_blob = sorted(stripped & facts.corpus.with_blob)
+    leaked_body = sorted(stripped & facts.corpus.with_body)
     ok = not leaked_blob and not leaked_body
     return ok, (
         f"{len(stripped)} metadata-only document(s); "
@@ -156,10 +193,10 @@ def check_metadata_only_stripped(manifest: dict, facts: dict) -> tuple[bool, str
     )
 
 
-def check_full_content_intact(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_full_content_intact(manifest: dict, facts) -> tuple[bool, str]:
     full_ids, _stripped = content_expectation(manifest)
-    missing_blob = sorted(full_ids - facts["with_blob"])
-    missing_body = sorted(full_ids - facts["with_body"])
+    missing_blob = sorted(full_ids - facts.corpus.with_blob)
+    missing_body = sorted(full_ids - facts.corpus.with_body)
     ok = not missing_blob and not missing_body
     return ok, (
         f"{len(full_ids)} full-content document(s); "
@@ -167,13 +204,13 @@ def check_full_content_intact(manifest: dict, facts: dict) -> tuple[bool, str]:
     )
 
 
-def check_pages_embedded(manifest: dict, scans: dict, facts: dict) -> tuple[bool, str]:
-    pages = facts["pages"]
+def check_pages_embedded(manifest: dict, scans: dict, facts) -> tuple[bool, str]:
+    pages = facts.corpus.pages
     want = manifest.get(Key.PAGES_COUNT)
-    ok = pages["rows"] == want and pages["no_embedding"] == 0
+    ok = pages.rows == want and pages.no_embedding == 0
     return ok, (
-        f"{pages['rows']} page row(s) (manifest {want}), "
-        f"{pages['no_embedding']} without an embedding"
+        f"{pages.rows} page row(s) (manifest {want}), "
+        f"{pages.no_embedding} without an embedding"
     )
 
 

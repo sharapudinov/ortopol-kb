@@ -31,6 +31,8 @@ byte and lives in citation_policy_check.py.
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
 from manifest_keys import Key
@@ -79,11 +81,32 @@ class LeakSample:
             self.sample.append(item)
 
 
-def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
+class CitationFacts(NamedTuple):
+    """What the citation visitors collected on profile_checks.py's one pass.
+
+    A record with named fields for the reason corpus_content_checks.
+    CorpusFacts is one: read out of a dict with a default, every fact here
+    resolves to an empty container when it is absent, and an empty
+    container is what makes "absent from the dump: none" and "leaked 0
+    row(s)" true. A visitor that never fired because the COPY header spelled
+    the table differently, a key renamed on one side of the module split, a
+    checker built from an older bundle -- all three used to certify a green
+    row. Now the read itself raises (ARTIFACT_SIDE_FAILS_CLOSED).
+    """
+
+    leaked: "LeakSample"
+    work_documents: dict[str, str]
+    work_ids: set[str]
+    work_keys: set[str]
+    edge_endpoints: set[str]
+    journal_keys: set[str]
+
+
+def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
     """Registers this module's row callbacks into `row_visitors` (mutated in
-    place) and returns the fact containers they fill -- read them back after
-    dump_scan.scan() has actually run. profile_checks.py merges the returned
-    dict into its own facts, so the keys are namespaced.
+    place) and returns the CitationFacts record they fill -- read it back
+    after dump_scan.scan() has actually run. profile_checks.py carries it
+    beside the corpus half's record rather than merging the two.
 
     `mode` is the manifest's citation mode, and how much gets registered is
     manifest_contract.strips_content(mode) -- the predicate the dump itself
@@ -180,17 +203,12 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
             if qualified not in row_visitors and content_columns(table):
                 row_visitors[qualified] = content_visitor(
                     qualified, lambda row: row.get("id", "?"))
-    return {
-        "citation_leaked": leaked,
-        "citation_work_documents": work_documents,
-        "citation_work_ids": work_ids,
-        "citation_edge_endpoints": edge_endpoints,
-        "citation_work_keys": work_keys,
-        "citation_journal_keys": journal_keys,
-    }
+    return CitationFacts(leaked=leaked, work_documents=work_documents,
+                         work_ids=work_ids, work_keys=work_keys,
+                         edge_endpoints=edge_endpoints, journal_keys=journal_keys)
 
 
-def check_content_is_stripped(manifest: dict, facts: dict) -> tuple[bool, str]:
+def check_content_is_stripped(manifest: dict, facts) -> tuple[bool, str]:
     """No content column survives a mode outside CitationMode.FULL_CONTENT
     -- an unrecognised one included, which is why the question is
     strips_content(mode) rather than `== topology-only`."""
@@ -198,7 +216,7 @@ def check_content_is_stripped(manifest: dict, facts: dict) -> tuple[bool, str]:
     mode = citation.get(Key.CITATION_MODE)
     if not strips_content(mode):
         return True, f"mode={mode!r} carries content by declaration -- nothing to strip"
-    leaked = facts.get("citation_leaked") or LeakSample()
+    leaked = facts.citation.leaked
     if not leaked.total:
         return True, "leaked 0 row(s)"
     return False, (f"leaked {leaked.total} row(s), first {len(leaked.sample)}: "

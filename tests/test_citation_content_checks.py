@@ -18,6 +18,7 @@ import _pathfix_deploy  # noqa: F401
 import citation_columns
 import citation_content_checks
 import dump_scan
+from _artifact_fixtures import dump_facts
 from manifest_keys import Key
 from manifest_contract import CitationMode
 
@@ -41,15 +42,15 @@ def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict,
         row_visitors: dict = {}
         facts = citation_content_checks.attach_visitors(row_visitors, mode)
         scans = dump_scan.scan(dump_path, row_visitors).tables
-    return scans, dict(facts)
+    return scans, dump_facts(facts)
 
 
 class CheckTopologyOnlyStripsTests(unittest.TestCase):
     def _sample(self, items):
-        sample = citation_content_checks.LeakSample()
+        facts = dump_facts()
         for item in items:
-            sample.add(item)
-        return {"citation_leaked": sample}
+            facts.citation.leaked.add(item)
+        return facts
 
     def test_a_declared_full_content_mode_is_a_trivial_pass(self):
         ok, detail = citation_content_checks.check_content_is_stripped(
@@ -217,17 +218,17 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
                           [["1", "1", "{cited by p. 5}"]])
         )
         _scans, facts = _scan(dump, CitationMode.FULL_SKELETON)
-        self.assertEqual(facts["citation_leaked"].total, 0)
-        self.assertEqual(facts["citation_work_ids"], {"1"})
-        self.assertEqual(facts["citation_edge_endpoints"], {"1"})
+        self.assertEqual(facts.citation.leaked.total, 0)
+        self.assertEqual(facts.citation.work_ids, {"1"})
+        self.assertEqual(facts.citation.edge_endpoints, {"1"})
 
     def test_the_same_dump_under_topology_only_does_report_them(self):
         """The complement, so the quiet mode cannot pass by never looking."""
         dump = _copy_block("citation.work", ["id", "key", "abstract"],
                             [["1", "k1", "an abstract that must not ship"]])
         _scans, facts = _scan(dump, CitationMode.TOPOLOGY_ONLY)
-        self.assertEqual(facts["citation_leaked"].sample, ["citation.work.abstract:k1"])
-        self.assertEqual(facts["citation_leaked"].total, 1)
+        self.assertEqual(facts.citation.leaked.sample, ["citation.work.abstract:k1"])
+        self.assertEqual(facts.citation.leaked.total, 1)
 
 
 if __name__ == "__main__":
