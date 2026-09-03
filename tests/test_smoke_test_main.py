@@ -99,10 +99,21 @@ class ArtifactFixture:
 
 class SmokeTestMainTests(ArtifactFixture, unittest.TestCase):
     def test_dump_sha256_mismatch_fails_even_when_everything_else_is_green(self):
+        # The dump-vs-manifest comparison is the static pass's last gate
+        # (manifest_gates), so here the static pass is narrowed to exactly
+        # that gate, run for real against the fixture: main() must carry its
+        # FAIL row through to the exit code, not hash the file a second
+        # time on its own.
+        def static_pass(extract_dir):
+            manifest = json.loads((extract_dir / "manifest.json").read_text())
+            return [("дамп — тот, что описан манифестом (размер, sha256)",
+                     *dump_integrity.check_dump_matches_manifest(manifest, extract_dir))]
+
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = self._artifact_dir(tmp)
             with mock.patch.object(dump_integrity, "sha256_file", return_value="DIFFERENT_SHA"), \
-                 self._patched():
+                 self._patched(), \
+                 mock.patch.object(smoke_test.profile_checks, "run_checks", side_effect=static_pass):
                 exit_code = smoke_test.main(["--artifact-dir", str(artifact_dir)])
         self.assertEqual(exit_code, 1)
 
