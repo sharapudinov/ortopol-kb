@@ -16,7 +16,9 @@ contributing row visitors to that same pass:
   profile/manifest agreement   here: the declared profile's schemas are the
                                ones the dump actually contains (public: no
                                measurements schema at all, not merely no
-                               measurements rows)
+                               measurements rows) -- read off the same pass,
+                               since the schema names and the COPY headers
+                               are the same lines
   manifest version matches     here: manifest.schema_version is the version
                                this reader knows; anything else stops the
                                pass instead of reading missing fields as
@@ -79,14 +81,21 @@ from manifest_classes import check_profile_is_known
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
 
 
-def check_schemas(dump_path: Path, manifest: dict) -> tuple[bool, str]:
+def check_schemas(contents: dump_scan.DumpContents, manifest: dict) -> tuple[bool, str]:
+    """The schemas the dump names are exactly the ones the manifest declares.
+
+    Read off the pass _visit() already made, not off a pass of its own: the
+    schema names and the COPY headers are the same lines, and the full
+    profile's dump carries every source PDF as hex, so a second inflate of
+    it is the most expensive way to re-answer a question already answered.
+    """
     declared = set(manifest.get(Key.SCHEMAS, []))
-    present = dump_scan.schema_names(dump_path)
+    present = contents.schemas
     ok = present == declared
     return ok, f"dump carries {sorted(present)}, manifest declares {sorted(declared)}"
 
 
-def _visit(dump_path: Path, manifest: dict) -> tuple[dict, dict]:
+def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, dict]:
     """One streaming pass over the dump, with every subject's visitors on it.
 
     Called only after run_checks() has gated the fields the wiring itself
@@ -146,13 +155,14 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         # exists to prevent, one key over.
         return [version, known, shaped]
     dump_path = artifact_dir / manifest[Key.DUMP][Key.FILE]
-    scans, facts = _visit(dump_path, manifest)
+    contents, facts = _visit(dump_path, manifest)
+    scans = contents.tables
     profile = manifest.get(Key.PROFILE)
     return [
         version,
         known,
         shaped,
-        (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(dump_path, manifest)),
+        (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(contents, manifest)),
         ("правовая классификация полна",
          *corpus_content_checks.check_classification_complete(manifest, scans)),
         ("excluded: ни строки документа, ни страниц",

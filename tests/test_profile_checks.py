@@ -17,6 +17,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
@@ -49,7 +50,8 @@ class DumpScanTests(unittest.TestCase):
     def test_counts_rows_and_nulls_per_column(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = ArtifactBuilder(Path(tmp)).write()
-            scans = dump_scan.scan(directory / "01_dump.sql.gz")
+            contents = dump_scan.scan(directory / "01_dump.sql.gz")
+        scans = contents.tables
         documents = scans["corpus.documents"]
         self.assertEqual(documents.rows, 3)
         self.assertEqual(documents.columns, DOCUMENT_COLUMNS)
@@ -81,6 +83,32 @@ class DumpScanTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 dump_scan.scan(dump_path)
         self.assertIn("truncated", str(ctx.exception))
+
+
+class OnePassTests(unittest.TestCase):
+    """run_checks() inflates the dump exactly once.
+
+    The schema names and the COPY headers are the same lines, and the full
+    profile's dump carries every source PDF as hex, so a second pass for
+    the schema question doubled the cost of verifying the artifact the
+    checker exists for. Counted at the only place the file is actually
+    opened.
+    """
+
+    def test_the_dump_is_decompressed_once(self):
+        opens = []
+        real_open = dump_scan.gzip.open
+
+        def counting_open(path, *args, **kwargs):
+            opens.append(Path(path).name)
+            return real_open(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = ArtifactBuilder(Path(tmp)).write()
+            with mock.patch.object(dump_scan.gzip, "open", counting_open):
+                results = profile_checks.run_checks(directory)
+        self.assertTrue(all(ok for _name, ok, _detail in results), results)
+        self.assertEqual(opens, ["01_dump.sql.gz"])
 
 
 class PublicProfileChecksTests(unittest.TestCase):

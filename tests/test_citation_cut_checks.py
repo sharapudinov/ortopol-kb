@@ -46,7 +46,7 @@ def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict,
             f.write(dump_text)
         row_visitors: dict = {}
         facts = citation_content_checks.attach_visitors(row_visitors, mode)
-        scans = dump_scan.scan(dump_path, row_visitors)
+        scans = dump_scan.scan(dump_path, row_visitors).tables
     return scans, dict(facts)
 
 

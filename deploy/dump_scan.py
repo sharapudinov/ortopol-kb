@@ -50,6 +50,32 @@ class TableScan:
     nulls: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class DumpContents:
+    """What ONE pass over the dump found: the COPY blocks, and every schema
+    the file names.
+
+    Both answers come off the same decompression because both are read from
+    the same lines. Asked separately they were two full gzip inflates of a
+    file that carries every source PDF as hex -- the second one re-parsing
+    the very COPY headers the first had already parsed.
+    """
+
+    tables: dict[str, TableScan]
+    schemas: set[str]
+
+
+CREATE_SCHEMA = re.compile(rf"^CREATE SCHEMA (?:IF NOT EXISTS )?({_NAME});")
+QUALIFIED = re.compile(rf"^(?:CREATE TABLE|CREATE SEQUENCE|COPY|ALTER TABLE(?: ONLY)?) "
+                       rf"({_NAME})\.")
+
+
+def _schema_of(line: str) -> str | None:
+    """The schema this DDL/COPY line names, if it names one."""
+    match = CREATE_SCHEMA.match(line) or QUALIFIED.match(line)
+    return match.group(1) if match else None
+
+
 def _decompress_lines(dump_path: Path) -> Iterator[str]:
     with gzip.open(dump_path, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -60,20 +86,13 @@ def schema_names(dump_path: Path) -> set[str]:
     """Every schema the dump touches, from its CREATE SCHEMA / CREATE TABLE
     / COPY statements. Used to assert that the public artifact carries no
     measurements schema at all -- not merely no measurements rows.
+
+    A pass of its own, for a caller that wants only this answer. The
+    verification path does NOT use it: profile_checks.py reads
+    DumpContents.schemas off the pass it already makes.
     """
-    found: set[str] = set()
-    create_schema = re.compile(rf"^CREATE SCHEMA (?:IF NOT EXISTS )?({_NAME});")
-    qualified = re.compile(rf"^(?:CREATE TABLE|CREATE SEQUENCE|COPY|ALTER TABLE(?: ONLY)?) "
-                          rf"({_NAME})\.")
-    for line in _decompress_lines(dump_path):
-        match = create_schema.match(line)
-        if match:
-            found.add(match.group(1))
-            continue
-        match = qualified.match(line)
-        if match:
-            found.add(match.group(1))
-    return found
+    return {schema for schema in (_schema_of(line) for line in _decompress_lines(dump_path))
+            if schema}
 
 
 SETVAL = re.compile(
@@ -101,8 +120,13 @@ def sequence_resets(dump_path: Path) -> set[str]:
 def scan(
     dump_path: Path,
     row_visitors: dict[str, Callable[[dict[str, str]], None]] | None = None,
-) -> dict[str, TableScan]:
-    """Scans every COPY block, returning {"<schema>.<table>": TableScan}.
+) -> DumpContents:
+    """One pass over the dump: every COPY block, and every schema it names.
+
+    `tables` is {"<schema>.<table>": TableScan}; `schemas` is what
+    schema_names() answers on a pass of its own, collected here instead
+    because the caller that needs both (profile_checks.py) reads the same
+    lines for both.
 
     row_visitors maps "<schema>.<table>" to a callable invoked with each row
     as {column: raw COPY field}. Raw on purpose: the checks care about
@@ -113,11 +137,15 @@ def scan(
     """
     visitors = row_visitors or {}
     scans: dict[str, TableScan] = {}
+    schemas: set[str] = set()
     current: TableScan | None = None
     visitor: Callable[[dict[str, str]], None] | None = None
 
     for line in _decompress_lines(dump_path):
         if current is None:
+            schema = _schema_of(line)
+            if schema:
+                schemas.add(schema)
             match = COPY_HEADER.match(line)
             if not match:
                 continue
@@ -150,4 +178,4 @@ def scan(
             f"dump ends inside the {current.schema}.{current.table} COPY block "
             "(truncated artifact?)"
         )
-    return scans
+    return DumpContents(tables=scans, schemas=schemas)
