@@ -11,7 +11,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from copy_rows import CENSUS_COLUMN, CopyBlockCounter, DumpedRows, FieldTally
+from citation_columns import CENSUS_COLUMN, CENSUS_TABLE
+from copy_rows import (
+    CITATION_SCHEMA,
+    BlockCensus,
+    CopyBlockCounter,
+    DumpedRows,
+    FieldTally,
+)
 from dump_integrity import sha256_file
 from manifest_contract import Profile, schemas_for
 from pg_stream import CommandFailed, stream_stdout
@@ -194,7 +201,8 @@ def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> DumpedRows:
     census = FieldTally(CENSUS_COLUMN)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
-            counter = CopyBlockCounter(dst, census)
+            counter = CopyBlockCounter(
+                dst, BlockCensus(f"{CITATION_SCHEMA}.{CENSUS_TABLE}", census))
             stream_stdout(
                 ["pg_dump", "--no-owner", "--no-privileges", "--no-tablespaces", *schema_args,
                  # Defensive, on top of --schema already being a whitelist:

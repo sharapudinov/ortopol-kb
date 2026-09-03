@@ -43,8 +43,13 @@ from __future__ import annotations
 
 from typing import IO, NamedTuple
 
-from citation_columns import CITATION_COLUMN_CLASS, blanked_value
-from copy_rows import CENSUS_COLUMN, CENSUS_TABLE, FieldTally, RowCounter
+from citation_columns import (
+    CENSUS_COLUMN,
+    CENSUS_TABLE,
+    CITATION_COLUMN_CLASS,
+    blanked_value,
+)
+from copy_rows import FieldTally, RowCounter
 from schema_catalog import (
     classified_tables,
     columns_of,
@@ -235,7 +240,7 @@ def dump_ddl(env: dict, dst: IO[bytes]) -> None:
 class CitationWritten(NamedTuple):
     """What dump_citation() put in the file: the rows per table, and the
     census of the one column the manifest describes by value rather than by
-    total (copy_rows.CENSUS_TABLE/CENSUS_COLUMN).
+    total (citation_columns.CENSUS_TABLE/CENSUS_COLUMN).
     """
 
     tables: dict[str, int]

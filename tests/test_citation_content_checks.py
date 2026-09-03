@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import gzip
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,12 +16,15 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import artifact_bundle
 import citation_columns
 import citation_content_checks
+import citation_dump
 import citation_profile
+import copy_rows
 import dump_scan
 from _artifact_fixtures import dump_facts
-from citation_columns import JOURNAL_KEY_COLUMNS
+from citation_columns import CENSUS_COLUMN, CENSUS_TABLE, JOURNAL_KEY_COLUMNS
 from manifest_keys import Key
 from manifest_contract import CitationMode
 
@@ -292,6 +296,59 @@ class JournalKeyColumnsAreDeclaredOnceTests(unittest.TestCase):
             ctes = citation_profile.crawl_step_cut_ctes()
         self.assertIn("j.successor_key = r.ref", ctes)
         self.assertEqual(ctes.count("JOIN cut_names r ON"), len(JOURNAL_KEY_COLUMNS) + 1)
+
+
+class CensusColumnIsDeclaredOnceTests(unittest.TestCase):
+    """WHICH column the manifest's work_by_kind counts is one declaration,
+    read by both sides of the artifact boundary.
+
+    Three modules tally this column -- citation_dump.py for the public
+    profile, artifact_bundle.py for the full one, and the bundled
+    citation_content_checks.py re-tallying the shipped file -- and only the
+    third travels. Re-typed on the producer's side alone, the checker counts
+    every work row under the wire format's NULL and fails a correct package;
+    re-typed on the checker's side alone, it certifies a census nothing
+    wrote. Neither failure says which of the two copies moved.
+    """
+
+    def test_only_citation_columns_spells_the_census_column(self):
+        for path in sorted(DEPLOY_DIR.rglob("*.py")):
+            if path.name == OWNER:
+                continue
+            with self.subTest(module=path.name):
+                self.assertNotIn(
+                    CENSUS_COLUMN, _bare_strings(path),
+                    f"{path.name}: имя колонки переписи набрано руками; "
+                    f"импортируйте CENSUS_COLUMN из {OWNER}")
+
+    def test_every_tally_reads_the_same_declaration(self):
+        self.assertIs(citation_dump.CENSUS_COLUMN, CENSUS_COLUMN)
+        self.assertIs(citation_dump.CENSUS_TABLE, CENSUS_TABLE)
+        self.assertIs(artifact_bundle.CENSUS_COLUMN, CENSUS_COLUMN)
+        self.assertIs(artifact_bundle.CENSUS_TABLE, CENSUS_TABLE)
+        self.assertIs(citation_content_checks.CENSUS_COLUMN, CENSUS_COLUMN)
+
+    def test_the_census_column_is_topology_and_therefore_always_shipped(self):
+        """A content column would be blanked under topology-only, and a
+        census of blanks is one no manifest number can equal.
+        """
+        self.assertEqual(
+            citation_columns.citation_column_class(CENSUS_TABLE, CENSUS_COLUMN),
+            citation_columns.TOPOLOGY)
+
+    def test_the_declared_block_is_the_one_the_full_profile_counts(self):
+        """The full profile recognises its census block by the qualified
+        name in the COPY header, so the schema and the table have to be the
+        producer's own two names rather than a third spelling.
+        """
+        counter = copy_rows.CopyBlockCounter(
+            io.BytesIO(),
+            copy_rows.BlockCensus(f"{copy_rows.CITATION_SCHEMA}.{CENSUS_TABLE}",
+                                  copy_rows.FieldTally(CENSUS_COLUMN)))
+        counter.write(f"COPY citation.{CENSUS_TABLE} (id, {CENSUS_COLUMN}) "
+                      "FROM stdin;\n1\tour-document\n\\.\n".encode())
+        counter.finish()
+        self.assertEqual(counter.census.tally.counts, {"our-document": 1})
 
 
 if __name__ == "__main__":

@@ -39,15 +39,12 @@ import dump_scan
 CORPUS_SCHEMA = "corpus"
 CITATION_SCHEMA = "citation"
 
-# The one manifest number that is not a row count: citation.work by kind.
-# Declared here, beside DumpedRows, because both writers have to tally the
-# same column of the same block and this module is where the dump's own
-# answer to "what did you write" is assembled. `kind` is TOPOLOGY
-# (deploy/citation_columns.py), so it travels under every shipping mode and
-# the census is derivable from the bytes -- which is the whole reason it can
-# stop being a separate read of a live instance the crawl keeps writing to.
-CENSUS_TABLE = "work"
-CENSUS_COLUMN = "kind"
+# WHICH block and column a census is taken of is NOT declared here. This
+# module is the schema-agnostic streaming seam -- it counts whatever goes
+# past -- and the one census the manifest carries is citation.work.kind,
+# whose name has to be the same on both sides of the artifact boundary
+# (deploy/citation_columns.CENSUS_TABLE / CENSUS_COLUMN, the module that
+# travels). Callers hand the qualified block name in with the tally.
 
 
 class FieldTally:
@@ -134,6 +131,19 @@ LINE_PREFIX = 8192
 COPY_TERMINATOR = dump_scan.COPY_TERMINATOR.encode()
 
 
+class BlockCensus(NamedTuple):
+    """WHICH block is tallied and WHAT tallies it, as one argument.
+
+    Two parameters would let a caller supply half an answer: a tally with no
+    block name counts nothing, a block name with no tally tallies nowhere,
+    and both are an empty census stamped into the manifest as fact. `table`
+    is qualified the way a COPY header spells it ("<schema>.<table>").
+    """
+
+    table: str
+    tally: FieldTally
+
+
 class CopyBlockCounter:
     """A write-through file wrapper that tallies EVERY COPY block passing
     through it: {"<schema>.<table>": rows}, and one column of one of them.
@@ -145,8 +155,8 @@ class CopyBlockCounter:
     re-derives are one state machine, run twice over the same bytes rather
     than two readings that agree by habit.
 
-    `census` is the public profile's per-block FieldTally in the one seam
-    this profile has: the census block is recognised by name off the same
+    `census` is a BlockCensus -- the caller's block name and tally -- in the
+    one seam this profile has: the block is recognised by name off the same
     COPY header, and its column list comes from that header.
 
     Only write() is needed while the dump streams (pg_stream.stream_stdout
@@ -154,12 +164,10 @@ class CopyBlockCounter:
     closes a last line the child left without a newline.
     """
 
-    def __init__(self, dst: IO[bytes], census: "FieldTally | None" = None,
-                 census_table: str = f"{CITATION_SCHEMA}.{CENSUS_TABLE}"):
+    def __init__(self, dst: IO[bytes], census: "BlockCensus | None" = None):
         self.dst = dst
         self.tables: dict[str, int] = {}
         self.census = census
-        self._census_table = census_table
         self._counting = False
         self._prefix = b""
         self._current: str | None = None
@@ -208,16 +216,16 @@ class CopyBlockCounter:
                 self._current = f"{schema}.{table}"
                 self.tables.setdefault(self._current, 0)
                 self._counting = (self.census is not None
-                                  and self._current == self._census_table)
+                                  and self._current == self.census.table)
                 if self._counting:
-                    self.census.start([c.strip() for c in columns.split(",")])
+                    self.census.tally.start([c.strip() for c in columns.split(",")])
             return
         if line == COPY_TERMINATOR:
             self._current, self._counting = None, False
             return
         self.tables[self._current] += 1
         if self._counting:
-            self.census.line(line)
+            self.census.tally.line(line)
 
 
 class DumpedRows(NamedTuple):

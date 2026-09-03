@@ -98,6 +98,24 @@ CONTENT_WITHHELD = {
 # answer this -- it says whether a column may leave, not what it names.
 JOURNAL_KEY_COLUMNS = ("frontier_key", "candidate_key", "node_key")
 
+# WHICH table and column the manifest describes by value instead of by
+# total: citation.work.kind, classified TOPOLOGY above, so it travels under
+# every mode that ships the schema at all -- which is what makes the census
+# answerable from the dumped bytes rather than from a live read beside them.
+#
+# Declared HERE for the reason JOURNAL_KEY_COLUMNS is, and it is the same
+# boundary: the producer tallies this column off the bytes it writes
+# (deploy/copy_rows.FieldTally, driven by citation_dump.py for the public
+# profile and artifact_bundle.py for the full one) and the bundled checker
+# re-tallies it off the shipped file (deploy/citation_content_checks.py),
+# and of those four modules only this one travels. Two hand-written copies
+# of one column name agree by accident: renamed on the producer's side
+# alone, the checker tallies every work row under the wire format's own
+# NULL and fails a correct package; renamed on the checker's side alone, it
+# certifies a census nothing wrote.
+CENSUS_TABLE = "work"
+CENSUS_COLUMN = "kind"
+
 CITATION = ColumnClasses(
     "citation", CITATION_COLUMN_CLASS, CONTENT_WITHHELD,
     hint="дополните CITATION_COLUMN_CLASS в deploy/citation_columns.py",

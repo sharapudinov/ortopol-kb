@@ -21,7 +21,7 @@ import citation_content_checks
 import corpus_content_checks
 import dump_scan
 import profile_checks
-from citation_content_checks import KIND_COLUMN
+from citation_columns import CENSUS_COLUMN
 from manifest_contract import CitationMode
 from manifest_keys import MANIFEST_SCHEMA_VERSION
 
@@ -171,8 +171,8 @@ class ArtifactBuilder:
                 # census comes off the COPY stream, copy_rows.FieldTally).
                 # A test about a MISMATCH sets citation["work_by_kind"]
                 # itself and this stands aside.
-                if table == "work" and KIND_COLUMN in columns:
-                    at = columns.index(KIND_COLUMN)
+                if table == "work" and CENSUS_COLUMN in columns:
+                    at = columns.index(CENSUS_COLUMN)
                     for row in rows:
                         census[row[at]] = census.get(row[at], 0) + 1
             # The journal ships under every mode that ships the schema, and

@@ -34,7 +34,12 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import dump_scan
-from citation_columns import CITATION_COLUMN_CLASS, JOURNAL_KEY_COLUMNS, content_columns
+from citation_columns import (
+    CENSUS_COLUMN,
+    CITATION_COLUMN_CLASS,
+    JOURNAL_KEY_COLUMNS,
+    content_columns,
+)
 from manifest_keys import Key
 from manifest_contract import strips_content
 
@@ -54,10 +59,10 @@ JOURNAL_TABLE = "citation.crawl_step"
 # checker would agree with the SQL that built the artifact only by accident.
 ID_COLUMN = "id"
 KEY_COLUMN = "key"
-# The census column. TOPOLOGY (citation_columns.py), so it ships under every
-# mode that ships the schema at all, which is what makes the manifest's
-# work_by_kind answerable from the dump instead of from a live read.
-KIND_COLUMN = "kind"
+# The census column is citation_columns.CENSUS_COLUMN, imported for the
+# reason JOURNAL_KEY_COLUMNS is: the producer tallies it off the bytes it
+# writes and this module re-tallies it off the shipped file, and a name
+# re-typed on one side of the boundary agrees with the other by accident.
 DOCUMENT_ID_COLUMN = "document_id"
 CITING_COLUMN = "citing"
 CITED_COLUMN = "cited"
@@ -174,7 +179,7 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
         # carries no kind column at all -- under the wire format's own NULL,
         # which no manifest census can equal. A row silently left out would
         # make the census agree by shrinking (ARTIFACT_SIDE_FAILS_CLOSED).
-        kind = row.get(KIND_COLUMN, dump_scan.NULL_FIELD)
+        kind = row.get(CENSUS_COLUMN, dump_scan.NULL_FIELD)
         work_by_kind[kind] = work_by_kind.get(kind, 0) + 1
         if ID_COLUMN in row:
             work_ids.add(row[ID_COLUMN])
