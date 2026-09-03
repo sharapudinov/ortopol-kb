@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from citation_vocab import Relation
 from . import scoring
+from .scoring import keeps
 
 SPIKE = "research/citation-frontier-threshold"
 REPORT_PATH = "research/citation-frontier/threshold.md"
@@ -72,7 +73,7 @@ def cost_table(rows, refs, taus=(0.50, 0.55, 0.58, 0.60, 0.62, 0.65, 0.70)) -> l
     lines = ["| τ | оставлено на depth-1 | различных ссылок | ≈ запросов depth-2 |",
              "|---|---|---|---|"]
     for tau in taus:
-        kept = [r for r in rows if r["score"] >= tau]
+        kept = [r for r in rows if keeps(r["score"], tau)]
         union: set[str] = set()
         for row in kept:
             union |= refs.get(row["candidate_key"], set())

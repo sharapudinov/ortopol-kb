@@ -77,12 +77,30 @@ def cosine_unit(a: list[float], unit_b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, unit_b)) / norm
 
 
+def keeps(score: float, tau: float) -> bool:
+    """Does a candidate scoring `score` survive the threshold `tau`?
+
+    `>= tau` keeps: the boundary belongs to the side the calibration
+    recommended, and a candidate scoring exactly the recommended number is
+    by construction one we said we wanted.
+
+    ONE spelling for the whole package. The comparison decides what enters
+    the citation graph, and it is asked in three independent places -- the
+    keep/drop decision and the journal row it writes (crawl.py), whether a
+    kept node holds on to its embedding (candidates.py), and the cost table
+    a recorded tau verdict rests on (calibration.py). Written by hand three
+    times, moving the boundary to `>` at one of them would desynchronise the
+    journal, the retained vectors and the calibration's own prediction of
+    what a crawl will keep, with nothing failing. A fourth hand-written
+    score/tau comparison is a test failure (tests/test_tau_boundary.py).
+    """
+    return score >= tau
+
+
 def split_by_threshold(scored: dict[str, float], tau: float) -> tuple[list[str], list[str]]:
-    """(kept, dropped) keys. `>= tau` keeps: the boundary belongs to the
-    side the calibration recommended, and a candidate scoring exactly the
-    recommended number is by construction one we said we wanted."""
-    kept = sorted(k for k, s in scored.items() if s >= tau)
-    dropped = sorted(k for k, s in scored.items() if s < tau)
+    """(kept, dropped) keys, split by keeps() and nothing else."""
+    kept = sorted(k for k, s in scored.items() if keeps(s, tau))
+    dropped = sorted(k for k, s in scored.items() if not keeps(s, tau))
     return kept, dropped
 
 

@@ -49,6 +49,7 @@ from . import edges as edges_mod
 from . import gathering, journal, seeding
 from .frontier import vectors_for as frontier_vectors
 from .registry import WorkRegistry
+from .scoring import keeps
 
 # A node cited more than this is not asked "who cites you": the answer is
 # tens of thousands of works about the field, not about the node. Default
@@ -196,7 +197,7 @@ class Snowball:
                 found[key] = found.get(key, 0) + 1
 
         for item in scored:
-            if item["score"] < self.tau:
+            if not keeps(item["score"], self.tau):
                 steps.append(journal.drop(
                     self.crawl_id, depth, item["candidate_key"], item["score"],
                     self.tau, item["relation"], item["discovered_from"]))

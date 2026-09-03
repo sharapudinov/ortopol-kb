@@ -18,7 +18,7 @@ from __future__ import annotations
 from .gathering import principal_hit
 from .openalex_client import short_id
 from .registry import scoring_fields
-from .scoring import NO_TEXT_SCORE, cosine_unit
+from .scoring import NO_TEXT_SCORE, cosine_unit, keeps
 
 
 def scores_of(vectors_for, centroid, tau, holders) -> dict[str, tuple[float, list[float] | None]]:
@@ -38,7 +38,7 @@ def scores_of(vectors_for, centroid, tau, holders) -> dict[str, tuple[float, lis
     scored: dict[str, tuple[float, list[float] | None]] = {}
     for holder, vector in vectors_for(holders):
         score = cosine_unit(vector, centroid)
-        scored[holder.key] = (score, vector if score >= tau else None)
+        scored[holder.key] = (score, vector if keeps(score, tau) else None)
     return scored
 
 
