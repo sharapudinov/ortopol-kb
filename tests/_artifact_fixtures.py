@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import tempfile
 from pathlib import Path
 
 import _pathfix  # noqa: F401
@@ -18,7 +19,9 @@ import _pathfix_deploy  # noqa: F401
 
 import citation_content_checks
 import corpus_content_checks
+import dump_scan
 import profile_checks
+from citation_content_checks import KIND_COLUMN
 from manifest_contract import CitationMode
 from manifest_keys import MANIFEST_SCHEMA_VERSION
 
@@ -36,6 +39,35 @@ def dump_facts(citation=None, documents=()):
     if citation is None:
         citation = citation_content_checks.attach_visitors({}, CitationMode.TOPOLOGY_ONLY)
     return profile_checks.DumpFacts(corpus=corpus, citation=citation)
+
+
+def citation_copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:
+    """One COPY block as a dump carries it, for a table named in full."""
+    lines = [f"COPY {table} ({', '.join(columns)}) FROM stdin;"]
+    lines += ["\t".join(row) for row in rows]
+    lines += ["\\.", ""]
+    return "\n".join(lines)
+
+
+def citation_scan(dump_text: str,
+                  mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict, "object"]:
+    """A REAL dump_scan.scan() pass over `dump_text` under `mode`, with the
+    citation visitors attached: (scans, facts).
+
+    The facts every citation check reads are collected by
+    citation_content_checks.attach_visitors() on that same pass, so a check
+    written against a hand-made fact container would be a check about a
+    shape this repository never builds. Topology-only by default: the mode
+    the content hunt exists for.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        dump_path = Path(tmp) / "dump.sql.gz"
+        with gzip.open(dump_path, "wt", encoding="utf-8") as f:
+            f.write(dump_text)
+        row_visitors: dict = {}
+        facts = citation_content_checks.attach_visitors(row_visitors, mode)
+        scans = dump_scan.scan(dump_path, row_visitors).tables
+    return scans, dump_facts(facts)
 
 
 DOCUMENT_COLUMNS = ["id", "filename", "legal_class", "public_distribution",
@@ -125,13 +157,24 @@ class ArtifactBuilder:
         # citation["table_rows"] itself and the declaration below stands
         # instead of this one.
         shipped_tables: dict[str, int] = {}
+        census: dict[str, int] = {}
         if self.citation is not None and self.citation["mode"] != "none":
             for table, columns_key in (("work", "work_columns"),
                                        ("cites", "cites_columns")):
+                columns = self.citation.get(columns_key, [])
                 rows = self.citation.get(table, [])
-                dump_text += _citation_copy_block(
-                    table, self.citation.get(columns_key, []), rows)
+                dump_text += _citation_copy_block(table, columns, rows)
                 shipped_tables[table] = len(rows)
+                # The kind census the manifest declares, taken from the rows
+                # this fixture actually writes -- the same polarity as
+                # table_rows above, and the same one the packager has (the
+                # census comes off the COPY stream, copy_rows.FieldTally).
+                # A test about a MISMATCH sets citation["work_by_kind"]
+                # itself and this stands aside.
+                if table == "work" and KIND_COLUMN in columns:
+                    at = columns.index(KIND_COLUMN)
+                    for row in rows:
+                        census[row[at]] = census.get(row[at], 0) + 1
             # The journal ships under every mode that ships the schema, and
             # its cut is the one this fixture is asked about most: a row
             # naming EXCLUDED_DOC in any of the three key columns is the
@@ -169,7 +212,7 @@ class ArtifactBuilder:
                 "policy_source": citation.get("policy_source", source),
                 "work_count": citation["work_count"],
                 "cites_count": citation["cites_count"],
-                "work_by_kind": citation.get("work_by_kind", {}),
+                "work_by_kind": citation.get("work_by_kind", census),
                 "table_rows": citation.get("table_rows", shipped_tables),
             }
         (self.directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False))

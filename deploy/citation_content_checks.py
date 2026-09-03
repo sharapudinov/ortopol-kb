@@ -54,6 +54,10 @@ JOURNAL_TABLE = "citation.crawl_step"
 # checker would agree with the SQL that built the artifact only by accident.
 ID_COLUMN = "id"
 KEY_COLUMN = "key"
+# The census column. TOPOLOGY (citation_columns.py), so it ships under every
+# mode that ships the schema at all, which is what makes the manifest's
+# work_by_kind answerable from the dump instead of from a live read.
+KIND_COLUMN = "kind"
 DOCUMENT_ID_COLUMN = "document_id"
 CITING_COLUMN = "citing"
 CITED_COLUMN = "cited"
@@ -93,6 +97,7 @@ class CitationFacts(NamedTuple):
     """
 
     leaked: "LeakSample"
+    work_by_kind: dict[str, int]
     work_documents: dict[str, str]
     work_ids: set[str]
     work_keys: set[str]
@@ -129,6 +134,7 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
     could learn nothing about.
     """
     leaked = LeakSample()
+    work_by_kind: dict[str, int] = {}
     work_documents: dict[str, str] = {}
     work_ids: set[str] = set()
     work_keys: set[str] = set()
@@ -164,6 +170,12 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
 
     def on_work(row: dict) -> None:
         leaked_work(row)
+        # Every work row is counted, under its kind or -- if the dump
+        # carries no kind column at all -- under the wire format's own NULL,
+        # which no manifest census can equal. A row silently left out would
+        # make the census agree by shrinking (ARTIFACT_SIDE_FAILS_CLOSED).
+        kind = row.get(KIND_COLUMN, dump_scan.NULL_FIELD)
+        work_by_kind[kind] = work_by_kind.get(kind, 0) + 1
         if ID_COLUMN in row:
             work_ids.add(row[ID_COLUMN])
         if KEY_COLUMN in row:
@@ -201,7 +213,8 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
             if qualified not in row_visitors and content_columns(table):
                 row_visitors[qualified] = content_visitor(
                     qualified, lambda row: row.get("id", "?"))
-    return CitationFacts(leaked=leaked, work_documents=work_documents,
+    return CitationFacts(leaked=leaked, work_by_kind=work_by_kind,
+                         work_documents=work_documents,
                          work_ids=work_ids, work_keys=work_keys,
                          edge_endpoints=edge_endpoints, journal_keys=journal_keys)
 

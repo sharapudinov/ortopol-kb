@@ -55,38 +55,6 @@ class RequireCitationModeTests(unittest.TestCase):
                 self.assertEqual(citation_profile.require_citation_mode({}), mode)
 
 
-class WorkByKindTests(unittest.TestCase):
-    """The census, and only the census.
-
-    The work and cites totals are NOT read here: they are the dump's own
-    row counts, counted as the COPY blocks stream past (copy_rows.py) and
-    stamped into the manifest afterwards. Read here as well,
-    they were the same two cut row sets counted a second time -- the
-    correlated EXISTS over citation.work and the double-ended join over
-    citation.cites -- for numbers the recipient's gate requires to equal
-    the dump's.
-    """
-
-    def test_the_breakdown_is_the_shared_censuss_answer(self):
-        counts = {"external-skeleton": 382, "our-document": 56}
-        with mock.patch.object(citation_profile, "kind_counts", return_value=counts):
-            self.assertEqual(citation_profile.work_by_kind({}), counts)
-
-    def test_empty_kind_breakdown_is_an_empty_dict(self):
-        with mock.patch.object(citation_profile, "kind_counts", return_value={}):
-            self.assertEqual(citation_profile.work_by_kind({}), {})
-
-    def test_no_total_is_counted_beside_it(self):
-        seen = []
-        with mock.patch.object(citation_profile, "scalar",
-                                side_effect=lambda env, sql: seen.append(sql) or "7"), \
-             mock.patch.object(citation_profile, "kind_counts",
-                                return_value={"our-document": 3}) as census:
-            citation_profile.work_by_kind({}, shipped_only=True)
-        self.assertEqual(seen, [], seen)
-        census.assert_called_once()
-
-
 class ResolveCitationModeTests(unittest.TestCase):
     """The ONE reading of the policy per build (build_package.main hands the
     result to the manifest and to the dump alike).
@@ -220,23 +188,6 @@ class ShippedRowPredicateTests(unittest.TestCase):
         ctes = citation_profile.crawl_step_cut_ctes()
         for name in ("cut_documents", "cut_keys", "cut_names", "cut_steps"):
             self.assertIn(f"{name} AS MATERIALIZED (", ctes)
-
-
-class ShippedOnlyCountsTests(unittest.TestCase):
-    def _counted(self, **kwargs) -> list[str]:
-        """The narrowing clauses handed to the shared census."""
-        narrowed = []
-        with mock.patch.object(citation_profile, "kind_counts",
-                                side_effect=lambda env, where="": narrowed.append(where) or {}):
-            citation_profile.work_by_kind({}, **kwargs)
-        return narrowed
-
-    def test_shipped_only_counts_apply_the_predicate(self):
-        narrowed = self._counted(shipped_only=True)
-        self.assertTrue(all("public_distribution IN (" in where for where in narrowed), narrowed)
-
-    def test_default_counts_the_whole_schema(self):
-        self.assertEqual(self._counted(), [""])
 
 
 if __name__ == "__main__":

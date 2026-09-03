@@ -31,8 +31,13 @@ Checks:
                            question one level down, for the rows the work
                            cut takes with it
   journal names nothing   no citation.crawl_step row names, in any of its
-   the cut removed         three key columns, a document the manifest
-                           classifies out of this artifact
+   the cut removed         key columns, a document the manifest classifies
+                           out of this artifact
+  the kind census holds   manifest.citation.work_by_kind is the census of
+                           the work rows the dump turns out to contain, kind
+                           by kind -- the one citation number that used to be
+                           a live read beside the dump and the one nothing
+                           on this side re-derived
 
 "the SELECT filtered it out" is a claim about the packager; each of these is
 a claim about the file, which is the whole reason profile_checks.py travels
@@ -158,6 +163,40 @@ def check_every_declared_table_shipped(manifest: dict, scans: dict) -> tuple[boo
     return not problems, (
         f"{len(declared)} declared table(s): " + ("; ".join(problems) or "все на месте, "
         + ", ".join(f"{table}={rows}" for table, rows in sorted(declared.items())))
+    )
+
+
+def check_kind_census_matches_manifest(manifest: dict, facts) -> tuple[bool, str]:
+    """manifest.citation.work_by_kind is the census of the dumped work rows.
+
+    Every other number in the block is stamped from the writing of the file
+    (manifest_rows.py); the census was read from the live database before
+    the dump existed, and no check on this side compared it with anything,
+    while three docstrings said one did. So sum(work_by_kind) could disagree
+    with work_count and with the rows the file carries -- the crawl writes
+    ~100k journal rows per pass against the same instance, and an edit to a
+    document's public_distribution between the census and the COPY moves the
+    cut -- and every bundled check still printed [OK].
+
+    Compared kind by kind rather than by total: two errors that cancel in
+    the sum are exactly what a census is for.
+    """
+    if not _ships_citation(manifest):
+        return True, "citation schema not in this profile -- nothing to check"
+    declared = manifest.get(Key.CITATION, {}).get(Key.WORK_BY_KIND)
+    counted = facts.citation.work_by_kind
+    if not isinstance(declared, dict):
+        return False, (f"manifest.citation.{Key.WORK_BY_KIND} не словарь ({declared!r}) "
+                       "при режиме, который везёт схему -- пересоберите пакет "
+                       "текущим сборщиком")
+    disagreeing = sorted(set(declared) | set(counted))
+    problems = [f"{kind}: дамп {counted.get(kind, 0)} против {declared.get(kind, 0)}"
+                for kind in disagreeing if counted.get(kind, 0) != declared.get(kind, 0)]
+    return not problems, (
+        f"{sum(counted.values())} work row(s) in {len(counted)} kind(s): "
+        + ("; ".join(problems) or ", ".join(f"{kind}={rows}"
+                                            for kind, rows in sorted(counted.items()))
+           or "перепись пуста с обеих сторон")
     )
 
 

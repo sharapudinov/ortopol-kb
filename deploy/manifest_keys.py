@@ -87,10 +87,11 @@ class Key:
     FULL_CONTENT_DISTRIBUTIONS = "full_content_distributions"
     SHIPPED_DISTRIBUTIONS = "shipped_distributions"
 
-    # citation{} -- describes the PACKAGE, produced by
-    # manifest_probe.gather_manifest() from citation_profile.py's reading of
-    # citation.public_policy, verified statically by
-    # citation_content_checks.py. Counts are about what THIS artifact
+    # citation{} -- describes the PACKAGE. The mode comes from
+    # citation_profile.py's reading of citation.public_policy; every number
+    # is stamped from the dump itself (manifest_rows.py) and verified
+    # statically against its bytes by citation_content_checks.py and
+    # citation_cut_checks.py. Counts are about what THIS artifact
     # carries, not the live database (MANIFEST_DESCRIBES_ARTIFACT) -- zero
     # for CitationMode.NONE, whole-corpus otherwise (full-skeleton and
     # topology-only ship every row, only some columns differ).

@@ -50,7 +50,7 @@ from citation_columns import JOURNAL_KEY_COLUMNS  # noqa: E402
 from legal_profile import SHIPPED_SQL  # noqa: E402
 from manifest_contract import CitationMode, PolicySource, Profile  # noqa: E402
 from pg_common import scalar  # noqa: E402
-from pg_graph_common import citation_schema_exists, kind_counts  # noqa: E402
+from pg_graph_common import citation_schema_exists  # noqa: E402
 
 # --- the per-document legal cut, as it applies to the citation slice ------
 #
@@ -252,28 +252,3 @@ def resolve_citation_mode(
         require_citation_schema(env)
         return override, PolicySource.OVERRIDE
     return require_citation_mode(env), PolicySource.OWNER
-
-
-def work_by_kind(env: dict, *, shipped_only: bool = False) -> dict[str, int]:
-    """{kind: rows} over citation.work -- the manifest's census.
-
-    shipped_only applies the per-document cut above, i.e. counts what a
-    PUBLIC artifact will actually contain rather than what the live database
-    holds -- MANIFEST_DESCRIBES_ARTIFACT: every number in manifest.json is
-    about the package, and citation_content_checks.py compares this very
-    breakdown against the dumped rows.
-
-    The census, and nothing beside it. The work and cites TOTALS are the
-    dump's own row counts -- counted as the COPY blocks stream past
-    (copy_rows.py) and stamped into the manifest afterwards
-    (manifest_rows.stamp_dumped_rows).
-    Counted here as well they were the same two cut row sets counted a
-    second time: the correlated EXISTS against corpus.documents per work
-    row, and the whole citation.cites joined to citation.work on both
-    endpoints under that same predicate twice -- for numbers the
-    recipient's gate then requires to equal the dump's own
-    (citation_cut_checks.check_citation_schema_matches_mode). A breakdown
-    has no such source: no COPY block carries one, so this reading stays.
-    """
-    where = f" WHERE {shipped_work_sql('w')}" if shipped_only else ""
-    return kind_counts(env, where)

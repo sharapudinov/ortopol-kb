@@ -5,7 +5,10 @@ transport/matching logic is tested directly in test_ollama_registry.py.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import json
+import pathlib
 import unittest
 from unittest import mock
 
@@ -77,28 +80,11 @@ _LEGAL_SUMMARY = {
 _RESOLVED = {"citation_mode": "full-skeleton", "policy_source": "owner"}
 
 
-def _patch_citation_defaults(test_case: unittest.TestCase) -> None:
-    """Mocks citation_profile.work_by_kind so gather_manifest() never
-    touches the database for its citation-graph half. The MODE is no longer
-    read here at all: build_package.main() resolves it once and hands it in
-    (citation_profile.resolve_citation_mode, tested in
-    test_citation_profile.py), and the work/cites totals are the dump's own
-    answer, stamped after it is written.
-    """
-    patcher = mock.patch.object(manifest_citation.citation_profile, "work_by_kind",
-                                 return_value={})
-    patcher.start()
-    test_case.addCleanup(patcher.stop)
-
-
 class GatherManifestErrorPathsTests(unittest.TestCase):
     """gather_manifest()'s guard branches -- previously untested, so a
     regression in any of them (e.g. the overlap check silently passing a
     lexically-overlapping pair) would have gone undetected.
     """
-
-    def setUp(self):
-        _patch_citation_defaults(self)
 
     def _patch_prelude(self, row=None, digest=("sha256:abc", 123)):
         row = list(row if row is not None else _GOOD_ROW)
@@ -181,9 +167,6 @@ class ProfileAwarenessTests(unittest.TestCase):
     """
 
     NEAREST = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
-
-    def setUp(self):
-        _patch_citation_defaults(self)
 
     def _gather(self, profile, citation_mode="full-skeleton", policy_source="owner"):
         with mock.patch.object(manifest_probe, "scalar_row", return_value=list(_GOOD_ROW)) as row_mock, \
@@ -306,55 +289,56 @@ class CitationManifestTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
-             mock.patch.object(probe_overlap, "scalar", return_value=""), \
-             mock.patch.object(manifest_citation.citation_profile, "work_by_kind",
-                                return_value={"external-skeleton": 382,
-                                              "our-document": 56}) as counts_mock:
-            manifest = manifest_probe.gather_manifest(
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
+            return manifest_probe.gather_manifest(
                 {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
                 policy_source=policy_source,
             )
-        return manifest, counts_mock
 
     def test_manifest_counts_describe_package(self):
-        manifest, _counts = self._gather()
+        manifest = self._gather()
         self.assertEqual(manifest["citation"], {
             "mode": "topology-only", "policy_source": "owner",
-            # Declared zero here and stamped by build_package.main() from
-            # what the dump actually wrote, together with table_rows: this
+            # Every one of them declared zero/empty here and stamped by
+            # build_package.main() from what the dump actually wrote: this
             # function runs before the dump exists, and a live count would
             # describe a package nobody has produced yet -- and would count
             # the same cut row sets a second time to arrive at it.
             "work_count": 0, "cites_count": 0,
-            "work_by_kind": {"external-skeleton": 382, "our-document": 56},
-            "table_rows": {},
+            "work_by_kind": {}, "table_rows": {},
         })
         self.assertEqual(manifest["schemas"], ["corpus", "citation"])
 
-    def test_the_census_is_the_only_citation_read_the_manifest_makes(self):
-        """The kind census cannot come from the dump -- no COPY block
-        carries a breakdown -- but the two totals can and do. Asked here as
-        well, they re-ran the correlated EXISTS over citation.work and the
-        double-ended join over citation.cites for numbers the recipient's
-        gate then requires to equal the dump's own.
+    def test_the_citation_block_reads_the_database_for_nothing_at_all(self):
+        """The kind census was the last live read here, and the last number
+        no artifact-side check re-derived. `kind` is TOPOLOGY and travels
+        under every shipping mode, so the census comes off the COPY stream
+        like every other number in the block (copy_rows.FieldTally) and
+        citation_cut_checks holds the dumped rows to it.
         """
-        _manifest, census = self._gather()
-        census.assert_called_once()
-        self.assertEqual(census.call_args.kwargs, {"shipped_only": True})
+        tree = ast.parse(pathlib.Path(manifest_citation.__file__).read_text(encoding="utf-8"))
+        imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        imported |= {alias.name for node in ast.walk(tree)
+                     if isinstance(node, ast.Import) for alias in node.names}
+        self.assertEqual(imported, {"__future__", "manifest_keys"})
+        self.assertNotIn("env", inspect.signature(manifest_citation.citation_block).parameters)
 
     @staticmethod
     def _blank_manifest() -> dict:
         return {"documents_count": 0, "pages_count": 0,
-                "citation": {"work_count": 0, "cites_count": 0, "table_rows": {}}}
+                "citation": {"work_count": 0, "cites_count": 0, "work_by_kind": {},
+                             "table_rows": {}}}
 
     def test_the_dumps_answer_is_what_every_count_is_stamped_from(self):
         manifest = self._blank_manifest()
         manifest_rows.stamp_dumped_rows(manifest, DumpedRows(
             corpus={"documents": 70, "pages": 2462},
-            citation={"work": 438, "cites": 2425, "crawl_step": 5}))
+            citation={"work": 438, "cites": 2425, "crawl_step": 5},
+            work_by_kind={"external-skeleton": 382, "our-document": 56}))
         self.assertEqual(manifest, {
             "documents_count": 70, "pages_count": 2462,
             "citation": {"work_count": 438, "cites_count": 2425,
+                         "work_by_kind": {"external-skeleton": 382, "our-document": 56},
                          "table_rows": {"work": 438, "cites": 2425, "crawl_step": 5}}})
 
     def test_a_dump_that_carried_no_such_table_stamps_a_zero(self):
@@ -383,7 +367,7 @@ class CitationManifestTests(unittest.TestCase):
         it an override build and an owner-classified one are byte-for-byte
         the same artifact to every consumer that reads manifest.json.
         """
-        manifest, _counts = self._gather(policy_source="override")
+        manifest = self._gather(policy_source="override")
         self.assertEqual(manifest["citation"]["policy_source"], "override")
 
     def test_neither_half_of_the_pair_can_be_omitted(self):
@@ -397,17 +381,19 @@ class CitationManifestTests(unittest.TestCase):
                 with self.assertRaises(TypeError):
                     manifest_probe.gather_manifest({}, "http://x/api/embed", **kwargs)
 
-    def test_public_counts_apply_the_per_document_cut(self):
+    def test_the_cut_is_applied_by_the_dump_the_numbers_come_from(self):
         """A work row naming an excluded document does not ship
-        (citation_dump.py), so the manifest must not count it either --
-        otherwise profile_checks fails a correct package on its own numbers.
+        (citation_dump.py), so the manifest must not count it either. It
+        cannot: the block leaves every number for the dump to fill, whatever
+        the profile, so there is no reading here for a cut to be forgotten
+        in.
         """
-        _manifest, counts_mock = self._gather(profile="public")
-        self.assertEqual(counts_mock.call_args.kwargs, {"shipped_only": True})
-
-    def test_full_profile_counts_the_whole_schema(self):
-        _manifest, counts_mock = self._gather(profile="full", citation_mode="full-skeleton")
-        self.assertEqual(counts_mock.call_args.kwargs, {"shipped_only": False})
+        for profile, mode in (("public", "topology-only"), ("full", "full-skeleton")):
+            with self.subTest(profile=profile):
+                block = self._gather(profile=profile, citation_mode=mode)["citation"]
+                self.assertEqual((block["work_count"], block["cites_count"],
+                                  block["work_by_kind"], block["table_rows"]),
+                                 (0, 0, {}, {}))
 
     def test_none_mode_records_zero_counts_and_no_schema(self):
         """A FULL build whose database carries no citation schema: full
@@ -418,14 +404,13 @@ class CitationManifestTests(unittest.TestCase):
         such a database does not get here at all: it is refused, see
         citation_profile.resolve_citation_mode.)
         """
-        manifest, counts_mock = self._gather(profile="full", citation_mode="none",
-                                             policy_source="not-applicable")
+        manifest = self._gather(profile="full", citation_mode="none",
+                                policy_source="not-applicable")
         self.assertEqual(manifest["citation"],
                           {"mode": "none", "policy_source": "not-applicable",
                            "work_count": 0, "cites_count": 0, "work_by_kind": {},
                            "table_rows": {}})
         self.assertEqual(manifest["schemas"], ["corpus", "measurements"])
-        counts_mock.assert_not_called()
 
 
 if __name__ == "__main__":

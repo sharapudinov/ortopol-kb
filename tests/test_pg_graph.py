@@ -210,17 +210,28 @@ class SharedCitationPlumbingTests(unittest.TestCase):
             self.assertNotIn("to_regclass('citation.work')", text, path.name)
             self.assertNotIn("count(*) AS n FROM citation.work w", text, path.name)
 
+    def _from_shared_layer(self, path: Path) -> set[str]:
+        return {
+            alias.name
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.ImportFrom) and node.module == "pg_graph_common"
+            for alias in node.names
+        }
+
     def test_both_consumers_reach_the_shared_layer(self):
         for path in self.CONSUMERS:
-            imported = {
-                alias.name
-                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-                if isinstance(node, ast.ImportFrom) and node.module == "pg_graph_common"
-                for alias in node.names
-            }
-            self.assertIn("citation_schema_exists", imported, path.name)
-            self.assertTrue({"kind_counts", "kind_counts_expression"} & imported,
-                            f"{path.name}: {imported}")
+            self.assertIn("citation_schema_exists", self._from_shared_layer(path), path.name)
+
+    def test_the_census_reader_reads_it_from_there_too(self):
+        """One consumer left: the completeness check. The manifest's census
+        was the other, and it is the dump's own answer now -- tallied off
+        the COPY stream the packager wrote (deploy/copy_rows.FieldTally) and
+        held to the shipped bytes by deploy/citation_cut_checks.py.
+        """
+        imported = self._from_shared_layer(Path(citation_checks.__file__))
+        self.assertTrue({"kind_counts", "kind_counts_expression"} & imported, imported)
+        self.assertNotIn("kind_counts",
+                         self._from_shared_layer(Path(citation_profile.__file__)))
 
 
 class ProjectionDiffTests(unittest.TestCase):

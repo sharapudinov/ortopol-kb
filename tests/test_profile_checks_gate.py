@@ -113,13 +113,14 @@ class CitationBlockShapeGateTests(unittest.TestCase):
         names = [name for name, _ok, _detail in results]
         self.assertIn(SHAPE_GATE, names)
         self.assertTrue(dict((n, ok) for n, ok, _d in results)[SHAPE_GATE])
-        self.assertGreater(len(results), 3)
+        self.assertGreater(len(results), 4)
 
     def test_a_citation_field_that_is_not_a_mapping_stops_the_pass(self):
         for citation in self.MALFORMED:
             with self.subTest(citation=citation), tempfile.TemporaryDirectory() as tmp:
                 results = profile_checks.run_checks(_with_citation(Path(tmp), citation))
-                self.assertEqual(len(results), 3)
+                # version, profile, legal vocabulary, then this gate.
+                self.assertEqual(len(results), 4)
                 name, ok, detail = results[-1]
                 self.assertEqual(name, SHAPE_GATE)
                 self.assertFalse(ok)
@@ -141,7 +142,7 @@ class CitationBlockShapeGateTests(unittest.TestCase):
             builder = ArtifactBuilder(Path(tmp))
             builder.citation_block = False
             results = profile_checks.run_checks(builder.write())
-        self.assertEqual(len(results), 3)
+        self.assertEqual(len(results), 4)
         name, ok, _detail = results[-1]
         self.assertEqual(name, SHAPE_GATE)
         self.assertFalse(ok)

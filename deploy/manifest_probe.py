@@ -208,7 +208,7 @@ def gather_manifest(
         # smoke_test.py, which skips the measurements check when the
         # artifact declares no measurements schema.
         Key.SCHEMAS: schemas_for(profile, citation_mode),
-        Key.CITATION: citation_block(env, citation_mode, public, policy_source),
+        Key.CITATION: citation_block(citation_mode, policy_source),
         Key.CREATED_AT: datetime.now(timezone.utc).isoformat(),
         # Declared here and FILLED by build_package.main() from the rows the
         # dump actually wrote (manifest_rows.py), like the citation block's

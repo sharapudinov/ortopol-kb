@@ -38,8 +38,12 @@ MODE_CLASSES = ("CitationMode", "PublicPolicyMode")
 # The modules that ask the question at all: the bytes, their description and
 # the two verifiers. Named so that a site dropping the call is a failure
 # here rather than a silently unguarded module.
+# Every module that DECIDES anything by the mode. manifest_citation.py is
+# not among them any more: the block it builds carries the same keys under
+# every mode and every number in it is stamped from the dump afterwards, so
+# there is nothing left there to decide.
 ASKING_MODULES = (
-    "manifest_contract.py", "citation_dump.py", "manifest_citation.py",
+    "manifest_contract.py", "citation_dump.py",
     "citation_cut_checks.py", "smoke_checks.py",
 )
 
@@ -132,9 +136,15 @@ class NoSiteDecidesByNoneTests(unittest.TestCase):
         self.assertIsNone(verdict)
 
     def test_the_manifest_block_of_an_unheard_of_mode_carries_no_counts(self):
-        block = manifest_citation.citation_block({}, "graph-only", True, "owner")
-        self.assertEqual((block["work_count"], block["cites_count"], block["work_by_kind"]),
-                         (0, 0, {}))
+        """Nothing is counted for ANY mode here -- the block declares the
+        keys and the dump fills them -- so an unheard-of mode cannot have a
+        live census stamped into a block describing a package that carries
+        no citation byte.
+        """
+        block = manifest_citation.citation_block("graph-only", "owner")
+        self.assertEqual((block["work_count"], block["cites_count"],
+                          block["work_by_kind"], block["table_rows"]),
+                         (0, 0, {}, {}))
 
     def test_the_dump_of_an_unheard_of_mode_writes_nothing(self):
         class _Sink:

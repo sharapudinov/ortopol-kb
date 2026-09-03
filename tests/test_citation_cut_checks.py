@@ -1,16 +1,16 @@
-"""Unit tests for deploy/citation_cut_checks.py: no live database, no real
-dump -- a real dump_scan.scan() pass over hand-built COPY blocks, same
-discipline as test_profile_checks.py's DumpScanTests (the check must be
-right about actual bytes, not a mocked scan).
+"""The three checks that hold the citation cut to the DOCUMENT cut
+(deploy/citation_cut_checks.py): no live database, no real dump -- a real
+dump_scan.scan() pass over hand-built COPY blocks, same discipline as
+test_profile_checks.py's DumpScanTests (the check must be right about
+actual bytes, not a mocked scan).
 
-The facts these checks read are collected by citation_content_checks.
-attach_visitors() on that same pass, so the scan helper below is the one
-next door: a check written against hand-made fact containers would be a
-check about a dict this repository never builds.
+The same module's other question -- do the numbers the manifest DECLARES
+about the citation rows match the rows the file holds -- is next door in
+test_citation_counts.py (kb/CLAUDE.md FILE_SIZE, split along the question
+the module's own docstring splits on).
 """
 from __future__ import annotations
 
-import gzip
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,84 +18,18 @@ from pathlib import Path
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
-import citation_content_checks
 import citation_cut_checks
-import dump_scan
 import profile_checks
-from _artifact_fixtures import ArtifactBuilder, dump_facts, EXCLUDED_DOC, FULL_DOC
+from _artifact_fixtures import (
+    ArtifactBuilder,
+    EXCLUDED_DOC,
+    FULL_DOC,
+    citation_copy_block as _copy_block,
+    citation_scan as _scan,
+    dump_facts,
+)
 from manifest_keys import Key
 from manifest_contract import CitationMode
-
-
-def _copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:
-    lines = [f"COPY {table} ({', '.join(columns)}) FROM stdin;"]
-    lines += ["\t".join(row) for row in rows]
-    lines += ["\\.", ""]
-    return "\n".join(lines)
-
-
-def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict, dict]:
-    """A real scan of `dump_text` under `mode`. Topology-only by default:
-    that is the mode the content hunt exists for, and the mode most of
-    these tests are about.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        dump_path = Path(tmp) / "dump.sql.gz"
-        with gzip.open(dump_path, "wt", encoding="utf-8") as f:
-            f.write(dump_text)
-        row_visitors: dict = {}
-        facts = citation_content_checks.attach_visitors(row_visitors, mode)
-        scans = dump_scan.scan(dump_path, row_visitors).tables
-    return scans, dump_facts(facts)
-
-
-class CheckCitationSchemaMatchesModeTests(unittest.TestCase):
-    def test_none_mode_passes_when_dump_carries_neither_table(self):
-        scans, _facts = _scan("CREATE TABLE corpus.documents (id text);\n")
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE}}
-        ok, detail = citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertTrue(ok, detail)
-
-    def test_none_mode_fails_when_a_citation_table_leaked_in(self):
-        dump = _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE}}
-        ok, detail = citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertFalse(ok)
-        self.assertIn("citation.work", detail)
-
-    def test_shipping_mode_requires_both_tables_with_matching_counts(self):
-        dump = (
-            _copy_block("citation.work", ["id", "key"], [["1", "k1"], ["2", "k2"]])
-            + _copy_block("citation.cites", ["citing", "cited"], [["1", "2"]])
-        )
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {
-            Key.CITATION_MODE: CitationMode.FULL_SKELETON, Key.WORK_COUNT: 2, Key.CITES_COUNT: 1,
-        }}
-        ok, detail = citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertTrue(ok, detail)
-
-    def test_shipping_mode_fails_on_a_row_count_mismatch(self):
-        dump = (
-            _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
-            + _copy_block("citation.cites", ["citing", "cited"], [])
-        )
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {
-            Key.CITATION_MODE: CitationMode.FULL_SKELETON, Key.WORK_COUNT: 5, Key.CITES_COUNT: 0,
-        }}
-        ok, detail = citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertFalse(ok)
-
-    def test_shipping_mode_fails_when_a_table_is_entirely_absent(self):
-        dump = _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {
-            Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY, Key.WORK_COUNT: 1, Key.CITES_COUNT: 0,
-        }}
-        ok, _detail = citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertFalse(ok)
 
 
 class CheckWorkDocumentsPresentTests(unittest.TestCase):
@@ -161,87 +95,6 @@ class CheckEdgesReferenceShippedWorksTests(unittest.TestCase):
             self.MANIFEST, facts)
         self.assertFalse(ok)
         self.assertIn("2", detail)
-
-
-class CheckEveryDeclaredTableShippedTests(unittest.TestCase):
-    """The manifest names every citation table the dump carries, and the
-    dump carries every table the manifest names -- with the same row count.
-
-    Without this, the recipient learned nothing about crawl_step,
-    public_policy or schema_backfill: the checks that read the journal find
-    no rows, report a green nought and certify a package that never shipped
-    the table their whole subject is.
-    """
-
-    JOURNAL = ["id", "frontier_key"]
-
-    def _scans(self, tables: dict[str, list[list[str]]]) -> dict:
-        dump = "CREATE TABLE corpus.documents (id text);\n"
-        for table, rows in tables.items():
-            columns = ["id", "key"] if table in ("work",) else self.JOURNAL
-            dump += _copy_block(f"citation.{table}", columns, rows)
-        scans, _facts = _scan(dump)
-        return scans
-
-    def _manifest(self, declared) -> dict:
-        return {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY,
-                               Key.TABLE_ROWS: declared}}
-
-    def test_every_declared_table_present_with_its_count_passes(self):
-        scans = self._scans({"work": [["1", "k1"]], "crawl_step": [["1", "k1"], ["2", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1, "crawl_step": 2}), scans)
-        self.assertTrue(ok, detail)
-
-    def test_a_declared_table_the_dump_never_carried_is_the_whole_point(self):
-        """The journal is declared and absent -- which is exactly the
-        package on which check_journal_names_nothing_cut() reported zero
-        names and passed.
-        """
-        scans = self._scans({"work": [["1", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1, "crawl_step": 604}), scans)
-        self.assertFalse(ok)
-        self.assertIn("citation.crawl_step", detail)
-        self.assertIn("604", detail)
-
-    def test_a_row_count_that_does_not_match_the_declaration_fails(self):
-        scans = self._scans({"work": [["1", "k1"]], "crawl_step": [["1", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1, "crawl_step": 2}), scans)
-        self.assertFalse(ok)
-        self.assertIn("1 строк против 2", detail)
-
-    def test_a_table_in_the_dump_that_the_manifest_does_not_name_fails(self):
-        """The other direction: a table shipped without being described is
-        a slice of the schema nothing on this side can hold to anything.
-        """
-        scans = self._scans({"work": [["1", "k1"]], "crawl_step": [["1", "k1"]]})
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            self._manifest({"work": 1}), scans)
-        self.assertFalse(ok)
-        self.assertIn("citation.crawl_step", detail)
-
-    def test_a_shipping_mode_declaring_no_table_at_all_is_refused(self):
-        for declared in (None, {}, "нет"):
-            with self.subTest(declared=declared):
-                ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-                    self._manifest(declared), self._scans({"work": [["1", "k1"]]}))
-                self.assertFalse(ok, detail)
-                self.assertIn(Key.TABLE_ROWS, detail)
-
-    def test_a_mode_that_ships_nothing_declares_nothing_and_carries_nothing(self):
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE, Key.TABLE_ROWS: {}}}
-        ok, detail = citation_cut_checks.check_every_declared_table_shipped(
-            manifest, self._scans({}))
-        self.assertTrue(ok, detail)
-
-    def test_a_mode_that_ships_nothing_may_not_declare_a_table_either(self):
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE,
-                                   Key.TABLE_ROWS: {"work": 1}}}
-        ok, _detail = citation_cut_checks.check_every_declared_table_shipped(
-            manifest, self._scans({}))
-        self.assertFalse(ok)
 
 
 # A journal row as the dump carries one: the three columns the cut matches
@@ -335,7 +188,7 @@ class JournalCutThroughTheWholePassTests(unittest.TestCase):
     a recipient has.
     """
 
-    WORK_COLUMNS = ["id", "key", "title", "abstract", "evidence"]
+    WORK_COLUMNS = ["id", "key", "kind", "title", "abstract", "evidence"]
 
     def _builder(self, tmp, journal_rows):
         builder = ArtifactBuilder(Path(tmp))
@@ -343,7 +196,7 @@ class JournalCutThroughTheWholePassTests(unittest.TestCase):
         builder.citation = {
             "mode": CitationMode.TOPOLOGY_ONLY, "work_count": 1, "cites_count": 0,
             "work_columns": self.WORK_COLUMNS, "cites_columns": ["citing", "cited"],
-            "work": [["1", "k1", "T1", "\\N", "\\N"]], "cites": [],
+            "work": [["1", "k1", "external-skeleton", "T1", "\\N", "\\N"]], "cites": [],
             "crawl_step_columns": JOURNAL_COLUMNS, "crawl_step": journal_rows,
         }
         return builder

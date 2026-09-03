@@ -44,7 +44,7 @@ from __future__ import annotations
 from typing import IO, NamedTuple
 
 from citation_columns import CITATION_COLUMN_CLASS, blanked_value
-from copy_rows import RowCounter
+from copy_rows import CENSUS_COLUMN, CENSUS_TABLE, FieldTally, RowCounter
 from schema_catalog import (
     classified_tables,
     columns_of,
@@ -199,19 +199,23 @@ def plan_citation(env: dict, mode: str) -> CitationPlan:
     return CitationPlan(True, tuple(blocks))
 
 
-def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock) -> int:
+def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock,
+                     tally: FieldTally | None = None) -> int:
     """Writes one block and returns how many rows it wrote.
 
     Counted at the seam the rows pass through (copy_rows.RowCounter), not
     asked of the database beside it: the manifest's numbers and the file's
     COPY blocks have to be one fact, and two reads of a live instance are
-    two (see copy_rows.py).
+    two (see copy_rows.py). `tally` is the same seam asked for one column's
+    census instead of a total, and it is bound to THIS block's column list.
     """
     dst.write(f"COPY citation.{block.table} ({', '.join(block.columns)}) "
               "FROM stdin;\n".encode())
     argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
             "-c", block.statement]
-    counter = RowCounter(dst)
+    if tally is not None:
+        tally.start(block.columns)
+    counter = RowCounter(dst, tally)
     stream_stdout(argv, env, counter)
     dst.write(b"\\.\n")
     for column in block.serials:
@@ -228,10 +232,25 @@ def dump_ddl(env: dict, dst: IO[bytes]) -> None:
     )
 
 
-def dump_citation(env: dict, dst: IO[bytes], plan: CitationPlan) -> dict[str, int]:
+class CitationWritten(NamedTuple):
+    """What dump_citation() put in the file: the rows per table, and the
+    census of the one column the manifest describes by value rather than by
+    total (copy_rows.CENSUS_TABLE/CENSUS_COLUMN).
+    """
+
+    tables: dict[str, int]
+    work_by_kind: dict[str, int]
+
+
+def dump_citation(env: dict, dst: IO[bytes], plan: CitationPlan) -> CitationWritten:
     """Writes the citation schema's DDL + every table's COPY block, or
-    nothing at all under a plan that does not ship it, and returns
-    {table: rows} for what it wrote.
+    nothing at all under a plan that does not ship it, and returns what it
+    wrote: {table: rows} and the kind census.
+
+    The census comes off the same stream as the counts and for the same
+    reason (MANIFEST_DESCRIBES_ARTIFACT): read from the live database
+    beside the dump, it described whatever the instance held at that
+    moment, and the crawl writes ~100k journal rows per pass against it.
 
     Takes the PLAN rather than the mode: every question whose answer could
     be a refusal is plan_citation()'s, asked before the caller opened `dst`.
@@ -246,7 +265,11 @@ def dump_citation(env: dict, dst: IO[bytes], plan: CitationPlan) -> dict[str, in
     carrying them.
     """
     if not plan.ships:
-        return {}
+        return CitationWritten({}, {})
     dump_ddl(env, dst)
     dst.write(b"\n")
-    return {block.table: write_copy_block(env, dst, block) for block in plan.blocks}
+    census = FieldTally(CENSUS_COLUMN)
+    tables = {block.table: write_copy_block(
+        env, dst, block, census if block.table == CENSUS_TABLE else None)
+        for block in plan.blocks}
+    return CitationWritten(tables, dict(census.counts))

@@ -329,7 +329,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
     predicates themselves lives in test_citation_content_checks.py.
     """
 
-    WORK_COLUMNS = ["id", "key", "title", "abstract", "evidence"]
+    WORK_COLUMNS = ["id", "key", "kind", "title", "abstract", "evidence"]
     CITES_COLUMNS = ["citing", "cited", "evidence"]
 
     def _builder_with_citation(self, tmp, mode, work_rows, cites_rows):
@@ -369,7 +369,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             builder = self._builder_with_citation(
                 tmp, "full-skeleton",
-                work_rows=[["1", "k1", "T1", "an abstract", '{"src": "openalex"}']],
+                work_rows=[["1", "k1", "indexed", "T1", "an abstract", '{"src": "openalex"}']],
                 cites_rows=[],
             )
             results = _results(builder)
@@ -382,7 +382,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             builder = self._builder_with_citation(
                 tmp, "topology-only",
-                work_rows=[["1", "k1", "T1", "an abstract", "\\N"]],
+                work_rows=[["1", "k1", "indexed", "T1", "an abstract", "\\N"]],
                 cites_rows=[],
             )
             results = _results(builder)
@@ -394,7 +394,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             builder = self._builder_with_citation(
                 tmp, "topology-only",
-                work_rows=[["1", "k1", "T1", "\\N", "\\N"]],
+                work_rows=[["1", "k1", "indexed", "T1", "\\N", "\\N"]],
                 cites_rows=[["1", "2", "\\N"]],
             )
             results = _results(builder)
@@ -411,7 +411,7 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
             # own citation-writing path (which "none" never triggers) --
             # simulates a packager bug that shipped the table anyway.
             builder.extra_sql = _citation_copy_block(
-                "work", self.WORK_COLUMNS, [["1", "k1", "T1", "\\N", "\\N"]])
+                "work", self.WORK_COLUMNS, [["1", "k1", "indexed", "T1", "\\N", "\\N"]])
             results = _results(builder)
         ok, detail = results["citation: схема/счётчики совпадают с манифестом"]
         self.assertFalse(ok)

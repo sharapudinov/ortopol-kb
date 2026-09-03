@@ -317,7 +317,7 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
     past makes the equality structural (MANIFEST_DESCRIBES_ARTIFACT).
     """
 
-    COLUMNS = {"work": ["id", "key"], "crawl_step": ["id", "crawl_id"]}
+    COLUMNS = {"work": ["id", "key", "kind"], "crawl_step": ["id", "crawl_id"]}
 
     def _plan(self, mode=CitationMode.FULL_SKELETON, tables=("work", "crawl_step")):
         with mock.patch.object(citation_dump, "citation_tables", return_value=list(tables)), \
@@ -343,25 +343,68 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
                 "work", ["id"], (), "COPY ..."))
         self.assertEqual(rows, 0)
 
-    def test_the_dump_answers_with_every_block_s_own_count(self):
-        written = {"work": b"1\tk\n2\tk\n", "crawl_step": b"9\tc\n"}
+    def _written(self, work: bytes, journal: bytes = b"9\tc\n"):
+        rows = {"work": work, "crawl_step": journal}
 
         def fake_stream(argv, env, dst):
             if "pg_dump" in argv[0]:
                 dst.write(b"-- DDL\n")
                 return
             table = "crawl_step" if "FROM citation.crawl_step" in argv[-1] else "work"
-            dst.write(written[table])
+            dst.write(rows[table])
 
         with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
-            counts = citation_dump.dump_citation({}, io.BytesIO(), self._plan())
-        self.assertEqual(counts, {"work": 2, "crawl_step": 1})
+            return citation_dump.dump_citation({}, io.BytesIO(), self._plan())
+
+    def test_the_dump_answers_with_every_block_s_own_count(self):
+        written = self._written(b"1\tk\tour-document\n2\tk\texcluded\n")
+        self.assertEqual(written.tables, {"work": 2, "crawl_step": 1})
+
+    def test_the_kind_census_is_the_work_block_s_own_answer(self):
+        """The one manifest number that is not a total, off the same bytes
+        and at the same seam. Read from the live database beside the dump it
+        was the single citation number nothing on the artifact side held to
+        the file (MANIFEST_DESCRIBES_ARTIFACT).
+        """
+        written = self._written(
+            b"1\tk\tour-document\n2\tk\texcluded\n3\tk\tour-document\n")
+        self.assertEqual(written.work_by_kind, {"our-document": 2, "excluded": 1})
+        self.assertEqual(sum(written.work_by_kind.values()), written.tables["work"])
+
+    def test_a_row_whose_value_spans_two_writes_is_counted_once(self):
+        """psql's output arrives in chunks, not in rows: the tally carries a
+        partial line to the next write, which is what makes the count exact
+        rather than an estimate of it.
+        """
+        def fake_stream(argv, env, dst):
+            for chunk in (b"1\tk\tour-doc", b"ument\n2\tk\tour-document\n"):
+                dst.write(chunk)
+
+        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
+            written = citation_dump.dump_citation(
+                {}, io.BytesIO(), self._plan(tables=("work",)))
+        self.assertEqual(written.work_by_kind, {"our-document": 2})
+
+    def test_a_work_block_without_the_census_column_tallies_nothing(self):
+        """Fail-closed: a census that stayed empty equals no manifest census
+        a shipping mode can carry, so the recipient's gate refuses instead of
+        agreeing with a number nobody could check.
+        """
+        with mock.patch.object(citation_dump, "stream_stdout",
+                               side_effect=lambda argv, env, dst: dst.write(b"1\tk\n")), \
+             mock.patch.object(citation_dump, "schema_columns",
+                               return_value={"work": ["id", "key"]}), \
+             mock.patch.object(citation_dump, "citation_tables", return_value=["work"]), \
+             mock.patch.object(citation_dump, "schema_serial_columns", return_value={}):
+            plan = citation_dump.plan_citation({}, CitationMode.FULL_SKELETON)
+            written = citation_dump.dump_citation({}, io.BytesIO(), plan)
+        self.assertEqual((written.tables, written.work_by_kind), ({"work": 1}, {}))
 
     def test_a_plan_that_ships_nothing_counts_nothing(self):
         with mock.patch.object(citation_dump, "stream_stdout") as never:
-            self.assertEqual(
-                citation_dump.dump_citation(
-                    {}, io.BytesIO(), citation_dump.CitationPlan(False, ())), {})
+            written = citation_dump.dump_citation(
+                {}, io.BytesIO(), citation_dump.CitationPlan(False, ()))
+        self.assertEqual((written.tables, written.work_by_kind), ({}, {}))
         never.assert_not_called()
 
     def test_the_module_asks_the_database_for_no_count_at_all(self):

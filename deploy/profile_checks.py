@@ -70,9 +70,9 @@ contributing row visitors to that same pass:
                                and the hunt for content a mode was not
                                allowed to ship
   citation cut holds           citation_cut_checks.py (module size): the
-                               counts against the manifest, and the three
-                               checks that hold the citation cut to the
-                               DOCUMENT cut -- no work row names a document
+                               counts and the kind census against the
+                               manifest, and the three checks that hold the
+                               citation cut to the DOCUMENT cut -- no work row names a document
                                this dump does not carry, no edge names a
                                work it does not carry, and no journal row
                                names a document the artifact drops
@@ -240,6 +240,8 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
          *citation_cut_checks.check_work_documents_are_in_the_dump(manifest, facts)),
         ("citation.cites ссылается только на узлы этого пакета",
          *citation_cut_checks.check_edges_reference_shipped_works(manifest, facts)),
+        ("citation.work: перепись по kind совпадает с манифестом",
+         *citation_cut_checks.check_kind_census_matches_manifest(manifest, facts)),
         ("citation.crawl_step не называет вырезанных документов",
          *citation_cut_checks.check_journal_names_nothing_cut(manifest, facts)),
     ]

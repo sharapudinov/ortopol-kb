@@ -1,13 +1,13 @@
-"""Every manifest number that is a row count of the dump, stamped from the
+"""Every manifest number that is a fact about the dump, stamped from the
 dump.
 
 MANIFEST_DESCRIBES_ARTIFACT is what this module is: documents_count,
-pages_count, the citation block's table_rows and its two headline totals
-are all "how many rows does this package carry", and the only place that
-answer exists is the package. They were read from the live database instead
--- documents/pages before the dump was written, the citation counts from a
-cut-aware query beside the plan, the full profile's from a fresh read after
-pg_dump finished -- while the recipient's bundled gate demands exact
+pages_count, the citation block's table_rows, its two headline totals and
+its kind census are all "what rows does this package carry", and the only
+place that answer exists is the package. They were read from the live database instead
+-- documents/pages before the dump was written, the citation counts and
+the kind census from cut-aware queries beside the plan, the full profile's
+from a fresh read after pg_dump finished -- while the recipient's bundled gate demands exact
 equality with the COPY blocks the file turns out to contain. Every one of
 those reads is its own psql process, hence its own connection and its own
 implicit transaction; nothing tied them to the dump or to each other, and
@@ -46,9 +46,16 @@ def stamp_dumped_rows(manifest: dict, rows) -> dict:
     A table the dump did not carry stamps 0: the keys are in every
     manifest, and the recipient's gate refuses an empty table_rows under a
     shipping mode rather than reading it as silence.
+
+    work_by_kind is stamped here too, from the same writing: `kind` is a
+    TOPOLOGY column and ships under every mode that ships the schema, so
+    the census is a fact the COPY stream carries
+    (copy_rows.FieldTally) and citation_cut_checks.
+    check_kind_census_matches_manifest holds the dumped rows to it.
     """
     block = manifest[Key.CITATION]
     block[Key.TABLE_ROWS] = dict(rows.citation)
+    block[Key.WORK_BY_KIND] = dict(rows.work_by_kind)
     for key, table in CITATION_COUNTS.items():
         block[key] = rows.citation.get(table, 0)
     for key, table in CORPUS_COUNTS.items():

@@ -195,8 +195,9 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> DumpedRows:
                 for table in tables
             }
             dst.write(b"\n")
-            citation_rows = citation_dump.dump_citation(env, dst, citation_plan)
+            citation = citation_dump.dump_citation(env, dst, citation_plan)
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc
-    return DumpedRows(corpus=corpus_rows, citation=citation_rows)
+    return DumpedRows(corpus=corpus_rows, citation=citation.tables,
+                      work_by_kind=citation.work_by_kind)
