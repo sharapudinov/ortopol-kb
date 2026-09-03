@@ -13,6 +13,7 @@ from pathlib import Path
 
 from citation_columns import CENSUS_COLUMN, CENSUS_TABLE
 from block_census import BlockCensus, FieldTally
+from classification_gate import require_classified_schemas
 from copy_rows import CITATION_SCHEMA, CopyBlockCounter, DumpedRows
 from dump_integrity import sha256_file
 from manifest_contract import Profile, schemas_for
@@ -190,8 +191,19 @@ def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> DumpedRows:
     are dispatched from build_package.py by --profile, and both stream
     through pg_stream.stream_stdout (see that module on why stderr must be
     drained concurrently).
+
+    Refuses, BEFORE the file is opened, while any table or column of a
+    classified schema is outside its map (classification_gate.py). This
+    profile applies no cut and ships whatever the schemas hold, so the gate
+    decides nothing about the contents -- but the checker bundled INTO the
+    artifact holds every COPY block of schemas corpus and citation to that
+    same map whatever the profile, so without the gate a new column built
+    cleanly, reported success, and failed the package's own certification
+    afterwards.
     """
-    schema_args = [f"--schema={name}" for name in schemas_for(Profile.FULL, citation_mode)]
+    schemas = schemas_for(Profile.FULL, citation_mode)
+    require_classified_schemas(env, schemas)
+    schema_args = [f"--schema={name}" for name in schemas]
     blocks: dict[str, int] = {}
     census = FieldTally(CENSUS_COLUMN)
     try:

@@ -27,11 +27,15 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import artifact_bundle
+import classification_gate
 import copy_rows
 import dump_scan
 from _artifact_fixtures import citation_copy_block, citation_scan
 from citation_columns import CENSUS_COLUMN, CENSUS_TABLE
 from citation_vocab import WorkKind
+from column_class_checks import CLASSIFIED_SCHEMAS
+from column_classes import ColumnUnclassified
+from schema_catalog import TableUnclassified
 from copy_rows import DumpedRows
 from manifest_contract import CitationMode, Profile, schemas_for
 
@@ -56,6 +60,15 @@ class DumpSchemasTests(unittest.TestCase):
     carrying real COPY blocks is the whole input the count needs -- there is
     no second database read left to stub.
     """
+
+    def setUp(self):
+        """The classification gate reads the live catalog before pg_dump is
+        spawned, and pg_dump is the only child these tests have. It has its
+        own class below; here it stands aside.
+        """
+        patch = mock.patch.object(artifact_bundle, "require_classified_schemas")
+        patch.start()
+        self.addCleanup(patch.stop)
 
     # A miniature pg_dump output: two COPY blocks, one per schema the
     # manifest is stamped from, plus a table of neither.
@@ -251,6 +264,15 @@ class KindCensusTests(unittest.TestCase):
     is kept only until the column list shifts.
     """
 
+    def setUp(self):
+        """The classification gate reads the live catalog before pg_dump is
+        spawned, and pg_dump is the only child these tests have. It has its
+        own class below; here it stands aside.
+        """
+        patch = mock.patch.object(artifact_bundle, "require_classified_schemas")
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def _dumped(self, payload: str, mode: str = CitationMode.FULL_SKELETON):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "dump.sql.gz"
@@ -342,6 +364,103 @@ class KindCensusTests(unittest.TestCase):
             + self._work_block(["id", CENSUS_COLUMN],
                                [["1", WorkKind.OUR_DOCUMENT]]))
         self.assertEqual(carried.work_by_kind, {WorkKind.OUR_DOCUMENT: 1})
+
+
+class ClassificationGateTests(unittest.TestCase):
+    """The full profile refuses an unclassified table or column too.
+
+    It applies no cut and ships whatever the schemas hold, so the verdict
+    changes nothing about the contents -- but the checker bundled INTO the
+    artifact holds every COPY block of schemas corpus and citation to the
+    same maps whatever profile wrote them
+    (column_class_checks.check_columns_are_classified takes no profile).
+    Without a gate here, a table or column added to either schema built
+    cleanly, reported success, and failed the finished package's own
+    certification: the failure MANIFEST_DESCRIBES_ARTIFACT names, on the
+    profile that skipped the producer-side half.
+
+    The catalog is a mock: what is under test is which questions are asked
+    of it and what the answers are held to.
+    """
+
+    CATALOG = {
+        "corpus": {"documents": ["id", "source_blob"],
+                   "pages": ["document_id", "body"],
+                   "embedding_model": ["id", "model"]},
+        "citation": {CENSUS_TABLE: ["id", CENSUS_COLUMN], "cites": ["citing", "cited"]},
+    }
+
+    def _gate(self, catalog: dict) -> None:
+        with mock.patch.object(classification_gate, "present_tables",
+                                side_effect=lambda _env, schema: list(catalog[schema])), \
+             mock.patch.object(classification_gate, "schema_columns",
+                                side_effect=lambda _env, schema: dict(catalog[schema])):
+            classification_gate.require_classified_schemas(
+                {}, ["corpus", "citation", "measurements"])
+
+    def test_a_catalog_the_maps_know_passes(self):
+        self._gate(self.CATALOG)
+
+    def test_a_table_outside_the_map_is_refused(self):
+        catalog = {schema: dict(tables) for schema, tables in self.CATALOG.items()}
+        catalog["citation"]["annotations"] = ["id"]
+        with self.assertRaises(TableUnclassified) as caught:
+            self._gate(catalog)
+        self.assertIn("citation.annotations", str(caught.exception))
+
+    def test_a_column_outside_the_map_is_refused(self):
+        catalog = {schema: dict(tables) for schema, tables in self.CATALOG.items()}
+        catalog["corpus"]["documents"] = ["id", "source_blob", "annotation"]
+        with self.assertRaises(ColumnUnclassified) as caught:
+            self._gate(catalog)
+        self.assertIn("corpus.documents.annotation", str(caught.exception))
+
+    def test_an_unclassified_schema_is_not_this_gates_business(self):
+        """measurements travels in the full artifact and no map names it --
+        the same schemas the bundled checker passes over, and for the same
+        reason. Asked about it at all, the gate would refuse every correct
+        build of this profile.
+        """
+        self.assertNotIn("measurements", CLASSIFIED_SCHEMAS)
+        with mock.patch.object(classification_gate, "present_tables") as tables_mock, \
+             mock.patch.object(classification_gate, "schema_columns", return_value={}):
+            classification_gate.require_classified_schemas({}, ["measurements"])
+        tables_mock.assert_not_called()
+
+    def test_the_gate_and_the_bundled_checker_read_one_declaration(self):
+        self.assertIs(classification_gate.CLASSIFIED_SCHEMAS, CLASSIFIED_SCHEMAS)
+
+    def test_the_dump_refuses_before_pg_dump_is_spawned(self):
+        """The refusal costs nothing and leaves nothing: no child, no file.
+        A full dump embeds every source PDF as hex, so finding out after the
+        stream is minutes of work and a partial artifact on disk.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            gz_path = Path(tmp) / "dump.sql.gz"
+            with mock.patch.object(artifact_bundle, "require_classified_schemas",
+                                    side_effect=ColumnUnclassified("corpus.pages.note")), \
+                 mock.patch.object(artifact_bundle.subprocess, "Popen") as popen_mock:
+                with self.assertRaises(ColumnUnclassified):
+                    artifact_bundle.dump_schemas({}, gz_path, CitationMode.FULL_SKELETON)
+            popen_mock.assert_not_called()
+            self.assertFalse(gz_path.exists())
+
+    def test_the_gate_is_asked_about_exactly_the_schemas_dumped(self):
+        """One list: what pg_dump is asked for and what the classification
+        is held to are the same schemas_for() answer, so a mode that adds a
+        schema cannot add it past the gate.
+        """
+        for mode in CitationMode.ALL:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                gz_path = Path(tmp) / "dump.sql.gz"
+                with mock.patch.object(artifact_bundle, "require_classified_schemas") as gate, \
+                     mock.patch.object(artifact_bundle.subprocess, "Popen",
+                                        return_value=FakeProc(b"-- fake\n")) as popen_mock:
+                    artifact_bundle.dump_schemas({}, gz_path, citation_mode=mode)
+                (argv,), _kwargs = popen_mock.call_args
+                asked = [a.split("=", 1)[1] for a in argv if a.startswith("--schema=")]
+                (_env, gated), _kwargs = gate.call_args
+                self.assertEqual(list(gated), asked)
 
 
 if __name__ == "__main__":
