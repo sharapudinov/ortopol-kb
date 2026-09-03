@@ -1,5 +1,6 @@
-"""Unit tests for deploy/dump_scan.py and deploy/profile_checks.py -- the
-static half of artifact verification: no Docker, no Postgres, no network.
+"""Unit tests for deploy/profile_checks.py -- the static half of artifact
+verification: no Docker, no Postgres, no network. The dump READER those
+checks run on has its own module next door (test_dump_scan.py).
 
 Every case builds a real gzipped dump (COPY blocks in Postgres' text format)
 plus a real manifest.json in a temp directory, then asks the checks about it.
@@ -12,7 +13,6 @@ has to notice.
 """
 from __future__ import annotations
 
-import gzip
 import json
 import tempfile
 import unittest
@@ -31,7 +31,6 @@ from manifest_keys import Key
 from manifest_contract import CitationMode, PolicySource, Profile
 from _artifact_fixtures import (
     ArtifactBuilder,
-    DOCUMENT_COLUMNS,
     EXCLUDED_DOC,
     FULL_DOC,
     INTERNAL_DOC,
@@ -45,67 +44,6 @@ from _artifact_fixtures import (
 def _results(builder: ArtifactBuilder) -> dict[str, tuple[bool, str]]:
     directory = builder.write()
     return {name: (ok, detail) for name, ok, detail in profile_checks.run_checks(directory)}
-
-
-class DumpScanTests(unittest.TestCase):
-    def test_counts_rows_and_names_the_columns_of_each_block(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = ArtifactBuilder(Path(tmp)).write()
-            contents = dump_scan.scan(directory / "01_dump.sql.gz")
-        scans = contents.tables
-        documents = scans["corpus.documents"]
-        self.assertEqual(documents.rows, 3)
-        self.assertEqual(documents.columns, DOCUMENT_COLUMNS)
-        self.assertEqual(scans["corpus.pages"].rows, 4)
-
-    def test_a_visitor_is_how_a_caller_asks_what_a_column_held(self):
-        """Per-column emptiness is a question the ROW VISITORS answer, and
-        the only mechanism that answers it: the scan itself keeps no tally
-        of its own, so a block nobody registered a visitor for costs one
-        line split and nothing else.
-        """
-        empty = {"corpus.documents": 0, "corpus.pages": 0}
-
-        def counter(table: str, column: str):
-            def visit(row: dict) -> None:
-                if row[column] in (dump_scan.NULL_FIELD, ""):
-                    empty[table] += 1
-            return visit
-
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = ArtifactBuilder(Path(tmp)).write()
-            dump_scan.scan(directory / "01_dump.sql.gz", {
-                "corpus.documents": counter("corpus.documents", "source_blob"),
-                "corpus.pages": counter("corpus.pages", "body"),
-            })
-        self.assertEqual(empty["corpus.documents"], 1)  # the metadata-only one
-        self.assertEqual(empty["corpus.pages"], 2)
-
-    def test_schema_names_sees_ddl_and_copy_statements(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            builder = ArtifactBuilder(Path(tmp))
-            builder.extra_sql = "CREATE TABLE measurements.run (id integer);\n"
-            directory = builder.write()
-            self.assertEqual(
-                dump_scan.schema_names(directory / "01_dump.sql.gz"), {"corpus", "measurements"},
-            )
-
-    def test_row_with_the_wrong_field_count_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            builder = ArtifactBuilder(Path(tmp))
-            builder.documents.append([FULL_DOC, "only-two-fields"])
-            directory = builder.write()
-            with self.assertRaises(ValueError):
-                dump_scan.scan(directory / "01_dump.sql.gz")
-
-    def test_truncated_copy_block_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dump_path = Path(tmp) / "cut.sql.gz"
-            with gzip.open(dump_path, "wt", encoding="utf-8") as f:
-                f.write("COPY corpus.pages (document_id) FROM stdin;\n2009_isu34\n")
-            with self.assertRaises(ValueError) as ctx:
-                dump_scan.scan(dump_path)
-        self.assertIn("truncated", str(ctx.exception))
 
 
 class OnePassTests(unittest.TestCase):
@@ -200,6 +138,41 @@ class PublicProfileChecksTests(unittest.TestCase):
         ok, detail = results[name]
         self.assertFalse(ok)
         self.assertIn("measurements", detail)
+
+    def test_a_manifest_may_not_declare_a_schema_the_rule_forbids(self):
+        """The dump and the declaration agree with each other and with
+        nothing else -- one build's decision wrote both.
+
+        A public artifact carries schema corpus alone; here it carries
+        measurements as well and says so honestly, which is exactly the
+        shape a comparison of the dump against the manifest's own claim
+        certifies. The rule the producer resolved by is re-derived on this
+        side instead (manifest_contract.schemas_for).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.schemas = ["corpus", "measurements"]
+            builder.extra_sql = "CREATE SCHEMA measurements;\n"
+            results = _results(builder)
+        name = next(n for n in results if n.startswith("профиль"))
+        ok, detail = results[name]
+        self.assertFalse(ok, detail)
+        self.assertIn("measurements", detail)
+
+    def test_a_citation_mode_outside_the_vocabulary_is_a_row_not_a_raise(self):
+        """The rule cannot be derived from a mode this reader does not
+        know, and the pass still has to report that as a red line: a
+        traceback out of run_checks() leaves a caller that extends its own
+        list (smoke_test.py) with no results at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = ArtifactBuilder(Path(tmp))
+            builder.citation = {"mode": "half-skeleton", "work_count": 0, "cites_count": 0}
+            results = _results(builder)
+        name = next(n for n in results if n.startswith("профиль"))
+        ok, detail = results[name]
+        self.assertFalse(ok, detail)
+        self.assertIn("half-skeleton", detail)
 
     def test_tsv_in_the_page_copy_columns_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -334,6 +307,10 @@ class CitationContentChecksIntegrationTests(unittest.TestCase):
 
     def _builder_with_citation(self, tmp, mode, work_rows, cites_rows):
         builder = ArtifactBuilder(Path(tmp))
+        # Every mode this helper is called with ships the schema, so the
+        # artifact declares it: manifest.schemas is held to the rule now,
+        # not merely to the dump.
+        builder.schemas = ["corpus", "citation"]
         builder.citation = {
             "mode": mode, "work_count": len(work_rows), "cites_count": len(cites_rows),
             "work_columns": self.WORK_COLUMNS, "cites_columns": self.CITES_COLUMNS,

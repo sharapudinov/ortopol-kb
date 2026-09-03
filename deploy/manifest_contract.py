@@ -24,11 +24,11 @@ the same external fact by different routes, and pg_dump tolerates a
 produced a manifest describing a schema set its own dump lacks, which is
 what MANIFEST_DESCRIBES_ARTIFACT exists to forbid.
 
-Beyond schemas_for(), base_schemas_for(), ships_citation() and
-strips_content() -- each of
+Beyond schemas_for(), base_schemas_for(), required_schemas(),
+ships_citation() and strips_content() -- each of
 them a question two sides of the build would otherwise answer independently
--- this module holds no logic, and imports only citation_vocab (which
-imports nothing at all):
+-- this module holds no logic, and imports only citation_vocab and
+manifest_keys, neither of which imports anything at all:
 the citation mode is a DB column's closed vocabulary, and
 VOCABULARY_ONE_DECLARATION puts every such vocabulary in that one root
 module. Importers still pull nothing along.
@@ -40,6 +40,7 @@ from deploy_pathfix import ensure_corpus_importable
 ensure_corpus_importable()
 
 from citation_vocab import PublicPolicyMode  # noqa: E402
+from manifest_keys import Key  # noqa: E402
 
 
 class Profile:
@@ -224,3 +225,29 @@ def schemas_for(profile: str, citation_mode: str) -> list[str]:
     if ships_citation(citation_mode):
         schemas.append("citation")
     return schemas
+
+
+def required_schemas(manifest: dict) -> tuple[frozenset[str] | None, str]:
+    """schemas_for() asked of a MANIFEST's own two fields, as a verdict
+    instead of an exception -- what the artifact side needs to re-derive
+    the rule rather than trust the list a builder wrote down.
+
+    manifest.json is not signed and the verifiers travel inside the package
+    (ARTIFACT_SIDE_FAILS_CLOSED), so "which schemas does this profile ship"
+    has to be ANSWERED on the recipient's side, not read there. Every
+    producer already goes through schemas_for(); a verifier comparing the
+    dump with manifest.schemas alone compares a builder's claim with the
+    same builder's bytes, and a build that got the rule wrong agrees with
+    itself perfectly.
+
+    None (with the reason) rather than a raise, because both readers of
+    this answer are checks that must return a row: an unknown profile or
+    mode has to arrive as a red line, not as a traceback out of a pass that
+    then reports nothing at all.
+    """
+    citation = manifest.get(Key.CITATION)
+    mode = citation.get(Key.CITATION_MODE) if isinstance(citation, dict) else None
+    try:
+        return frozenset(schemas_for(manifest.get(Key.PROFILE), mode)), ""
+    except ValueError as exc:
+        return None, str(exc)

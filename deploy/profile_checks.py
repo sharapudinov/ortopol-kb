@@ -13,10 +13,14 @@ This module owns the single streaming pass over the dump and the ORDER the
 checks run in; the checks themselves live one module per subject, each
 contributing row visitors to that same pass:
 
-  profile/manifest agreement   here: the declared profile's schemas are the
-                               ones the dump actually contains (public: no
+  profile/manifest agreement   here: the schemas the profile+mode rule
+                               requires (manifest_contract.schemas_for) are
+                               the ones the manifest declares AND the ones
+                               the dump actually contains (public: no
                                measurements schema at all, not merely no
-                               measurements rows) -- read off the same pass,
+                               measurements rows) -- three-way, since the
+                               dump and the declaration are both the
+                               producer's word; read off the same pass,
                                since the schema names and the COPY headers
                                are the same lines
   manifest version matches     here: manifest.schema_version is the version
@@ -99,11 +103,24 @@ import corpus_content_checks
 import dump_scan
 import sequence_checks
 from manifest_classes import check_legal_vocabulary_is_known, check_profile_is_known
+from manifest_contract import required_schemas
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
 
 
 def check_schemas(contents: dump_scan.DumpContents, manifest: dict) -> tuple[bool, str]:
-    """The schemas the dump names are exactly the ones the manifest declares.
+    """The schemas the dump names, the ones the manifest declares and the
+    ones the profile+mode RULE requires are one and the same set.
+
+    Three-way, because two of them are the same side: manifest.json is not
+    signed and this module travels inside the artifact precisely so a
+    recipient can certify it without trusting the producer
+    (ARTIFACT_SIDE_FAILS_CLOSED). Compared with the declaration alone, a
+    build that resolved "which schemas does this profile ship" wrongly
+    agrees with itself -- its dump carries what its manifest says because
+    one decision wrote both -- and the recipient certifies the mistake. The
+    rule itself is manifest_contract.schemas_for(), the same authority the
+    dumpers and the manifest are written by, re-derived here from the two
+    manifest fields the gates above have already validated the shape of.
 
     Read off the pass _visit() already made, not off a pass of its own: the
     schema names and the COPY headers are the same lines, and the full
@@ -112,8 +129,13 @@ def check_schemas(contents: dump_scan.DumpContents, manifest: dict) -> tuple[boo
     """
     declared = set(manifest.get(Key.SCHEMAS, []))
     present = contents.schemas
-    ok = present == declared
-    return ok, f"dump carries {sorted(present)}, manifest declares {sorted(declared)}"
+    required, problem = required_schemas(manifest)
+    if required is None:
+        return False, (f"по манифесту нельзя вывести состав схем: {problem}; "
+                       f"дамп несёт {sorted(present)}, манифест объявляет {sorted(declared)}")
+    ok = present == declared == set(required)
+    return ok, (f"dump carries {sorted(present)}, manifest declares {sorted(declared)}, "
+                f"profile+mode rule requires {sorted(required)}")
 
 
 class DumpFacts(NamedTuple):
