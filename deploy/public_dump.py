@@ -250,6 +250,14 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
     # per-table read costs a psql process each time round the loop.
     columns = schema_catalog.schema_columns(env, SCHEMA)
     serials = schema_catalog.schema_serial_columns(env, SCHEMA)
+    # The citation half is resolved here too, BEFORE the file is opened.
+    # Its refusals -- TableUnclassified, ColumnUnclassified -- are neither
+    # CommandFailed, so asked from inside the gzip context they went past
+    # the handler below and left a truncated dump on disk, after the whole
+    # corpus DDL and every corpus COPY block had already been written. The
+    # promise in this docstring is that nothing is written at all, and a
+    # refusal keeps that promise only while it is still cheap.
+    citation_plan = citation_dump.plan_citation(env, citation_mode)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             dst.write(PREAMBLE.encode())
@@ -260,7 +268,7 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
                     columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ())),
                     serials=serials.get(table, ()))
             dst.write(b"\n")
-            citation_dump.dump_citation(env, dst, citation_mode)
+            citation_dump.dump_citation(env, dst, citation_plan)
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc

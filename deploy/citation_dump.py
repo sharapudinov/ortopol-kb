@@ -41,7 +41,7 @@ its sequence left at 1.
 """
 from __future__ import annotations
 
-from typing import IO
+from typing import IO, NamedTuple
 
 from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
 from schema_catalog import (
@@ -150,15 +150,63 @@ def copy_select(table: str, columns: list[str], mode: str) -> str:
     return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
-def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
-                     mode: str, serials=()) -> None:
-    dst.write(f"COPY citation.{table} ({', '.join(columns)}) FROM stdin;\n".encode())
+class CopyBlock(NamedTuple):
+    """One table's COPY block, fully resolved: no classification question is
+    left to ask while the file is open."""
+
+    table: str
+    columns: list[str]
+    serials: tuple[str, ...]
+    statement: str
+
+
+class CitationPlan(NamedTuple):
+    """What this schema contributes to a dump, decided before it is opened.
+
+    `ships` is manifest_contract.ships_citation() over the build's mode, and
+    it is part of the plan rather than re-asked at write time: a schema that
+    does not travel has no blocks AND no DDL, and those are one decision.
+    """
+
+    ships: bool
+    blocks: tuple[CopyBlock, ...]
+
+
+def plan_citation(env: dict, mode: str) -> CitationPlan:
+    """Every catalog and classification question the citation dump asks,
+    answered up front.
+
+    Resolved BEFORE the caller opens its output, because the answers can be
+    a refusal: an unclassified table raises TableUnclassified
+    (schema_catalog) and an unclassified column ColumnUnclassified
+    (citation_columns), and this schema is written LAST, after the whole
+    corpus DDL and every corpus COPY block. Asked from inside the open file,
+    those refusals fired past public_dump.py's `except CommandFailed` -- a
+    different class entirely -- and left a truncated 01_dump.sql.gz on disk
+    under a module whose docstring promises it "refuses to write anything at
+    all".
+    """
+    if not ships_citation(mode):
+        return CitationPlan(False, ())
+    columns = schema_columns(env, SCHEMA)
+    serials = schema_serial_columns(env, SCHEMA)
+    blocks = []
+    for table in citation_tables(env):
+        table_columns = columns_of(columns, table, SCHEMA)
+        blocks.append(CopyBlock(table, table_columns, tuple(serials.get(table, ())),
+                                copy_select(table, table_columns, mode)))
+    return CitationPlan(True, tuple(blocks))
+
+
+def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock) -> None:
+    dst.write(f"COPY citation.{block.table} ({', '.join(block.columns)}) "
+              "FROM stdin;\n".encode())
     argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
-            "-c", copy_select(table, columns, mode)]
+            "-c", block.statement]
     stream_stdout(argv, env, dst)
     dst.write(b"\\.\n")
-    for column in serials:
-        dst.write(setval_sql(SCHEMA, table, column))
+    for column in block.serials:
+        dst.write(setval_sql(SCHEMA, block.table, column))
     dst.write(b"\n")
 
 
@@ -170,13 +218,15 @@ def dump_ddl(env: dict, dst: IO[bytes]) -> None:
     )
 
 
-def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
-    """Writes the citation schema's DDL + every table's COPY block for
-    `mode`, or writes nothing at all under a mode that does not ship it.
+def dump_citation(env: dict, dst: IO[bytes], plan: CitationPlan) -> None:
+    """Writes the citation schema's DDL + every table's COPY block, or
+    nothing at all under a plan that does not ship it.
 
-    The predicate is manifest_contract.ships_citation(), the same one
-    schemas_for() reads to decide whether manifest.json declares the schema
-    -- one authority, so the bytes and their description cannot disagree.
+    Takes the PLAN rather than the mode: every question whose answer could
+    be a refusal is plan_citation()'s, asked before the caller opened `dst`.
+    Whether the schema ships is manifest_contract.ships_citation(), the same
+    predicate schemas_for() reads to decide whether manifest.json declares
+    it -- one authority, so the bytes and their description cannot disagree.
     Keyed on `== NONE` it was a denylist beside an allowlist:
     CitationMode.ALL grows with the database's own vocabulary (it is
     inherited, deliberately), SHIPPED is hand-written, and a fourth mode
@@ -184,16 +234,9 @@ def dump_citation(env: dict, dst: IO[bytes], mode: str) -> None:
     anyway -- third-party titles in a package whose manifest denies
     carrying them.
     """
-    if not ships_citation(mode):
+    if not plan.ships:
         return
     dump_ddl(env, dst)
     dst.write(b"\n")
-    # Both catalog questions are asked ONCE, for the whole schema, before
-    # the loop: pg_attribute answers them for every table in one read, and
-    # asking per table cost a psql process, a temp script and a connection
-    # per table per question on top of the (necessary) one process per COPY.
-    columns = schema_columns(env, SCHEMA)
-    serials = schema_serial_columns(env, SCHEMA)
-    for table in citation_tables(env):
-        write_copy_block(env, dst, table, columns_of(columns, table, SCHEMA), mode,
-                         serials=serials.get(table, ()))
+    for block in plan.blocks:
+        write_copy_block(env, dst, block)

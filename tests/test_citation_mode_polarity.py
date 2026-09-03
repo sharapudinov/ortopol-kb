@@ -146,7 +146,8 @@ class NoSiteDecidesByNoneTests(unittest.TestCase):
                 self.written.append(chunk)
 
         sink = _Sink()
-        citation_dump.dump_citation({}, sink, "graph-only")
+        citation_dump.dump_citation(
+            {}, sink, citation_dump.plan_citation({}, "graph-only"))
         self.assertEqual(sink.written, [])
 
 

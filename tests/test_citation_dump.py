@@ -144,8 +144,10 @@ class WriteCopyBlockTests(unittest.TestCase):
             dst.write(b"1\tk1\n")
 
         with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
-            citation_dump.write_copy_block({}, buffer, "work", ["id", "key"],
-                                            CitationMode.FULL_SKELETON, serials=["id"])
+            citation_dump.write_copy_block({}, buffer, citation_dump.CopyBlock(
+                "work", ["id", "key"], ("id",),
+                citation_dump.copy_select("work", ["id", "key"],
+                                          CitationMode.FULL_SKELETON)))
         text = buffer.getvalue().decode()
         self.assertIn("COPY citation.work (id, key) FROM stdin;\n1\tk1\n\\.\n", text)
         self.assertIn("setval(pg_get_serial_sequence", text)
@@ -157,8 +159,10 @@ class WriteCopyBlockTests(unittest.TestCase):
             dst.write(b"1\t2\tmanual\n")
 
         with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
-            citation_dump.write_copy_block({}, buffer, "cites", ["citing", "cited", "source"],
-                                            CitationMode.FULL_SKELETON)
+            columns = ["citing", "cited", "source"]
+            citation_dump.write_copy_block({}, buffer, citation_dump.CopyBlock(
+                "cites", columns, (),
+                citation_dump.copy_select("cites", columns, CitationMode.FULL_SKELETON)))
         self.assertNotIn("setval", buffer.getvalue().decode())
 
 
@@ -174,12 +178,49 @@ class DumpCitationTests(unittest.TestCase):
     def _fake_stream(self, argv, env, dst):
         dst.write(b"-- DDL\n" if "pg_dump" in argv[0] else b"row\n")
 
+    def _plan(self, mode):
+        """plan_citation() over DUMPED_TABLES, with the catalog mocked."""
+        with mock.patch.object(citation_dump, "citation_tables",
+                               return_value=list(DUMPED_TABLES)), \
+             mock.patch.object(citation_dump, "schema_columns",
+                               return_value=dict(self.COLUMNS)), \
+             mock.patch.object(citation_dump, "schema_serial_columns",
+                               return_value={"work": ["id"]}):
+            return citation_dump.plan_citation({}, mode)
+
     def test_none_mode_writes_nothing(self):
         buffer = io.BytesIO()
         with mock.patch.object(citation_dump, "stream_stdout") as stream_mock:
-            citation_dump.dump_citation({}, buffer, CitationMode.NONE)
+            citation_dump.dump_citation({}, buffer,
+                                        citation_dump.plan_citation({}, CitationMode.NONE))
         stream_mock.assert_not_called()
         self.assertEqual(buffer.getvalue(), b"")
+
+    def test_a_non_shipping_mode_asks_the_catalog_nothing_at_all(self):
+        """The plan for a schema that does not travel costs no round trip:
+        the refusal is the whole answer, and a catalog read would be a
+        question about a schema this build has no business describing.
+        """
+        with mock.patch.object(citation_dump, "schema_columns") as columns_mock, \
+             mock.patch.object(citation_dump, "citation_tables") as tables_mock:
+            plan = citation_dump.plan_citation({}, CitationMode.NONE)
+        self.assertFalse(plan.ships)
+        self.assertEqual(plan.blocks, ())
+        columns_mock.assert_not_called()
+        tables_mock.assert_not_called()
+
+    def test_the_plan_resolves_every_statement_before_a_byte_is_written(self):
+        """What public_dump.py relies on: an unclassified table or column
+        raises from plan_citation(), i.e. before the gzip file exists, not
+        from inside the loop that writes into it.
+        """
+        plan = self._plan(CitationMode.FULL_SKELETON)
+        self.assertTrue(plan.ships)
+        self.assertEqual([block.table for block in plan.blocks], list(DUMPED_TABLES))
+        for block in plan.blocks:
+            with self.subTest(table=block.table):
+                self.assertIn(f"FROM citation.{block.table}", block.statement)
+        self.assertEqual(plan.blocks[0].serials, ("id",))
 
     def test_the_dump_and_the_manifest_agree_on_every_mode(self):
         """One predicate on both sides of "does this schema travel".
@@ -202,7 +243,8 @@ class DumpCitationTests(unittest.TestCase):
                                         return_value={}), \
                      mock.patch.object(citation_dump, "stream_stdout",
                                         side_effect=self._fake_stream):
-                    citation_dump.dump_citation({}, buffer, mode)
+                    citation_dump.dump_citation({}, buffer,
+                                                citation_dump.plan_citation({}, mode))
                 self.assertEqual(bool(buffer.getvalue()), declared,
                                  f"режим {mode!r}: дамп и манифест разошлись")
 
@@ -212,7 +254,8 @@ class DumpCitationTests(unittest.TestCase):
         """
         buffer = io.BytesIO()
         with mock.patch.object(citation_dump, "stream_stdout") as stream_mock:
-            citation_dump.dump_citation({}, buffer, "graph-only")
+            citation_dump.dump_citation({}, buffer,
+                                        citation_dump.plan_citation({}, "graph-only"))
         stream_mock.assert_not_called()
         self.assertEqual(buffer.getvalue(), b"")
 
@@ -225,7 +268,8 @@ class DumpCitationTests(unittest.TestCase):
              mock.patch.object(citation_dump, "schema_serial_columns",
                                 return_value={"work": ["id"]}) as serials_mock, \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
-            citation_dump.dump_citation({}, buffer, CitationMode.FULL_SKELETON)
+            citation_dump.dump_citation(
+                {}, buffer, citation_dump.plan_citation({}, CitationMode.FULL_SKELETON))
         return columns_mock, serials_mock
 
     def test_shipping_mode_writes_ddl_then_every_table(self):
