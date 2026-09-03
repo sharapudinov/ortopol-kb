@@ -19,6 +19,7 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 
+import pg_graph
 import pg_graph_common
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
@@ -277,7 +278,7 @@ class ProjectionReadTests(unittest.TestCase):
         stderr = io.StringIO()
         with mock.patch.object(pg_graph_common, "projection_diff", return_value=stale), \
              contextlib.redirect_stderr(stderr):
-            self.assertEqual(pg_graph_common.check({}), 1)
+            self.assertEqual(pg_graph.check({}), 1)
         self.assertIn("content fingerprint differs", stderr.getvalue())
 
     def test_citation_checks_renders_the_same_fault(self):
@@ -327,7 +328,7 @@ class ContentFingerprintLiveTests(unittest.TestCase):
     def _check(self) -> tuple[int, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = pg_graph_common.check(self.env)
+            code = pg_graph.check(self.env)
         return code, stdout.getvalue() + stderr.getvalue()
 
     def test_a_retitled_row_without_reprojection_is_stale(self):

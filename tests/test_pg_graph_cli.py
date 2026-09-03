@@ -51,7 +51,7 @@ class SchemaAndProjectionTests(unittest.TestCase):
         with mock.patch.object(pg_graph, "load_pgenv", return_value=ENV), \
              mock.patch.object(pg_graph.pg_graph_common, "project",
                                return_value=(441, 2427)) as project, \
-             mock.patch.object(pg_graph.pg_graph_common, "check") as check, \
+             mock.patch.object(pg_graph, "check") as check, \
              redirect_stdout(io.StringIO()) as out:
             code = pg_graph.main([*PGENV, "project"])
         self.assertEqual(code, 0)
@@ -65,7 +65,7 @@ class SchemaAndProjectionTests(unittest.TestCase):
         """
         with mock.patch.object(pg_graph, "load_pgenv", return_value=ENV), \
              mock.patch.object(pg_graph.pg_graph_common, "project") as project, \
-             mock.patch.object(pg_graph.pg_graph_common, "check", return_value=1) as check:
+             mock.patch.object(pg_graph, "check", return_value=1) as check:
             code = pg_graph.main([*PGENV, "project", "--check"])
         self.assertEqual(code, 1)
         check.assert_called_once_with(ENV)

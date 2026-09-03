@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """CLI over the citation AGE graph (schema pg_schema_citation.sql).
 
-Argument parsing, dispatch and table printing, and nothing else: the psql/
+Argument parsing, dispatch and printing -- the tables the queries return and
+the verdict `project --check` renders -- and nothing else: the psql/
 AGE plumbing lives in pg_graph_common.py, the two relational queries in
 pg_graph_candidates.py and pg_graph_cocitation.py and the two Cypher ones
 in pg_graph_cypher.py, each imported from the module that owns it. All four
@@ -47,6 +48,32 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
     print(" | ".join(headers))
     for row in rows:
         print(" | ".join(row))
+
+
+def check(env: dict[str, str]) -> int:
+    """Exit code of "is the projection still faithful": 0 when it is.
+
+    The rendering half of `project --check`, and therefore here rather than
+    beside the reading it renders: pg_graph_common.py is the layer five
+    modules import for the plumbing, and none of the other four wants Russian
+    status text on stdout. Every other asker of the same question renders it
+    its own way off the projection_diff()/projection_faults() pair --
+    citation_checks as problem strings, deploy/smoke_checks as a verdict
+    against the manifest, citations/store.py as a value -- so what is shared
+    is the reading and the fault list, not the printing.
+    """
+    seen = pg_graph_common.projection_diff(env)
+    if seen is None:
+        print("проекция не строилась: графа "
+              f"{pg_graph_common.GRAPH_NAME} нет в ag_catalog.ag_graph",
+              file=sys.stderr)
+        return 1
+    faults = pg_graph_common.projection_faults(seen)
+    if not faults:
+        print(f"OK: |V|={seen.vertex_n} |E|={seen.edge_n}")
+        return 0
+    print("MISMATCH: " + "; ".join(faults), file=sys.stderr)
+    return 1
 
 
 def cmd_citers(args, env) -> int:
@@ -167,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "project":
         if args.check:
-            return pg_graph_common.check(env)
+            return check(env)
         vertices, edges = pg_graph_common.project(env)
         print(f"V={vertices} E={edges}")
         return 0

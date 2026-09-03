@@ -28,7 +28,6 @@ dispatch code no recipient calls as a library.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -243,10 +242,11 @@ def projection_diff(env: dict[str, str]) -> Projection | None:
 
     Does the graph exist at all, how many rows does each side hold, and
     what does each side actually carry. projection_faults() is the verdict
-    over the result and every asker renders it differently -- an exit code
-    (check), a list of problem strings (citation_checks), an (ok, detail)
-    pair against the manifest (deploy/smoke_checks) -- but the reads and
-    the graph-missing branch are this function's, not each caller's.
+    over the result and every asker renders it differently -- printed text
+    and an exit code (pg_graph.py's `project --check`), a list of problem
+    strings (citation_checks), an (ok, detail) pair against the manifest
+    (deploy/smoke_checks) -- but the reads and the graph-missing branch are
+    this function's, not each caller's.
 
     Two psql invocations: the guard, because a statement naming
     citation_graph."Work" fails outright on a graph that was never
@@ -281,23 +281,3 @@ def projection_faults(seen: Projection) -> list[str]:
                           f"таблицы {ours}, граф {theirs}")
     return faults
 
-
-def check(env: dict[str, str]) -> int:
-    """Exit code of "is the projection still faithful": 0 when it is.
-
-    Here rather than in the CLI because two entry points ask the question
-    -- `pg_graph.py project --check` and pg_load_citations.py after a crawl
-    -- and a second implementation of the comparison is exactly what
-    projection_faults() exists to prevent.
-    """
-    seen = projection_diff(env)
-    if seen is None:
-        print(f"проекция не строилась: графа {GRAPH_NAME} нет в ag_catalog.ag_graph",
-              file=sys.stderr)
-        return 1
-    faults = projection_faults(seen)
-    if not faults:
-        print(f"OK: |V|={seen.vertex_n} |E|={seen.edge_n}")
-        return 0
-    print("MISMATCH: " + "; ".join(faults), file=sys.stderr)
-    return 1

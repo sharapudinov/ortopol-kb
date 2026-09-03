@@ -132,6 +132,17 @@ class CliLayerTests(unittest.TestCase):
             self.assertNotIn(name, defined, f"{name}() belongs to pg_graph_common.py")
             self.assertTrue(hasattr(pg_graph_common, name))
 
+    def test_the_printed_verdict_is_defined_here_and_not_in_the_plumbing(self):
+        """check() is the one thing that moved the other way. It prints
+        Russian status text and returns an exit code -- presentation, which
+        the four consumers importing the plumbing as a library do not want,
+        and which pushed pg_graph_common.py past the FILE_SIZE cap.
+        """
+        defined = {node.name for node in self.TREE.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        self.assertIn("check", defined)
+        self.assertFalse(hasattr(pg_graph_common, "check"))
+
 
 class SharedCitationPlumbingTests(unittest.TestCase):
     """citation_schema_exists() and the kind census answer questions three
@@ -261,15 +272,17 @@ class ProjectionDiffTests(unittest.TestCase):
 
     def test_check_renders_the_diff_as_an_exit_code(self):
         # The content half of the reading lives in test_pg_graph_projection.py.
+        # The renderer is the CLI's (pg_graph.check); what it renders is the
+        # plumbing's.
         faithful = pg_graph_common.Projection(5, 3, 5, 3, "w", "w", "c", "c")
         with mock.patch.object(pg_graph_common, "projection_diff",
                                return_value=faithful):
-            self.assertEqual(pg_graph_common.check({}), 0)
+            self.assertEqual(pg_graph.check({}), 0)
         with mock.patch.object(pg_graph_common, "projection_diff",
                                return_value=faithful._replace(vertex_n=4)):
-            self.assertEqual(pg_graph_common.check({}), 1)
+            self.assertEqual(pg_graph.check({}), 1)
         with mock.patch.object(pg_graph_common, "projection_diff", return_value=None):
-            self.assertEqual(pg_graph_common.check({}), 1)
+            self.assertEqual(pg_graph.check({}), 1)
 
     def _functions_assembling_the_sequence(self, path: Path) -> list[str]:
         """Function names in `path` that name BOTH graph_exists and the

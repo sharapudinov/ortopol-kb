@@ -16,6 +16,7 @@ import unittest
 
 import _pathfix  # noqa: F401
 
+import pg_graph
 import pg_graph_common
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
@@ -118,10 +119,10 @@ class CitationGraphLiveTests(unittest.TestCase):
             """,
         )
         first = pg_graph_common.project(self.env)
-        self.assertEqual(pg_graph_common.check(self.env), 0)
+        self.assertEqual(pg_graph.check(self.env), 0)
         second = pg_graph_common.project(self.env)
         self.assertEqual(first, second, "повторная проекция дала другие |V|/|E|")
-        self.assertEqual(pg_graph_common.check(self.env), 0)
+        self.assertEqual(pg_graph.check(self.env), 0)
 
     def test_projection_carries_properties_through_agtype_unmangled(self):
         """A third-party title can hold quotes, backslashes and newlines.

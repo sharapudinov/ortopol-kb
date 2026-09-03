@@ -317,7 +317,7 @@ class ProjectionIsAWriteThroughTheSeamTests(unittest.TestCase):
         self.assertIn("не строилась", outcome.report)
 
     def test_the_library_writes_nothing_to_stdout_or_stderr(self):
-        """check() is pg_graph_common's CLI shape -- it prints its own
+        """check() is pg_graph.py's CLI shape -- it prints its own
         verdict and returns an exit code. Called from here, one projection
         produced two overlapping report lines, and any embedder of the
         crawl without a command line got library output it never asked for.

@@ -252,7 +252,7 @@ class PostgresWriter:
 
         The verdict is projection_faults() over projection_diff(), the
         value-returning pair pg_graph_common.py documents as the answer --
-        not check(), which is that module's CLI shape: it prints its own
+        not pg_graph.check(), which is the CLI's shape: it prints its own
         "OK: |V|=..." / "MISMATCH: ..." and returns an exit code. Through
         check(), one projection produced two overlapping report lines (the
         caller prints `report` on top), and any embedder of Snowball without
