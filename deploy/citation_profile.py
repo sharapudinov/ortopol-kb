@@ -151,12 +151,6 @@ def shipped_crawl_step_sql(alias: str = "s") -> str:
     return f"(NOT EXISTS (SELECT 1 FROM cut_steps x WHERE x.id = {alias}.id))"
 
 _POLICY_SQL = "SELECT mode FROM citation.public_policy WHERE id = 1;"
-_CITES_COUNT_SQL = """
-SELECT count(*) FROM citation.cites c
-JOIN citation.work wa ON wa.id = c.citing
-JOIN citation.work wb ON wb.id = c.cited
-WHERE {citing} AND {cited};
-"""
 
 
 class CitationUnclassified(RuntimeError):
@@ -251,28 +245,26 @@ def resolve_citation_mode(
     return require_citation_mode(env), PolicySource.OWNER
 
 
-def citation_counts(env: dict, *, shipped_only: bool = False) -> tuple[int, int, dict[str, int]]:
-    """(work_count, cites_count, {kind: count}) over the citation schema.
+def work_by_kind(env: dict, *, shipped_only: bool = False) -> dict[str, int]:
+    """{kind: rows} over citation.work -- the manifest's census.
 
     shipped_only applies the per-document cut above, i.e. counts what a
     PUBLIC artifact will actually contain rather than what the live database
     holds -- MANIFEST_DESCRIBES_ARTIFACT: every number in manifest.json is
-    about the package, and citation_content_checks.py compares these very
-    counts against the dumped rows.
+    about the package, and citation_content_checks.py compares this very
+    breakdown against the dumped rows.
 
-    The work total is the census summed, not a count of its own:
-    citation.work.kind is NOT NULL (pg_schema_citation.sql), so the two are
-    the same number by construction, and asking twice costs a second psql
-    process AND -- under shipped_only -- a second evaluation of
-    shipped_work_sql(), the correlated EXISTS against corpus.documents that
-    is the expensive half of the whole reading.
+    The census, and nothing beside it. The work and cites TOTALS are the
+    dump's own row counts (citation_dump.plan_row_counts for the cut
+    profile, live_row_counts for the whole one), stamped into the manifest
+    from what was actually written -- manifest_probe.stamp_dumped_rows().
+    Counted here as well they were the same two cut row sets counted a
+    second time: the correlated EXISTS against corpus.documents per work
+    row, and the whole citation.cites joined to citation.work on both
+    endpoints under that same predicate twice -- for numbers the
+    recipient's gate then requires to equal the dump's own
+    (citation_cut_checks.check_citation_schema_matches_mode). A breakdown
+    has no such source: no COPY block carries one, so this reading stays.
     """
-    if shipped_only:
-        work_where = f" WHERE {shipped_work_sql('w')}"
-        cites_sql = _CITES_COUNT_SQL.format(
-            citing=shipped_work_sql("wa"), cited=shipped_work_sql("wb"))
-    else:
-        work_where = ""
-        cites_sql = "SELECT count(*) FROM citation.cites;"
-    by_kind = kind_counts(env, work_where)
-    return sum(by_kind.values()), int(scalar(env, cites_sql)), by_kind
+    where = f" WHERE {shipped_work_sql('w')}" if shipped_only else ""
+    return kind_counts(env, where)

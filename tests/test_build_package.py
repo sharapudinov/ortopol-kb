@@ -142,13 +142,21 @@ class ProfileDispatchTests(unittest.TestCase):
         answer, not re-derived: the recipient's gate requires every table
         named there to be in the file with exactly that many rows, so the
         two must be one resolution of one cut.
+
+        The two headline totals come from that same answer, for the same
+        reason and one step further: counted against the live database
+        before the dump existed, they were the same cut row sets counted
+        twice, and the gate compares them against these very COPY blocks.
         """
         for argv, profile, expected in ((["--profile", "public"], "public",
                                          {"work": 2, "cites": 1}),
                                         ([], "full", {"work": 441})):
             with self.subTest(profile=profile):
                 _code, seen = self._build(argv, profile)
-                self.assertEqual(seen["manifest"]["citation"]["table_rows"], expected)
+                citation = seen["manifest"]["citation"]
+                self.assertEqual(citation["table_rows"], expected)
+                self.assertEqual(citation["work_count"], expected["work"])
+                self.assertEqual(citation["cites_count"], expected.get("cites", 0))
 
     def test_default_profile_is_full_and_uses_the_pg_dump_writer(self):
         exit_code, seen = self._build([], "full")
@@ -230,7 +238,8 @@ class ProfileDispatchTests(unittest.TestCase):
                  mock.patch.object(build_package, "gather_manifest", return_value=fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_schemas",
-                                    side_effect=lambda env, gz, citation_mode="none": gz.write_bytes(b"x")), \
+                                    side_effect=lambda env, gz, citation_mode="none":
+                                    gz.write_bytes(b"x") and {}), \
                  mock.patch.object(build_package, "sha256_file", return_value="a" * 64), \
                  mock.patch.object(build_package, "package", side_effect=fake_package):
                 exit_code = build_package.main(["--pgenv", str(explicit_pgenv), "--out-dir", str(out_dir)])

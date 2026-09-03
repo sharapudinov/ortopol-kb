@@ -11,6 +11,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import manifest_citation
 import manifest_probe
 import probe_overlap
 
@@ -72,14 +73,15 @@ _RESOLVED = {"citation_mode": "full-skeleton", "policy_source": "owner"}
 
 
 def _patch_citation_defaults(test_case: unittest.TestCase) -> None:
-    """Mocks citation_profile.citation_counts so gather_manifest() never
+    """Mocks citation_profile.work_by_kind so gather_manifest() never
     touches the database for its citation-graph half. The MODE is no longer
     read here at all: build_package.main() resolves it once and hands it in
     (citation_profile.resolve_citation_mode, tested in
-    test_citation_profile.py).
+    test_citation_profile.py), and the work/cites totals are the dump's own
+    answer, stamped after it is written.
     """
-    patcher = mock.patch.object(manifest_probe.citation_profile, "citation_counts",
-                                 return_value=(0, 0, {}))
+    patcher = mock.patch.object(manifest_citation.citation_profile, "work_by_kind",
+                                 return_value={})
     patcher.start()
     test_case.addCleanup(patcher.stop)
 
@@ -302,9 +304,9 @@ class CitationManifestTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
              mock.patch.object(probe_overlap, "scalar", return_value=""), \
-             mock.patch.object(manifest_probe.citation_profile, "citation_counts",
-                                return_value=(438, 2425,
-                                              {"external-skeleton": 382, "our-document": 56})) as counts_mock:
+             mock.patch.object(manifest_citation.citation_profile, "work_by_kind",
+                                return_value={"external-skeleton": 382,
+                                              "our-document": 56}) as counts_mock:
             manifest = manifest_probe.gather_manifest(
                 {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
                 policy_source=policy_source,
@@ -315,15 +317,40 @@ class CitationManifestTests(unittest.TestCase):
         manifest, _counts = self._gather()
         self.assertEqual(manifest["citation"], {
             "mode": "topology-only", "policy_source": "owner",
-            "work_count": 438, "cites_count": 2425,
+            # Declared zero here and stamped by build_package.main() from
+            # what the dump actually wrote, together with table_rows: this
+            # function runs before the dump exists, and a live count would
+            # describe a package nobody has produced yet -- and would count
+            # the same cut row sets a second time to arrive at it.
+            "work_count": 0, "cites_count": 0,
             "work_by_kind": {"external-skeleton": 382, "our-document": 56},
-            # Declared empty here and stamped by build_package.main() from
-            # what the dump actually wrote: this function runs before the
-            # dump exists, and a live count would describe a package nobody
-            # has produced yet.
             "table_rows": {},
         })
         self.assertEqual(manifest["schemas"], ["corpus", "citation"])
+
+    def test_the_census_is_the_only_citation_read_the_manifest_makes(self):
+        """The kind census cannot come from the dump -- no COPY block
+        carries a breakdown -- but the two totals can and do. Asked here as
+        well, they re-ran the correlated EXISTS over citation.work and the
+        double-ended join over citation.cites for numbers the recipient's
+        gate then requires to equal the dump's own.
+        """
+        _manifest, census = self._gather()
+        census.assert_called_once()
+        self.assertEqual(census.call_args.kwargs, {"shipped_only": True})
+
+    def test_the_dumps_answer_is_what_the_two_totals_are_stamped_from(self):
+        block = {"work_count": 0, "cites_count": 0, "table_rows": {}}
+        manifest_citation.stamp_dumped_rows(block, {"work": 438, "cites": 2425,
+                                                 "crawl_step": 5})
+        self.assertEqual(block, {"work_count": 438, "cites_count": 2425,
+                                 "table_rows": {"work": 438, "cites": 2425,
+                                                "crawl_step": 5}})
+
+    def test_a_dump_that_carried_no_such_table_stamps_a_zero(self):
+        block = {"work_count": 0, "cites_count": 0, "table_rows": {}}
+        manifest_citation.stamp_dumped_rows(block, {})
+        self.assertEqual(block, {"work_count": 0, "cites_count": 0, "table_rows": {}})
 
     def test_the_manifest_records_whose_decision_the_mode_was(self):
         """The filename is not part of the package; this field is. Without

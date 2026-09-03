@@ -68,7 +68,8 @@ class CitationPolicyOverrideTests(unittest.TestCase):
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_public",
-                                    side_effect=lambda e, p, citation_mode="none": p.write_bytes(b"x")), \
+                                    side_effect=lambda e, p, citation_mode="none":
+                                    p.write_bytes(b"x") and {}), \
                  mock.patch.object(build_package, "sha256_file", return_value="a" * 64), \
                  mock.patch.object(build_package, "package",
                                     side_effect=lambda w, o: o.write_bytes(b"z")):

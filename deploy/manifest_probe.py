@@ -3,7 +3,11 @@ the embedding model's identity (name/dims/ollama digest), and two reference
 probes (fulltext, vector) smoke_test.py later reproduces against a fresh
 deploy. Split out of build_package.py to keep that file to its own job
 (CLI + artifact assembly) -- this one owns "what does the live DB currently
-say".
+say". The citation-graph half of the manifest is its own module beside this
+one (manifest_citation.py, and kb/CLAUDE.md FILE_SIZE): the block it builds
+is the one part of the manifest whose numbers are the DUMP's answer rather
+than a live reading, so it is stamped after the dump instead of gathered
+before it.
 
 Every count and every probe is recorded for the profile being built, not
 for the live database as such: the public profile omits excluded documents
@@ -22,12 +26,12 @@ from deploy_pathfix import ensure_corpus_importable
 
 ensure_corpus_importable()
 
-import citation_profile  # noqa: E402
 import legal_profile  # noqa: E402
 import pg_rank_probe  # noqa: E402
 import pg_search  # noqa: E402
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key  # noqa: E402
-from manifest_contract import Profile, schemas_for, ships_citation  # noqa: E402
+from manifest_citation import citation_block  # noqa: E402
+from manifest_contract import Profile, schemas_for  # noqa: E402
 from ollama_registry import served_model_digest  # noqa: E402
 from pg_common import scalar_row  # noqa: E402
 from probe_overlap import stemmed_token_overlap  # noqa: E402
@@ -48,38 +52,6 @@ PUBLIC_BLOB_PROBE_DOC = "2009_isu34"
 
 def blob_probe_doc(profile: str) -> str:
     return PUBLIC_BLOB_PROBE_DOC if profile == Profile.PUBLIC else BLOB_PROBE_DOC
-
-
-def _citation_block(env: dict, mode: str, public: bool, policy_source: str) -> dict:
-    """MANIFEST_DESCRIBES_ARTIFACT: the counts are of the rows THIS package
-    carries, not of the live schema. The public profile drops every work row
-    (and every edge and journal row that names it) whose document its own
-    legal cut removed, so its counts are taken with that cut applied --
-    citation_content_checks.py compares exactly these numbers against the
-    rows the dump turns out to contain.
-
-    `mode` is resolved once per build by citation_profile.
-    resolve_citation_mode() and handed in; this module never re-derives it.
-    `policy_source` travels the same way and says whose decision that mode
-    was -- the owner's row, or the command line's --policy-override.
-    """
-    # table_rows is declared here and FILLED by build_package.main() from
-    # what the dump wrote: this runs before the dump exists, and a live
-    # count would describe a package nobody has produced yet. The key is in
-    # every manifest either way -- the recipient's gate refuses an empty one
-    # under a shipping mode rather than reading it as silence.
-    block = {Key.CITATION_MODE: mode, Key.CITATION_POLICY_SOURCE: policy_source,
-             Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {},
-             Key.TABLE_ROWS: {}}
-    # manifest_contract.ships_citation(), the predicate the dump itself is
-    # written by: a mode that carries no citation byte must not have the
-    # live schema's counts stamped into the block describing it.
-    if not ships_citation(mode):
-        return block
-    work_n, cites_n, by_kind = citation_profile.citation_counts(env, shipped_only=public)
-    block.update({Key.WORK_COUNT: work_n, Key.CITES_COUNT: cites_n,
-                  Key.WORK_BY_KIND: by_kind})
-    return block
 
 
 # One round trip for the six independent scalar reads gather_manifest()
@@ -239,7 +211,7 @@ def gather_manifest(
         # smoke_test.py, which skips the measurements check when the
         # artifact declares no measurements schema.
         Key.SCHEMAS: schemas_for(profile, citation_mode),
-        Key.CITATION: _citation_block(env, citation_mode, public, policy_source),
+        Key.CITATION: citation_block(env, citation_mode, public, policy_source),
         Key.CREATED_AT: datetime.now(timezone.utc).isoformat(),
         Key.DOCUMENTS_COUNT: documents_count,
         Key.PAGES_COUNT: pages_count,

@@ -73,6 +73,7 @@ from dump_integrity import sha256_file  # noqa: E402
 from legal_profile import Unclassified  # noqa: E402
 from manifest_keys import Key  # noqa: E402
 from manifest_contract import CitationMode, PolicySource, Profile  # noqa: E402
+from manifest_citation import stamp_dumped_rows  # noqa: E402
 from manifest_probe import gather_manifest  # noqa: E402
 from public_dump import dump_public  # noqa: E402
 
@@ -218,8 +219,14 @@ def main(argv: list[str] | None = None) -> int:
         # gate requires every declared table to be in the file with exactly
         # that many rows, so a mode that ships a schema and declares no
         # table fails there rather than being read as nothing to check.
-        manifest[Key.CITATION][Key.TABLE_ROWS] = write_dump(
-            args.profile, env, dump_gz, citation_mode=citation_mode)
+        # The two headline totals are stamped from that same answer
+        # (manifest_probe.stamp_dumped_rows): the gate compares them against
+        # these very COPY blocks, and counting the cut row sets a second
+        # time against the live database was the expensive way to arrive at
+        # numbers that must equal these.
+        stamp_dumped_rows(manifest[Key.CITATION],
+                          write_dump(args.profile, env, dump_gz,
+                                     citation_mode=citation_mode))
         manifest[Key.DUMP] = {
             Key.FILE: dump_gz.name,
             Key.BYTES: dump_gz.stat().st_size,

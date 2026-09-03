@@ -55,39 +55,35 @@ class RequireCitationModeTests(unittest.TestCase):
                 self.assertEqual(citation_profile.require_citation_mode({}), mode)
 
 
-class CitationCountsTests(unittest.TestCase):
-    def test_reads_work_cites_and_kind_breakdown(self):
+class WorkByKindTests(unittest.TestCase):
+    """The census, and only the census.
+
+    The work and cites totals are NOT read here: they are the dump's own
+    row counts (citation_dump.plan_row_counts / live_row_counts), stamped
+    into the manifest from what was actually written. Read here as well,
+    they were the same two cut row sets counted a second time -- the
+    correlated EXISTS over citation.work and the double-ended join over
+    citation.cites -- for numbers the recipient's gate requires to equal
+    the dump's.
+    """
+
+    def test_the_breakdown_is_the_shared_censuss_answer(self):
         counts = {"external-skeleton": 382, "our-document": 56}
-        with mock.patch.object(citation_profile, "scalar", side_effect=["2425"]), \
-             mock.patch.object(citation_profile, "kind_counts", return_value=counts):
-            work_n, cites_n, by_kind = citation_profile.citation_counts({})
-        self.assertEqual(work_n, 438)
-        self.assertEqual(cites_n, 2425)
-        self.assertEqual(by_kind, counts)
+        with mock.patch.object(citation_profile, "kind_counts", return_value=counts):
+            self.assertEqual(citation_profile.work_by_kind({}), counts)
 
     def test_empty_kind_breakdown_is_an_empty_dict(self):
-        with mock.patch.object(citation_profile, "scalar", side_effect=["0"]), \
-             mock.patch.object(citation_profile, "kind_counts", return_value={}):
-            work_n, _cites_n, by_kind = citation_profile.citation_counts({})
-        self.assertEqual(by_kind, {})
-        self.assertEqual(work_n, 0)
+        with mock.patch.object(citation_profile, "kind_counts", return_value={}):
+            self.assertEqual(citation_profile.work_by_kind({}), {})
 
-    def test_the_work_total_costs_no_scan_of_its_own(self):
-        """kind is NOT NULL, so the census already IS the work count -- and
-        under shipped_only the duplicated predicate is the per-row EXISTS
-        against corpus.documents, evaluated twice in two psql processes.
-        """
+    def test_no_total_is_counted_beside_it(self):
         seen = []
         with mock.patch.object(citation_profile, "scalar",
                                 side_effect=lambda env, sql: seen.append(sql) or "7"), \
              mock.patch.object(citation_profile, "kind_counts",
                                 return_value={"our-document": 3}) as census:
-            work_n, cites_n, _by_kind = citation_profile.citation_counts(
-                {}, shipped_only=True)
-        self.assertEqual((work_n, cites_n), (3, 7))
-        self.assertEqual(len(seen), 1, seen)
-        self.assertIn("citation.cites", seen[0])
-        self.assertNotIn("count(*) FROM citation.work", seen[0])
+            citation_profile.work_by_kind({}, shipped_only=True)
+        self.assertEqual(seen, [], seen)
         census.assert_called_once()
 
 
@@ -227,26 +223,20 @@ class ShippedRowPredicateTests(unittest.TestCase):
 
 
 class ShippedOnlyCountsTests(unittest.TestCase):
-    def _counted(self, **kwargs) -> tuple[list[str], list[str]]:
-        """(scalar SQL seen, narrowing clauses handed to the shared census)."""
-        seen, narrowed = [], []
-        with mock.patch.object(citation_profile, "scalar",
-                                side_effect=lambda env, sql: seen.append(sql) or "0"), \
-             mock.patch.object(citation_profile, "kind_counts",
+    def _counted(self, **kwargs) -> list[str]:
+        """The narrowing clauses handed to the shared census."""
+        narrowed = []
+        with mock.patch.object(citation_profile, "kind_counts",
                                 side_effect=lambda env, where="": narrowed.append(where) or {}):
-            citation_profile.citation_counts({}, **kwargs)
-        return seen, narrowed
+            citation_profile.work_by_kind({}, **kwargs)
+        return narrowed
 
     def test_shipped_only_counts_apply_the_predicate(self):
-        seen, narrowed = self._counted(shipped_only=True)
-        self.assertTrue(all("public_distribution IN (" in sql for sql in seen), seen)
-        self.assertIn("JOIN citation.work wa", seen[0])
+        narrowed = self._counted(shipped_only=True)
         self.assertTrue(all("public_distribution IN (" in where for where in narrowed), narrowed)
 
     def test_default_counts_the_whole_schema(self):
-        seen, narrowed = self._counted()
-        self.assertTrue(all("public_distribution" not in sql for sql in seen), seen)
-        self.assertEqual(narrowed, [""])
+        self.assertEqual(self._counted(), [""])
 
 
 if __name__ == "__main__":

@@ -64,7 +64,9 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                 return_value=dict(self.CITATION_COLUMNS)), \
              mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-             mock.patch.object(citation_dump, "scalar", return_value="1"), \
+             mock.patch.object(citation_dump, "scalar_row",
+                                side_effect=lambda env, sql, expected_columns:
+                                ["1"] * expected_columns), \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
             self.carried = public_dump.dump_public(
                 {}, gz_path, citation_mode=citation_mode)
@@ -133,7 +135,9 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-                 mock.patch.object(citation_dump, "scalar", return_value="1"), \
+                 mock.patch.object(citation_dump, "scalar_row",
+                                    side_effect=lambda env, sql, expected_columns:
+                                    ["1"] * expected_columns), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.TOPOLOGY_ONLY)
         work_select = next(s for s in seen_selects if "citation.work" in s)
@@ -182,7 +186,9 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-                 mock.patch.object(citation_dump, "scalar", return_value="1"), \
+                 mock.patch.object(citation_dump, "scalar_row",
+                                    side_effect=lambda env, sql, expected_columns:
+                                    ["1"] * expected_columns), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.FULL_SKELETON)
         pg_dump_argvs = [argv for argv in seen_argv if argv[0] == "pg_dump"]

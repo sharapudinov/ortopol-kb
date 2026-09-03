@@ -25,7 +25,7 @@ import _pathfix_deploy  # noqa: F401
 
 import citation_cut_checks
 import citation_dump
-import manifest_probe
+import manifest_citation
 import smoke_checks
 from citation_vocab import PublicPolicyMode
 from manifest_contract import CitationMode, schemas_for, ships_citation
@@ -40,7 +40,7 @@ MODE_CLASSES = ("CitationMode", "PublicPolicyMode")
 # the two verifiers. Named so that a site dropping the call is a failure
 # here rather than a silently unguarded module.
 ASKING_MODULES = (
-    "manifest_contract.py", "citation_dump.py", "manifest_probe.py",
+    "manifest_contract.py", "citation_dump.py", "manifest_citation.py",
     "citation_cut_checks.py", "smoke_checks.py",
 )
 
@@ -133,7 +133,7 @@ class NoSiteDecidesByNoneTests(unittest.TestCase):
         self.assertIsNone(verdict)
 
     def test_the_manifest_block_of_an_unheard_of_mode_carries_no_counts(self):
-        block = manifest_probe._citation_block({}, "graph-only", True, "owner")
+        block = manifest_citation.citation_block({}, "graph-only", True, "owner")
         self.assertEqual((block["work_count"], block["cites_count"], block["work_by_kind"]),
                          (0, 0, {}))
 
