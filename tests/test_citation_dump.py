@@ -133,7 +133,8 @@ class SetvalTests(unittest.TestCase):
     def test_a_serial_column_gets_a_setval_statement(self):
         sql = schema_catalog.setval_sql(citation_dump.SCHEMA, "work", "id").decode()
         self.assertIn("pg_get_serial_sequence('citation.work', 'id')", sql)
-        self.assertIn("coalesce((SELECT max(id) FROM citation.work), 1)", sql)
+        self.assertIn("FROM (SELECT max(id) AS value FROM citation.work) top", sql)
+        self.assertIn("coalesce(top.value, 1)", sql)
 
 
 class WriteCopyBlockTests(unittest.TestCase):

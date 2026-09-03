@@ -194,6 +194,13 @@ def setval_sql(schema: str, table: str, column: str) -> bytes:
     setval(seq, 1, false) leaves the first row at 1, where setval(seq, 1,
     true) would silently burn it.
 
+    Both arguments read ONE max(), from a one-row subquery in the FROM
+    clause. Spelled as two scalar subqueries they were two independent
+    aggregates over a table the restore had just finished copying in, per
+    sequence-owning column -- and the empty table still yields its row, so
+    the false-flag branch is untouched. One line, because dump_scan.
+    sequence_resets() reads the shipped bytes line by line.
+
     Lives here, beside the catalog read that says WHICH columns need it, so
     both dumps emit the same statement: written once per dump, the corpus
     half simply had none, and the guarantee rested on a hand-written
@@ -201,8 +208,8 @@ def setval_sql(schema: str, table: str, column: str) -> bytes:
     """
     return (
         f"SELECT setval(pg_get_serial_sequence('{schema}.{table}', '{column}'), "
-        f"coalesce((SELECT max({column}) FROM {schema}.{table}), 1), "
-        f"(SELECT max({column}) FROM {schema}.{table}) IS NOT NULL);\n"
+        f"coalesce(top.value, 1), top.value IS NOT NULL) "
+        f"FROM (SELECT max({column}) AS value FROM {schema}.{table}) top;\n"
     ).encode()
 
 

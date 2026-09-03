@@ -319,6 +319,26 @@ class SerialColumnsAreRepositionedTests(unittest.TestCase):
         self.assertIn("IS NOT NULL", sql)
         self.assertIn("coalesce", sql)
 
+    def test_the_table_is_scanned_once_per_sequence_not_twice(self):
+        """The value and the is_called flag are two answers to ONE
+        max(): spelled as two scalar subqueries, Postgres evaluates both,
+        so every sequence-owning column cost the recipient's restore a
+        second aggregate over the table that had just been copied in.
+        """
+        sql = schema_catalog.setval_sql("corpus", "pages", "id").decode()
+        self.assertEqual(sql.count("max(id)"), 1, sql)
+        self.assertEqual(sql.count("FROM corpus.pages"), 1, sql)
+
+    def test_the_statement_stays_on_one_line(self):
+        """dump_scan.sequence_resets() reads the shipped bytes line by
+        line, so a statement broken across lines is a setval nothing can
+        see -- and its absence is a restore that succeeds and collides on
+        the recipient's first INSERT.
+        """
+        sql = schema_catalog.setval_sql("corpus", "pages", "id").decode()
+        self.assertEqual(sql.count("\n"), 1)
+        self.assertTrue(sql.endswith(";\n"), sql)
+
     def test_the_columns_to_reset_are_the_catalogs_answer(self):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
