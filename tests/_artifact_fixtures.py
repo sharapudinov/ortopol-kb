@@ -37,7 +37,8 @@ def dump_facts(citation=None, documents=()):
     corpus = corpus_content_checks.attach_visitors({})
     corpus.documents.update(documents)
     if citation is None:
-        citation = citation_content_checks.attach_visitors({}, CitationMode.TOPOLOGY_ONLY)
+        citation = citation_content_checks.attach_visitors(
+            {}, CitationMode.TOPOLOGY_ONLY, cut_applies=True)
     return profile_checks.DumpFacts(corpus=corpus, citation=citation)
 
 
@@ -49,8 +50,8 @@ def citation_copy_block(table: str, columns: list[str], rows: list[list[str]]) -
     return "\n".join(lines)
 
 
-def citation_scan(dump_text: str,
-                  mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict, "object"]:
+def citation_scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY, *,
+                  cut_applies: bool = True) -> tuple[dict, "object"]:
     """A REAL dump_scan.scan() pass over `dump_text` under `mode`, with the
     citation visitors attached: (scans, facts).
 
@@ -58,14 +59,17 @@ def citation_scan(dump_text: str,
     citation_content_checks.attach_visitors() on that same pass, so a check
     written against a hand-made fact container would be a check about a
     shape this repository never builds. Topology-only by default: the mode
-    the content hunt exists for.
+    the content hunt exists for. cut_applies defaults to True, the case the
+    journal's key columns are collected in -- an artifact that classifies
+    some document out.
     """
     with tempfile.TemporaryDirectory() as tmp:
         dump_path = Path(tmp) / "dump.sql.gz"
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
         row_visitors: dict = {}
-        facts = citation_content_checks.attach_visitors(row_visitors, mode)
+        facts = citation_content_checks.attach_visitors(
+            row_visitors, mode, cut_applies=cut_applies)
         scans = dump_scan.scan(dump_path, row_visitors).tables
     return scans, dump_facts(facts)
 

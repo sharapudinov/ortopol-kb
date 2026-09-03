@@ -50,7 +50,7 @@ a half that never arrived raises here rather than passing as an empty set
 from __future__ import annotations
 
 from citation_content_checks import CITES_TABLE, WORK_TABLE
-from manifest_classes import expected_ids
+from manifest_classes import cut_applies, expected_ids
 from manifest_keys import Key
 from manifest_contract import ships_citation
 
@@ -158,6 +158,12 @@ def check_journal_names_nothing_cut(manifest: dict, facts) -> tuple[bool, str]:
     the journal spells, in any of the three columns, tested against the ids
     the manifest classifies out of this artifact.
 
+    Asked only where a cut exists at all: a manifest that classifies no
+    document out (the full profile by construction) gives an empty `absent`
+    set, against which every journal is clean -- so the pass does not
+    collect the keys there either, and this says so rather than reporting a
+    green count of names it never gathered.
+
     The DOCUMENT half is decidable here and is what this check makes; the
     other half of the cut -- a work key whose document was classified out --
     is not, and the count below says so rather than leaving the gap
@@ -175,6 +181,14 @@ def check_journal_names_nothing_cut(manifest: dict, facts) -> tuple[bool, str]:
     """
     if not _ships_citation(manifest):
         return True, "citation schema not in this profile -- nothing to check"
+    if not cut_applies(manifest):
+        # The same predicate the pass registers the journal's key visitor
+        # by (profile_checks._visit): where the manifest classifies nothing
+        # out, `absent` is empty and `keys & absent` is empty whatever the
+        # journal holds. Said, rather than printed as a green count of
+        # names nobody collected -- the shape in which a check certifies
+        # what it never looked at.
+        return True, "этот профиль ничего не вырезает -- журналу нечего называть"
     keys = facts.citation.journal_keys
     _expected, absent = expected_ids(manifest)
     leaked = sorted(keys & absent)

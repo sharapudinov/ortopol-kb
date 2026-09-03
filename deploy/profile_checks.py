@@ -74,8 +74,7 @@ contributing row visitors to that same pass:
                                time and lands on the recipient's next insert
   legal vocabulary             which ids the manifest says are carried, and
                                in which shape, is manifest_classes.py
-                               (module size): a manifest-only reading, with
-                               no dump byte in it
+                               (module size): a manifest-only reading
   citation policy is owner's   manifest.citation.policy_source == "owner":
                                an artifact whose citation mode was forced
                                with --policy-override fails here rather
@@ -83,9 +82,8 @@ contributing row visitors to that same pass:
                                whose manifest names no policy at all fails
                                too (citation_policy_check.py)
   citation content holds       citation_content_checks.py (module size)
-                               owns the citation row visitors on this pass
-                               and the hunt for content a mode was not
-                               allowed to ship
+                               owns the citation row visitors here and the
+                               hunt for content a mode may not ship
   citation cut holds           citation_cut_checks.py (module size): the
                                counts and the kind census against the
                                manifest, and the three checks that hold the
@@ -116,7 +114,8 @@ import corpus_content_checks
 import dump_scan
 import sequence_checks
 import table_rows_check
-from manifest_classes import check_legal_vocabulary_is_known, check_profile_is_known
+from manifest_classes import (check_legal_vocabulary_is_known, check_profile_is_known,
+                              cut_applies)
 from manifest_gates import check_dump_block_is_shaped, check_manifest_version
 from manifest_contract import required_schemas
 from manifest_keys import Key
@@ -181,7 +180,8 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, Dum
     facts = DumpFacts(
         corpus=corpus_content_checks.attach_visitors(row_visitors),
         citation=citation_content_checks.attach_visitors(
-            row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE)),
+            row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE),
+            cut_applies=cut_applies(manifest)),
     )
     return dump_scan.scan(dump_path, row_visitors), facts
 

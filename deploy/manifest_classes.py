@@ -50,6 +50,26 @@ def expected_ids(manifest: dict) -> tuple[set[str], set[str]]:
     return shipped_ids, everything - shipped_ids
 
 
+def cut_applies(manifest: dict) -> bool:
+    """Does this manifest classify any document OUT of the artifact?
+
+    The one declaration of "is there a document cut to check here", read by
+    both sides of the journal question: profile_checks._visit() decides
+    whether to collect citation.crawl_step's key columns at all, and
+    citation_cut_checks.check_journal_names_nothing_cut() decides whether
+    its verdict means anything. Written twice they could disagree, and the
+    disagreement that matters is the silent one -- keys collected and never
+    compared, or compared against a set nobody filled.
+
+    False on the full profile by construction (expected_ids returns no
+    absent ids there), and false on a public artifact whose classification
+    excludes nothing: in both the check is vacuously green, and the
+    ~100k-row-per-crawl accumulation behind it buys nothing.
+    """
+    _expected, absent = expected_ids(manifest)
+    return bool(absent)
+
+
 def content_expectation(manifest: dict) -> tuple[set[str], set[str]]:
     """(ids that must carry full content, ids that must ship stripped).
 

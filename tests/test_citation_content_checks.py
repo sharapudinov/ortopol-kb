@@ -40,17 +40,21 @@ def _copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict, dict]:
+def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY, *,
+          cut_applies: bool = True) -> tuple[dict, dict]:
     """A real scan of `dump_text` under `mode`. Topology-only by default:
     that is the mode the content hunt exists for, and the mode most of
-    these tests are about.
+    these tests are about. cut_applies defaults to True -- an artifact that
+    classifies some document out, the case the journal's keys are collected
+    in.
     """
     with tempfile.TemporaryDirectory() as tmp:
         dump_path = Path(tmp) / "dump.sql.gz"
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
         row_visitors: dict = {}
-        facts = citation_content_checks.attach_visitors(row_visitors, mode)
+        facts = citation_content_checks.attach_visitors(
+            row_visitors, mode, cut_applies=cut_applies)
         scans = dump_scan.scan(dump_path, row_visitors).tables
     return scans, dump_facts(facts)
 
@@ -136,7 +140,8 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
         classified content can be one nothing here looks at.
         """
         visitors: dict = {}
-        citation_content_checks.attach_visitors(visitors, CitationMode.TOPOLOGY_ONLY)
+        citation_content_checks.attach_visitors(
+            visitors, CitationMode.TOPOLOGY_ONLY, cut_applies=True)
         for table, columns in citation_columns.CITATION_COLUMN_CLASS.items():
             content = {c for c, kind in columns.items()
                        if kind == citation_columns.CONTENT}
@@ -159,11 +164,12 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
     a no-op that is registered is not free: dump_scan builds a dict per row
     for every table that HAS a visitor.
 
-    Three tables are registered whatever the mode, because they carry facts
-    the cut checks read -- crawl_step among them, at ~100k rows per depth-2
-    crawl, which is exactly the cost the earlier `if stripping` saved and
-    exactly why the journal cut had no artifact-side check at all. What the
-    mode still decides is the tables registered for the HUNT alone.
+    work and cites are registered whatever the mode, because they carry
+    facts the cut checks read. crawl_step joins them -- at ~100k rows per
+    depth-2 crawl -- whenever a document cut exists to check, which is the
+    cost the earlier `if stripping` saved and exactly why the journal cut
+    had no artifact-side check at all. What the mode still decides is the
+    tables registered for the HUNT alone.
     """
 
     CONTENT_TABLES = sorted(
@@ -174,7 +180,8 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
 
     def test_topology_only_watches_every_table_with_content(self):
         visitors: dict = {}
-        citation_content_checks.attach_visitors(visitors, CitationMode.TOPOLOGY_ONLY)
+        citation_content_checks.attach_visitors(
+            visitors, CitationMode.TOPOLOGY_ONLY, cut_applies=True)
         for table in self.CONTENT_TABLES:
             self.assertIn(table, visitors)
 
@@ -189,7 +196,8 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
         visitors: dict = {}
         with mock.patch.dict(citation_columns.CITATION_COLUMN_CLASS,
                              {"future_table": self.FUTURE_TABLE}):
-            citation_content_checks.attach_visitors(visitors, CitationMode.FULL_SKELETON)
+            citation_content_checks.attach_visitors(
+                visitors, CitationMode.FULL_SKELETON, cut_applies=True)
         self.assertEqual(sorted(visitors), self.FACT_TABLES)
 
     def test_topology_only_also_watches_a_content_table_carrying_no_facts(self):
@@ -200,11 +208,12 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
         visitors: dict = {}
         with mock.patch.dict(citation_columns.CITATION_COLUMN_CLASS,
                              {"future_table": self.FUTURE_TABLE}):
-            citation_content_checks.attach_visitors(visitors, CitationMode.TOPOLOGY_ONLY)
+            citation_content_checks.attach_visitors(
+            visitors, CitationMode.TOPOLOGY_ONLY, cut_applies=True)
         self.assertEqual(sorted(visitors),
                          sorted(self.FACT_TABLES + ["citation.future_table"]))
 
-    def test_the_journal_is_visited_under_every_mode(self):
+    def test_the_journal_is_visited_under_every_mode_where_a_cut_exists(self):
         """The whole of the journal fix: the largest and most delicately cut
         table in the schema used to get a visitor only when there was
         content to hunt, so under full-skeleton the recipient could learn
@@ -214,8 +223,28 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
                      CitationMode.NONE, "a-mode-nobody-declared"):
             visitors: dict = {}
             with self.subTest(mode=mode):
-                citation_content_checks.attach_visitors(visitors, mode)
+                citation_content_checks.attach_visitors(visitors, mode, cut_applies=True)
                 self.assertIn("citation.crawl_step", visitors)
+
+    def test_no_cut_no_key_collection(self):
+        """Where the manifest classifies nothing out, the only consumer of
+        journal_keys compares them with an empty set and is green whatever
+        the journal holds -- so a dict per row and a set of up to ~300k
+        strings buy a verdict nobody can fail. Under a stripping mode the
+        journal keeps its visitor for the content hunt, and collects no
+        keys through it.
+        """
+        dump = _copy_block("citation.crawl_step", ["id", "frontier_key", "reason"],
+                            [["1", "W1", "проза"], ["2", "W2", "проза"]])
+        _scans, facts = _scan(dump, CitationMode.FULL_SKELETON, cut_applies=False)
+        self.assertEqual(facts.citation.journal_keys, set())
+        visitors: dict = {}
+        citation_content_checks.attach_visitors(
+            visitors, CitationMode.FULL_SKELETON, cut_applies=False)
+        self.assertNotIn("citation.crawl_step", visitors)
+        _scans, stripped = _scan(dump, CitationMode.TOPOLOGY_ONLY, cut_applies=False)
+        self.assertEqual(stripped.citation.journal_keys, set())
+        self.assertTrue(stripped.citation.leaked.total)
 
     def test_full_skeleton_collects_no_leak_facts_while_scanning(self):
         """The rows go past the work/cites visitors either way -- what must

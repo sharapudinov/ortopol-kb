@@ -110,7 +110,8 @@ class CitationFacts(NamedTuple):
     journal_keys: set[str]
 
 
-def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
+def attach_visitors(row_visitors: dict, mode: str | None, *,
+                    cut_applies: bool) -> CitationFacts:
     """Registers this module's row callbacks into `row_visitors` (mutated in
     place) and returns the CitationFacts record they fill -- read it back
     after dump_scan.scan() has actually run. profile_checks.py carries it
@@ -128,15 +129,22 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
     full-content mode those tables get no visitor at all; a dump carrying no
     citation table pays for the registration and finds nothing to visit.
 
-    work, cites and crawl_step keep their visitors either way:
-    work_documents / work_ids / edge_endpoints / journal_keys feed the three
-    checks that hold the citation cut to the document cut, and those run
-    under every shipping mode. The journal's visitor therefore costs a
-    dict(zip(...)) per row even under a full-content mode -- ~100k rows per
-    depth-2 crawl -- and that is the price of the cut being CHECKED rather
-    than trusted: registered only `if stripping`, the largest and most
-    delicately cut table in the schema was the one table the recipient
-    could learn nothing about.
+    work and cites keep their visitors either way: work_documents /
+    work_ids / edge_endpoints feed the checks that hold the citation cut to
+    the document cut, and those run under every shipping mode.
+
+    The journal's KEY columns are the third such fact and the expensive one
+    -- ~100k rows per depth-2 crawl, a dict(zip(...)) each -- so they are
+    collected exactly when their check can decide something: `cut_applies`
+    is manifest_classes.cut_applies(), the one declaration of "this artifact
+    classifies some document out". Where nothing is cut (the full profile by
+    construction) the only consumer, citation_cut_checks.
+    check_journal_names_nothing_cut, compares the keys with an empty set and
+    is green whatever the journal holds -- so the accumulation buys a
+    verdict nobody can fail. Registered only `if stripping`, on the other
+    hand, the largest and most delicately cut table in the schema was the
+    one table the recipient could learn nothing about; the content hunt over
+    it still runs by mode, below.
     """
     leaked = LeakSample()
     work_by_kind: dict[str, int] = {}
@@ -204,14 +212,15 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> CitationFacts:
 
     row_visitors[WORK_TABLE] = on_work
     row_visitors[CITES_TABLE] = on_cites
-    row_visitors[JOURNAL_TABLE] = on_journal
+    if cut_applies:
+        row_visitors[JOURNAL_TABLE] = on_journal
     # The remaining tables have no facts of their own to collect but still
     # carry content columns, and a table whose visitor nobody registered is
     # a table the scan never opens: crawl_step.reason shipped unchecked for
     # exactly that reason before the classification became one map. They
     # exist for the content hunt and nothing else, so they are registered
-    # only when there is a hunt (the three above are already in
-    # row_visitors and are skipped here).
+    # only when there is a hunt (whatever row_visitors already holds is
+    # skipped here -- the journal included, when its keys are collected).
     if stripping:
         for table in CITATION_COLUMN_CLASS:
             qualified = f"citation.{table}"

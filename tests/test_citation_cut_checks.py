@@ -29,7 +29,7 @@ from _artifact_fixtures import (
     dump_facts,
 )
 from manifest_keys import Key
-from manifest_contract import CitationMode
+from manifest_contract import CitationMode, Profile
 
 
 class CheckWorkDocumentsPresentTests(unittest.TestCase):
@@ -181,6 +181,19 @@ class CheckJournalNamesNothingCutTests(unittest.TestCase):
             manifest, {"citation_journal_keys": {EXCLUDED_DOC}})
         self.assertTrue(ok, detail)
 
+    def test_a_profile_that_cuts_nothing_says_so_instead_of_counting(self):
+        """A full artifact classifies no document out, so `absent` is empty
+        and the verdict is green whatever the journal holds. The pass does
+        not collect the keys there either (the same predicate registers the
+        visitor), so a count of names would be a count of what nobody
+        gathered.
+        """
+        manifest = dict(self.MANIFEST, **{Key.PROFILE: Profile.FULL})
+        ok, detail = citation_cut_checks.check_journal_names_nothing_cut(
+            manifest, dump_facts())
+        self.assertTrue(ok, detail)
+        self.assertIn("ничего не вырезает", detail)
+
 
 class JournalCutThroughTheWholePassTests(unittest.TestCase):
     """The same leak through profile_checks.run_checks(), on the artifact
@@ -260,7 +273,16 @@ class FactsAreReadByNameTests(unittest.TestCase):
     the same empty containers as a clean dump.
     """
 
-    MANIFEST = {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}}
+    # A public artifact that classifies one document out: the journal check
+    # reads its facts only where a cut exists, so a manifest cutting nothing
+    # would answer before touching the record at all.
+    MANIFEST = {
+        Key.PROFILE: Profile.PUBLIC,
+        Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON},
+        Key.LEGAL: {Key.DOCUMENTS_BY_DISTRIBUTION: {"full-text": ["2009_isu34"],
+                                                    "excluded": ["2016_vmj598"]},
+                    Key.SHIPPED_DISTRIBUTIONS: ["full-text"]},
+    }
     CHECKS = ("check_work_documents_are_in_the_dump",
               "check_edges_reference_shipped_works",
               "check_journal_names_nothing_cut")
