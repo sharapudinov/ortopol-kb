@@ -15,8 +15,9 @@ run 85):
   per-second throttle: measured 289 of 1000 remaining with
   `x-ratelimit-reset: 83942` (~23 h). Waiting out that reset is not a
   strategy, so falling under the floor raises QuotaExhausted past
-  max_quota_wait instead of sleeping the crawl into next day; the caller
-  journals it and stops with everything written so far still in the base;
+  max_quota_wait instead of sleeping the crawl into next day, and a 429 that
+  survives every retry raises it outright -- the caller journals it and
+  stops with everything written so far still in the base;
 - the abstract arrives only as `abstract_inverted_index` (word -> positions)
   and has to be reassembled.
 
@@ -68,6 +69,10 @@ QUOTA_FLOOR = 30
 MAX_QUOTA_WAIT = 900.0
 PAUSE = 0.35
 RETRY_CODES = (429, 500, 502, 503, 504, 0)
+# The one retryable code that is an ANSWER rather than a fault: OpenAlex
+# says the shared budget is spent. Survived every retry, it is the quota
+# exhaustion this module tracks headers for, not a source failure.
+RATE_LIMITED = 429
 
 
 class QuotaExhausted(RuntimeError):
@@ -140,6 +145,36 @@ class OpenAlexClient:
             return None
         return hashlib.sha1(url.encode()).hexdigest() + ".json"
 
+    def _reset_wait(self) -> float:
+        """Seconds until the budget window resets, per the last response's
+        own header. Zero when the server said nothing usable -- guessing a
+        window is how a crawl sleeps into next day."""
+        reset = self.last_rate.get("x-ratelimit-reset") or "0"
+        return float(reset) if str(reset).replace(".", "", 1).isdigit() else 0.0
+
+    def _refuse_if_rate_limited(self, answer) -> None:
+        """A 429 that survived every retry IS the exhausted window.
+
+        Raised BEFORE the generic non-200 refusal below, because the two
+        answers differ in what the caller does with them: pg_load_citations
+        journals QuotaExhausted and exits 2 ("wait the window out") and
+        OpenAlexError exits 3 ("the source failed, go and look"). Read in
+        the other order -- and it was -- the exhaustion this module tracks
+        rate headers FOR could never be reported as one: http_session.fetch
+        retries RETRY_CODES internally and then RETURNS the final response,
+        so a genuinely spent budget always arrived here as a non-200 and was
+        classified as a source fault. _honour_quota() below could only fire
+        on a 200 that happened to report a low remainder.
+        """
+        if answer.code != RATE_LIMITED:
+            return
+        wait = self._reset_wait()
+        raise QuotaExhausted(
+            f"OpenAlex ответил HTTP {RATE_LIMITED} на всех {self.tries} попытках "
+            f"({answer.detail()[:200]}); окно квоты сбросится через {wait:.0f} с "
+            "— обход остановлен, записанное сохранено"
+        )
+
     def _honour_quota(self) -> None:
         """Called after every response; the budget is read, never guessed."""
         remaining = self.last_rate.get("x-ratelimit-remaining")
@@ -147,8 +182,7 @@ class OpenAlexClient:
             return
         if int(remaining) >= self.quota_floor:
             return
-        reset = self.last_rate.get("x-ratelimit-reset") or "0"
-        wait = float(reset) if str(reset).replace(".", "", 1).isdigit() else 0.0
+        wait = self._reset_wait()
         if wait > self.max_quota_wait:
             raise QuotaExhausted(
                 f"осталось {remaining} запросов OpenAlex, окно сбросится через "
@@ -180,6 +214,7 @@ class OpenAlexClient:
             if hasattr(answer.headers, "get") and answer.headers.get(name) is not None
         }
         if answer.code != 200:
+            self._refuse_if_rate_limited(answer)
             raise OpenAlexError(f"HTTP {answer.code} от {url}: {answer.detail()[:300]}")
         self._honour_quota()
         try:

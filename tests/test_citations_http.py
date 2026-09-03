@@ -2,10 +2,14 @@
 
 Every opener here is a stub and every sleep is captured, so the retry
 schedule is asserted rather than waited out. What these cover is what a
-single-happy-response test cannot: the OpenAlex retry loop and its terminal
-give-up, Math-Net's cache/failure bookkeeping, and the two shapes of a
-malformed ollama answer -- the branches that only run on a bad day, which
-is exactly when nobody is reading the code.
+single-happy-response test cannot: the OpenAlex page cache and its sidecar,
+Math-Net's cache/failure bookkeeping, and the two shapes of a malformed
+ollama answer -- the branches that only run on a bad day, which is exactly
+when nobody is reading the code.
+
+How the OpenAlex client CLASSIFIES a final answer -- source fault against
+spent quota -- is one question of its own and lives in
+test_openalex_quota.py (module size).
 """
 from __future__ import annotations
 
@@ -14,18 +18,16 @@ import json
 import tempfile
 import unittest
 from unittest import mock
-import urllib.error
 from pathlib import Path
 
 import _pathfix  # noqa: F401
+from _http_fixtures import Response as _Response, Sequence as _Sequence, http_error as _http_error
 
 from citations import frontier, http_cache, openalex_client
 from citations.mathnet import MathnetClient, parse_titles
 from citations.openalex_client import (
-    RETRY_CODES,
     OpenAlexClient,
     OpenAlexError,
-    QuotaExhausted,
     note_direction,
     page_index,
     sidecar_name,
@@ -36,113 +38,6 @@ PAGE = ('<html><head><title>И. И. Шарапудинов, “Русское н
         '180:9 (1989), 1–10; I. I. Sharapudinov, “English title”, '
         'Math. USSR-Sb., 68:1 (1991), 1–10</title></head><body>'
         + "x" * 2500 + "</body></html>")
-
-
-class _Response:
-    """urlopen stand-in: body, headers and a status, usable as a context
-    manager. The body is bytes so the encoding is the client's problem, the
-    way a socket makes it."""
-
-    def __init__(self, body: bytes, headers: dict | None = None, status: int = 200):
-        self._body, self.headers, self.status = body, dict(headers or {}), status
-
-    def read(self):
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
-
-
-class _Sequence:
-    """Answers a scripted list of responses/exceptions, one per call."""
-
-    def __init__(self, answers):
-        self.answers = list(answers)
-        self.calls = 0
-
-    def __call__(self, request, timeout=None):
-        answer = self.answers[min(self.calls, len(self.answers) - 1)]
-        self.calls += 1
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-
-
-def _http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError("https://api.openalex.org/works", code, "nope",
-                                  dict(headers or {}), io.BytesIO(b'{"error": "nope"}'))
-
-
-class OpenAlexPolicyTests(unittest.TestCase):
-    """What this client makes of an answer, not how the answer was fetched:
-    the retry SCHEDULE is the shared session's and is tested there
-    (test_http_session.py). Here: giving up has to be a named failure, not
-    an empty result the caller mistakes for "nothing found".
-    """
-
-    OK = b'{"results": [], "meta": {}}'
-
-    def _client(self, answers, tries=5):
-        slept = []
-        opener = _Sequence(answers)
-        client = OpenAlexClient(opener=opener, sleep=slept.append, pause=0.0, tries=tries)
-        return client, opener
-
-    def test_a_429_then_a_200_is_one_successful_call(self):
-        client, opener = self._client([_http_error(429), _Response(self.OK)])
-        self.assertEqual(client.get_json("https://api.openalex.org/works?x=1"),
-                         {"results": [], "meta": {}})
-        self.assertEqual(opener.calls, 2)
-        self.assertEqual(client.n_requests, 2, "повтор не посчитан как запрос квоты")
-
-    def test_the_retry_set_is_the_transient_answers_and_nothing_else(self):
-        self.assertEqual(set(RETRY_CODES), {429, 500, 502, 503, 504, 0})
-        self.assertNotIn(404, RETRY_CODES)
-
-    def test_exhausting_the_tries_raises_and_says_how_many(self):
-        client, opener = self._client([_http_error(503)], tries=3)
-        with self.assertRaises(OpenAlexError) as ctx:
-            client.get_json("https://api.openalex.org/works?x=1")
-        message = str(ctx.exception)
-        self.assertIn("503", message)
-        self.assertIn("api.openalex.org", message)
-        self.assertEqual(opener.calls, 3)
-
-    def test_a_non_retryable_code_fails_at_once(self):
-        client, opener = self._client([_http_error(404)])
-        with self.assertRaises(OpenAlexError) as ctx:
-            client.get_json("https://api.openalex.org/works?x=1")
-        self.assertIn("404", str(ctx.exception))
-        self.assertEqual(opener.calls, 1)
-
-    def test_a_transport_failure_that_never_recovers_is_named_too(self):
-        client, _opener = self._client([TimeoutError("read timed out")], tries=2)
-        with self.assertRaises(OpenAlexError) as ctx:
-            client.get_json("https://api.openalex.org/works?x=1")
-        self.assertIn("TimeoutError", str(ctx.exception))
-
-    def test_a_200_that_is_not_json_is_not_a_retry_either(self):
-        client, _opener = self._client([_Response(b"<html>502</html>")])
-        with self.assertRaises(OpenAlexError) as ctx:
-            client.get_json("https://api.openalex.org/works?x=1")
-        self.assertIn("не JSON", str(ctx.exception))
-
-    def test_the_quota_headers_are_read_off_the_answer(self):
-        client, _opener = self._client(
-            [_Response(self.OK, {"x-ratelimit-remaining": "289",
-                                 "x-ratelimit-reset": "83942"})])
-        client.get_json("https://api.openalex.org/works?x=1")
-        self.assertEqual(client.last_rate["x-ratelimit-remaining"], "289")
-
-    def test_a_budget_under_the_floor_with_a_distant_reset_stops_the_crawl(self):
-        client, _opener = self._client(
-            [_Response(self.OK, {"x-ratelimit-remaining": "3",
-                                 "x-ratelimit-reset": "83942"})])
-        with self.assertRaises(QuotaExhausted):
-            client.get_json("https://api.openalex.org/works?x=1")
 
 
 class OpenAlexSidecarTests(unittest.TestCase):
