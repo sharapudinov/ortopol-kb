@@ -104,6 +104,18 @@ class MixedFrontierTests(unittest.TestCase):
         self.assertEqual(referenced, {"W_R1": frozenset({"W_HUB"}),
                                       "W_R2": frozenset({"W_PLAIN"})})
 
+    def test_the_batch_of_references_is_asked_in_one_deterministic_order(self):
+        """The order the source is asked in is the wanted map's, sorted
+        once when the batch is formed. Sorting each node's own reference
+        set on the way IN buys nothing: the map is keyed by reference and
+        its values are sets, so neither the map nor the batch can hear the
+        per-node order -- and that sort ran for every node of every level.
+        """
+        client = FakeClient([work("W_R1", title="Hub reference"),
+                             work("W_R2", title="Reference")])
+        self._gather(client)
+        self.assertEqual(client.id_batches[0], sorted(client.id_batches[0]))
+
 
 class ManyToManyTests(unittest.TestCase):
     """Discovery is many-to-many in both directions, and a candidate says so.

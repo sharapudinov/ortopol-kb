@@ -93,10 +93,13 @@ def gather(client, registry, frontier_keys: list[str], hub_cap: int):
 
     # Every frontier node that points at a reference, not the first one to:
     # the same work is commonly referenced by several members of the level,
-    # and each of them discovered it.
+    # and each of them discovered it. Insertion order is the map's own and
+    # nothing reads it: the batch below is sorted where it is formed, and
+    # the values are sets. A sort per node bought that order twice, over
+    # every reference list of every level.
     wanted: dict[str, set[str]] = {}
     for node in frontier:
-        for reference in sorted(node.referenced_works):
+        for reference in node.referenced_works:
             if registry.resolve_openalex(reference) is None:
                 wanted.setdefault(reference, set()).add(node.key)
     for record in client.works_by_ids(sorted(wanted)):
