@@ -194,14 +194,28 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     else:
         init_schema(env)
-    # Оба писателя — здесь и один раз (writers_for), как и все четыре кэша
+    # Оба писателя — здесь и один раз (writers_for), как и каждый кэш
     # ниже: у канала записи нет умолчания, и правило «режим -> объект»
     # живёт в одном выражении на писателя, а не в трёх по месту вызова.
     writer, measurements = writers_for(args, env)
 
     # Оба режима ниже считают по уже записанному и кэшу: ни семян, ни сети.
+    cache_path = Path(args.cache_dir)
     if args.hub_report:
-        return do_hub_report(args, data_root(), measurements)
+        # Каталог проверяется ДО того, как построен объект кэша: рабочий кэш
+        # создаёт свой каталог при создании, и после этого «кэша ответов
+        # нет» сказать уже нечему — замер померил бы пустоту в только что
+        # созданном пустом каталоге. Сам объект строится здесь, как и все
+        # остальные: у канала нет умолчания, и режим получает объект.
+        if not cache_path.is_dir():
+            print(f"кэша ответов нет: {cache_path} — замер читает батчи cites: из него, "
+                  "и пустой каталог это не «ноль батчей», а «нечего мерить»; укажите "
+                  "--cache-dir того прогона, цену которого меряем", file=sys.stderr)
+            return 1
+        return do_hub_report(cache_for(cache_path, read_only=args.dry_run),
+                             data_root(), measurements, args.hub_cap)
+    # Склейке двойников кэш ответов не нужен вовсе, поэтому она и не создаёт
+    # его каталог: объект строит тот режим, который из него читает.
     if args.merge_twins:
         return do_merge_twins(env, args.crawl_id or "merge-twins", writer)
 
@@ -217,12 +231,15 @@ def main(argv: list[str] | None = None) -> int:
           f"модель эмбеддингов: {model}/{dims}")
 
     crawl_id = args.crawl_id or time.strftime("%Y%m%dT%H%M%S")
-    # Four caches in the data tree, all four chosen HERE and handed to their
-    # readers as objects -- the same construction the two writers above get,
-    # and for the same reason: --dry-run's promise about the tree must not
-    # depend on a keyword nobody forgot (DRY_RUN_WRITES_NOTHING). The fourth
-    # memoises the VECTORS --calibrate buys and, writing no work row, loses.
-    client = build_client(args, cache_for(Path(args.cache_dir), read_only=args.dry_run))
+    # Four caches in the data tree, every one of them chosen in THIS
+    # function and handed to its reader as an object -- the same
+    # construction the two writers above get, and for the same reason:
+    # --dry-run's promise about the tree must not depend on a keyword nobody
+    # forgot (DRY_RUN_WRITES_NOTHING). The response cache is the one the hub
+    # measurement reads too, built for it in its own branch above; the
+    # fourth memoises the VECTORS --calibrate buys and, writing no work row,
+    # loses.
+    client = build_client(args, cache_for(cache_path, read_only=args.dry_run))
     zbmath_cache = cache_for(default_zbmath_cache_dir(), read_only=args.dry_run)
     mathnet_cache = cache_for(default_mathnet_cache_dir(), read_only=args.dry_run)
     memo = VectorMemo(cache_for(default_embedding_cache_dir(), read_only=args.dry_run), model)

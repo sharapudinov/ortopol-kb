@@ -227,6 +227,44 @@ class CacheModeIsAnObjectTests(unittest.TestCase):
                 "read_only_cache", path.read_text(encoding="utf-8"),
                 f"{path.name}: the mode is an http_cache object, not a flag")
 
+    # OpenAlex responses, zbMATH reviews, Math-Net pages, candidate vectors.
+    CHANNELS = 4
+
+    def test_only_the_command_line_builds_a_cache(self):
+        """Every cache object is built in pg_load_citations.main(), the way
+        every writer is built in writers_for(). A second construction site
+        is a second answer to "which mode gets which object":
+        spike_cli.do_hub_report() built its own from args.cache_dir, in the
+        module whose docstring says neither writer nor cache is built there.
+        """
+        built = []
+        for path in SOURCES:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            allowed = {id(node) for function in ast.walk(tree)
+                       if isinstance(function, ast.FunctionDef)
+                       and function.name == "main" and path == LOADER
+                       for node in ast.walk(function)}
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if getattr(node.func, "id", None) != "cache_for":
+                    continue
+                self.assertIn(
+                    id(node), allowed,
+                    f"{path.name}:{node.lineno}: кэш строит pg_load_citations.main")
+                built.append(node.lineno)
+        self.assertGreaterEqual(len(built), self.CHANNELS,
+                                "main() перестал строить кэши — проверять стало нечего")
+
+    def test_no_mode_takes_the_namespace_instead_of_its_objects(self):
+        """The other half: a mode handed `args` reaches the flag whatever
+        the seam says, and cannot be driven without argparse at all."""
+        tree = ast.parse((CITATIONS_DIR / "spike_cli.py").read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("do_"):
+                self.assertNotIn("args", [a.arg for a in node.args.args],
+                                 f"{node.name}(): режим получает объекты, не Namespace")
+
     def test_the_seeding_pipeline_cannot_default_its_cache(self):
         tree = ast.parse((CITATIONS_DIR / "seed_metadata.py").read_text(encoding="utf-8"))
         functions = {node.name: node for node in tree.body

@@ -3,8 +3,8 @@
 
 Вторая половина шва, объявленного в spike_runs.py: тот модуль возвращает
 ЗАПИСАННОЕ (CalibrationRecord / HubRecord) либо поднимает NothingToMeasure и
-не печатает ни строки, а здесь живёт всё остальное — печать, stderr, коды
-возврата и проверка входа, которую нельзя делать позже (каталог кэша).
+не печатает ни строки, а здесь живёт всё остальное — печать, stderr и коды
+возврата.
 Отдельный модуль от pg_load_citations.py по размеру (kb/CLAUDE.md
 FILE_SIZE) и ровно по этому шву: тела двух других режимов — обхода и
 склейки двойников — остались у командной строки, потому что говорят они о
@@ -12,7 +12,8 @@ FILE_SIZE) и ровно по этому шву: тела двух других 
 
 Ни писателя, ни кэша здесь не строят: оба приходят объектами (см.
 DRY_RUN_WRITES_NOTHING) — у канала записи нет умолчания, а «какой режим
-какой объект даёт» сказано один раз, в pg_load_citations.writers_for.
+какой объект даёт» сказано один раз: писатели в
+pg_load_citations.writers_for, все кэши — в pg_load_citations.main.
 """
 from __future__ import annotations
 
@@ -20,31 +21,27 @@ import sys
 from pathlib import Path
 
 from . import calibration, hub_report
-from .http_cache import cache_for
 from .spike_runs import NothingToMeasure, record_calibration, record_hub_report
 
 
-def do_hub_report(args, tree_root: Path, writer) -> int:
+def do_hub_report(cache, tree_root: Path, writer, hub_cap: int) -> int:
     """Замер цены расширения вверх: что записано и что об этом сказано.
 
-    Каталог кэша проверяется ЗДЕСЬ и до того, как объект кэша построен:
-    рабочий кэш создаёт свой каталог при создании, и после этого «кэша
-    ответов нет» сказать было бы уже нечему — режим померил бы пустоту в
-    только что созданном пустом каталоге. Само чтение идёт через объект
+    Кэш приходит объектом, как писатель, и строит его pg_load_citations.main
+    вместе с остальными — вместе с проверкой каталога, которую нельзя делать
+    позже: рабочий кэш создаёт свой каталог при создании, и после этого
+    «кэша ответов нет» сказать уже нечему. Само чтение идёт через объект
     (citations/http_cache.py), поэтому под --dry-run проход не дописывает
     к страницам ни одного сайдкара.
+
+    Параметрами, а не `args`: у режима нет причин знать форму командной
+    строки, и argparse.Namespace здесь означал бы, что вызвать замер без
+    неё нельзя (сосед record_hub_report так и написан).
     """
-    cache_path = Path(args.cache_dir)
-    if not cache_path.is_dir():
-        print(f"кэша ответов нет: {cache_path} — замер читает батчи cites: из него, "
-              "и пустой каталог это не «ноль батчей», а «нечего мерить»; укажите "
-              "--cache-dir того прогона, цену которого меряем", file=sys.stderr)
-        return 1
-    cache = cache_for(cache_path, read_only=args.dry_run)
     try:
-        record = record_hub_report(cache, tree_root, writer, args.hub_cap)
+        record = record_hub_report(cache, tree_root, writer, hub_cap)
     except NothingToMeasure as exc:
-        print(f"{exc} (кэш {cache_path})", file=sys.stderr)
+        print(f"{exc} (записей в кэше: {len(cache.names())})", file=sys.stderr)
         return 1
     if writer.dry:
         print("--dry-run: ничего не записано. meta.count батчей cites: "
