@@ -161,7 +161,7 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> DumpedRows:
     build, not be quietly assigned a default.
 
     citation_mode is the value build_package.main() resolved once
-    (citation_profile.resolve_citation_mode) and handed to the manifest as
+    (citation_profile, by profile) and handed to the manifest as
     well; this module does not re-read the policy, so the dump and the
     manifest cannot describe two different cuts of the same schema. It has
     no default for the same reason gather_manifest()'s has none: an omitted

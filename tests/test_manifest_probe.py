@@ -430,10 +430,10 @@ class CitationManifestTests(unittest.TestCase):
         """A FULL build whose database carries no citation schema: full
         applies no policy and describes the database as it is, so the mode
         is "none" and the provenance is "not-applicable" --
-        resolve_citation_mode() reads no owner row on that path, and the
-        manifest may not claim one on its behalf. (A PUBLIC build against
-        such a database does not get here at all: it is refused, see
-        citation_profile.resolve_citation_mode.)
+        citation_profile.full_profile_mode() reads no owner row at all, and
+        the manifest may not claim one on its behalf. (A PUBLIC build
+        against such a database does not get here at all: it is refused,
+        see citation_profile.resolve_citation_mode.)
         """
         manifest = self._gather(profile="full", citation_mode="none",
                                 policy_source="not-applicable")

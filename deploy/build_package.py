@@ -61,7 +61,8 @@ from paths import default_corpus_dir  # noqa: E402
 from pg_common import PostgresUnavailable, load_pgenv  # noqa: E402
 
 from artifact_bundle import bundle_runtime_files, dump_schemas, package  # noqa: E402
-from citation_profile import CitationUnclassified, resolve_citation_mode  # noqa: E402
+from citation_profile import (CitationUnclassified, full_profile_mode,  # noqa: E402
+                              resolve_citation_mode)
 from dump_integrity import sha256_file  # noqa: E402
 from legal_profile import Unclassified  # noqa: E402
 from manifest_keys import Key  # noqa: E402
@@ -162,18 +163,23 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    # The citation policy is read ONCE per build, here, and the resolved
-    # pair is handed to every consumer below (manifest and dump). Two
-    # resolutions of the same policy can disagree; one cannot -- and that
-    # holds for WHOSE decision it was as strongly as for the mode itself,
-    # which is why the provenance comes out of the same call rather than
-    # being recomputed here from the profile and the flag. Those two
-    # arguments do not know whether the database carried a citation schema
-    # at all, and a build against one that does not decides nothing, reads
-    # no owner row and honours no override.
+    # What the citation schema contributes is decided ONCE per build, here,
+    # and the resolved pair is handed to every consumer below (manifest and
+    # dump). Two resolutions of the same question can disagree; one cannot
+    # -- and that holds for WHOSE decision it was as strongly as for the
+    # mode itself, which is why the provenance comes out of the same call
+    # rather than being recomputed here from the profile and the flag.
+    #
+    # The branch is on the profile and it is written here, in the open,
+    # because the two profiles ask genuinely different questions: public
+    # resolves the owner's POLICY (and refuses when there is none), full
+    # applies no policy at all and only reports whether the database has
+    # the schema. Folded into one function keyed on `!= PUBLIC`, the second
+    # answered a mechanical fact with a value out of the policy vocabulary.
     try:
-        citation_mode, policy_source = resolve_citation_mode(
-            env, args.profile, args.policy_override)
+        citation_mode, policy_source = (
+            resolve_citation_mode(env, args.profile, args.policy_override)
+            if args.profile == Profile.PUBLIC else full_profile_mode(env))
     except CitationUnclassified as exc:
         # Same refusal as an unclassified document, for the citation schema
         # as a whole (see citation_profile.py): the crawl's own record names

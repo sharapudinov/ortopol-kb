@@ -145,7 +145,7 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
     and not the other). main() resolves, both consumers receive.
     """
 
-    def _run(self, argv, resolved=None, resolve_error=None, resolve=None):
+    def _run(self, argv, resolved=None, resolve_error=None, resolve=None, full=None):
         with tempfile.TemporaryDirectory() as tmp:
             corpus_dir = Path(tmp)
             seen = {}
@@ -168,12 +168,19 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
                 return DumpedRows(corpus={"documents": 70, "pages": 2462},
                                   citation={"work": 441})
 
+            # Two answers, one per profile, because main() picks between
+            # them by profile: the public one resolves the owner's policy,
+            # the full one reports whether the schema is there at all.
             resolve = mock.Mock(
                 side_effect=resolve_error or resolve,
                 **({} if (resolve_error or resolve) else {"return_value": resolved}))
+            full_answer = mock.Mock(
+                side_effect=resolve_error or full,
+                **({} if (resolve_error or full) else {"return_value": resolved}))
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "x"}), \
                  mock.patch.object(build_package, "resolve_citation_mode", resolve), \
+                 mock.patch.object(build_package, "full_profile_mode", full_answer), \
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_public", side_effect=fake_public), \
@@ -182,7 +189,9 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
                  mock.patch.object(build_package, "package", side_effect=lambda w, o: o.write_bytes(b"z")), \
                  mock.patch("sys.stderr"):
                 exit_code = build_package.main(argv)
-            seen["resolve_calls"] = resolve.call_count
+            seen["resolve_calls"] = resolve.call_count + full_answer.call_count
+            seen["public_calls"] = resolve.call_count
+            seen["full_calls"] = full_answer.call_count
         return exit_code, seen
 
     def test_manifest_and_dump_receive_the_same_resolved_mode(self):
@@ -209,6 +218,17 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
         self.assertEqual(seen["resolve_calls"], 1)
         self.assertEqual(seen["manifest_mode"], "full-skeleton")
         self.assertEqual(seen["policy_source"], "not-applicable")
+
+    def test_each_profile_asks_its_own_question_and_only_that_one(self):
+        """The branch is on the profile and it is main()'s: the policy
+        resolver is never asked about a profile that applies no policy, and
+        the mechanical answer is never asked about the one that does.
+        """
+        _code, full_seen = self._run([], resolved=("full-skeleton", "not-applicable"))
+        self.assertEqual((full_seen["public_calls"], full_seen["full_calls"]), (0, 1))
+        _code, public_seen = self._run(["--profile", "public"],
+                                       resolved=("topology-only", "owner"))
+        self.assertEqual((public_seen["public_calls"], public_seen["full_calls"]), (1, 0))
 
     def test_a_public_build_against_a_schemaless_database_stops(self):
         """Nothing was decided: no schema to read a policy from, no owner
@@ -245,7 +265,7 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
         with mock.patch.object(citation_profile, "citation_schema_exists",
                                 return_value=False), \
              mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
-            exit_code, seen = self._run([], resolve=citation_profile.resolve_citation_mode)
+            exit_code, seen = self._run([], full=citation_profile.full_profile_mode)
         self.assertEqual(exit_code, 0)
         self.assertEqual(seen["manifest_mode"], "none")
         self.assertEqual(seen["policy_source"], "not-applicable")

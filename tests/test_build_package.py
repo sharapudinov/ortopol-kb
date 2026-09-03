@@ -69,6 +69,8 @@ class MainHappyPathTests(unittest.TestCase):
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
                  mock.patch.object(build_package, "resolve_citation_mode",
                                     return_value=("full-skeleton", "not-applicable")), \
+                 mock.patch.object(build_package, "full_profile_mode",
+                                    return_value=("full-skeleton", "not-applicable")), \
                  mock.patch.object(build_package, "gather_manifest",
                                     return_value=fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files",
@@ -130,6 +132,8 @@ class ProfileDispatchTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", return_value={"PGUSER": "ortopol"}), \
                  mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value=("full-skeleton", "not-applicable")), \
+                 mock.patch.object(build_package, "full_profile_mode",
                                     return_value=("full-skeleton", "not-applicable")), \
                  mock.patch.object(build_package, "gather_manifest", side_effect=fake_gather), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
@@ -238,6 +242,8 @@ class ProfileDispatchTests(unittest.TestCase):
             with mock.patch.object(build_package, "default_corpus_dir", return_value=corpus_dir), \
                  mock.patch.object(build_package, "load_pgenv", side_effect=fake_load_pgenv), \
                  mock.patch.object(build_package, "resolve_citation_mode",
+                                    return_value=("full-skeleton", "not-applicable")), \
+                 mock.patch.object(build_package, "full_profile_mode",
                                     return_value=("full-skeleton", "not-applicable")), \
                  mock.patch.object(build_package, "gather_manifest", return_value=fake_manifest()), \
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \

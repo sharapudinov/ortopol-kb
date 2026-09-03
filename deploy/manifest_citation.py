@@ -36,8 +36,9 @@ def citation_block(mode: str, policy_source: str) -> dict:
     recipient's gate refuses an empty table_rows under a shipping mode
     rather than reading it as silence.
 
-    `mode` is resolved once per build by citation_profile.
-    resolve_citation_mode() and handed in; this module never re-derives it.
+    `mode` is resolved once per build by citation_profile (which of its two
+    questions is asked depends on the profile) and handed in; this module
+    never re-derives it.
     `policy_source` travels the same way and says whose decision that mode
     was -- the owner's row, or the command line's --policy-override.
     """

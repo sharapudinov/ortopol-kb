@@ -206,13 +206,39 @@ def require_citation_mode(env: dict) -> str:
     return mode
 
 
+def full_profile_mode(env: dict) -> tuple[str, str]:
+    """What a FULL build carries, and whose decision that was: a mechanical
+    fact about the database, asked separately from any policy.
+
+    The full profile applies no cut and describes the instance as it is, so
+    there is nothing here to read from citation.public_policy and nothing
+    to override -- only "is the schema there". Present, the whole of it
+    travels; absent, there is nothing to travel, which is honestly none.
+    The provenance is NOT_APPLICABLE in both cases, and that is the one
+    thing this function decides: no owner named a mode, so the field
+    designed to be non-fabricable must not claim one.
+
+    Separate from resolve_citation_mode() because the two answer different
+    questions with the same vocabulary. Asked as one function keyed on
+    `profile != PUBLIC`, this branch expressed a mechanical fact through a
+    policy value behind a denylist over a closed vocabulary -- and that
+    value then drove schemas_for(), ships_citation(), strips_content(),
+    table_rows_check.required_schemas() and the citation visitors on both
+    sides of the artifact boundary.
+    """
+    if not citation_schema_exists(env):
+        return CitationMode.NONE, PolicySource.NOT_APPLICABLE
+    return CitationMode.FULL_SKELETON, PolicySource.NOT_APPLICABLE
+
+
 def resolve_citation_mode(
     env: dict, profile: str, override: str | None = None
 ) -> tuple[str, str]:
-    """The ONE reading of the citation policy per build: (mode, source).
+    """The PUBLIC profile's ONE reading of the citation policy: (mode, source).
 
-    Resolved once by build_package.main() and threaded to every consumer --
-    the manifest (manifest_probe.gather_manifest) and the dump
+    Resolved once by build_package.main() -- which asks this or
+    full_profile_mode() by profile -- and threaded to every consumer: the
+    manifest (manifest_probe.gather_manifest) and the dump
     (public_dump.dump_public). Neither re-derives it: two independent
     resolutions of the same policy can disagree, and the artifact would then
     describe a citation block its dump does not match, which is exactly what
@@ -222,18 +248,18 @@ def resolve_citation_mode(
     stronger case of it: manifest.citation.policy_source is the one field
     designed to be non-fabricable (PolicySource's own docstring), so it must
     be an output of the branch that actually decided, never a second
-    derivation from the same arguments. The two disagree exactly where it
-    matters -- a public build against a database with no citation schema
-    decides nothing, reads no owner row and honours no override, and a
-    provenance computed from the profile alone would still call that the
-    owner's decision.
+    derivation from the same arguments. OVERRIDE only where the override
+    picked the mode (TEST ONLY, see build_package.py --help), OWNER only
+    where citation.public_policy was actually read.
 
-    So: NOT_APPLICABLE only on a profile that applies no policy -- full
-    carries whatever the schema holds, and holds nothing when there is no
-    schema (it describes the database as it is; see build_package.py's own
-    docstring), OVERRIDE only where the override picked the mode (TEST
-    ONLY, see build_package.py --help), OWNER only where
-    citation.public_policy was actually read.
+    Only the public profile HAS a policy to resolve, so the profile is
+    tested positively and anything else is a programming error rather than
+    a lenient branch: the other profile's answer is a different question
+    with a different name (full_profile_mode above), and build_package.py
+    picks between them by profile. Asked here as `!= Profile.PUBLIC` the
+    full path came out of a denylist over a closed vocabulary -- exactly
+    the polarity manifest_classes.check_profile_is_known exists to condemn
+    on the other side of the boundary.
 
     A PUBLIC build against a database with no citation schema is the one
     case that answers neither way: it raises. Returning NONE there would
@@ -244,11 +270,12 @@ def resolve_citation_mode(
     either; and a public build with a schema but neither row nor override
     raises for the neighbouring reason.
     """
-    if profile != Profile.PUBLIC:
-        if not citation_schema_exists(env):
-            return CitationMode.NONE, PolicySource.NOT_APPLICABLE
-        return CitationMode.FULL_SKELETON, PolicySource.NOT_APPLICABLE
-    if override:
-        require_citation_schema(env)
-        return override, PolicySource.OVERRIDE
-    return require_citation_mode(env), PolicySource.OWNER
+    if profile == Profile.PUBLIC:
+        if override:
+            require_citation_schema(env)
+            return override, PolicySource.OVERRIDE
+        return require_citation_mode(env), PolicySource.OWNER
+    raise ValueError(
+        f"resolve_citation_mode answers for profile {Profile.PUBLIC!r} only, "
+        f"got {profile!r}: another profile applies no citation policy and is "
+        "answered by full_profile_mode()")

@@ -69,10 +69,11 @@ class PolicySource:
     decision is made. Never publishable, and profile_checks.py fails on it.
     NOT_APPLICABLE: this profile applies no citation policy at all. Only
     the public profile has one to apply -- full carries the whole schema
-    whatever the owner's row says, and resolve_citation_mode() does not
-    even read citation.public_policy for it. Naming the owner there would
-    put a decision nobody made into the one field designed to be
-    non-fabricable.
+    whatever the owner's row says, which is why its answer comes from
+    citation_profile.full_profile_mode() and reads citation.public_policy
+    not at all, while resolve_citation_mode() answers for public alone.
+    Naming the owner here would put a decision nobody made into the one
+    field designed to be non-fabricable.
 
     In the manifest rather than only in the filename because the filename
     is not part of the package: it is renamed by a copy, and it is not what

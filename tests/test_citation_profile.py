@@ -12,7 +12,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import citation_profile
-from manifest_contract import CitationMode, PolicySource
+from manifest_contract import CitationMode, PolicySource, Profile
 
 class SchemaAndPolicyReadTests(unittest.TestCase):
     def test_public_policy_returns_none_when_row_is_absent(self):
@@ -55,20 +55,70 @@ class RequireCitationModeTests(unittest.TestCase):
                 self.assertEqual(citation_profile.require_citation_mode({}), mode)
 
 
-class ResolveCitationModeTests(unittest.TestCase):
-    """The ONE reading of the policy per build (build_package.main hands the
-    result to the manifest and to the dump alike).
+class FullProfileModeTests(unittest.TestCase):
+    """The full profile's answer, which is a mechanical fact rather than a
+    policy: is the schema there.
+
+    Its own function, because asked as the else-branch of the policy
+    resolver it was a value from the policy vocabulary chosen behind a
+    denylist over another one (`profile != PUBLIC`) -- and that value drives
+    the artifact's whole citation behaviour on both sides of the boundary.
     """
 
     def test_no_citation_schema_leaves_a_full_build_nothing_to_carry(self):
         """full describes the database as it is: no schema means no citation
         block, and no policy applies to full in the first place."""
         with mock.patch.object(citation_profile, "citation_schema_exists", return_value=False), \
-             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
+             mock.patch.object(citation_profile, "require_citation_mode") as require_mock, \
+             mock.patch.object(citation_profile, "citation_public_policy") as policy_mock:
             self.assertEqual(
-                citation_profile.resolve_citation_mode({}, "full"),
+                citation_profile.full_profile_mode({}),
                 (CitationMode.NONE, PolicySource.NOT_APPLICABLE))
         require_mock.assert_not_called()
+        policy_mock.assert_not_called()
+
+    def test_a_schema_that_is_there_travels_whole(self):
+        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \
+             mock.patch.object(citation_profile, "require_citation_mode") as require_mock, \
+             mock.patch.object(citation_profile, "citation_public_policy") as policy_mock:
+            self.assertEqual(citation_profile.full_profile_mode({}),
+                             (CitationMode.FULL_SKELETON, PolicySource.NOT_APPLICABLE))
+        require_mock.assert_not_called()
+        policy_mock.assert_not_called()
+
+    def test_the_owners_row_is_never_named_as_the_source(self):
+        """Whatever the row says, nobody DECIDED this mode -- so the field
+        designed to be non-fabricable says so.
+        """
+        for exists in (True, False):
+            with self.subTest(schema=exists):
+                with mock.patch.object(citation_profile, "citation_schema_exists",
+                                       return_value=exists):
+                    _mode, source = citation_profile.full_profile_mode({})
+                self.assertEqual(source, PolicySource.NOT_APPLICABLE)
+
+
+class ResolveCitationModeTests(unittest.TestCase):
+    """The public profile's ONE reading of the policy per build
+    (build_package.main hands the result to the manifest and to the dump
+    alike).
+    """
+
+    def test_the_resolver_answers_for_the_public_profile_only(self):
+        """A positive test on the profile, and a programming error for any
+        other: the full profile's answer has its own name, and a lenient
+        else-branch here is how a mechanical fact came to be spelled as a
+        policy value.
+        """
+        with mock.patch.object(citation_profile, "citation_schema_exists") as exists_mock:
+            with self.assertRaises(ValueError) as ctx:
+                citation_profile.resolve_citation_mode({}, Profile.FULL)
+        self.assertIn("full_profile_mode", str(ctx.exception))
+        exists_mock.assert_not_called()
+
+    def test_a_profile_outside_the_vocabulary_is_refused_too(self):
+        with self.assertRaises(ValueError):
+            citation_profile.resolve_citation_mode({}, "publicish")
 
     def test_a_public_build_against_a_schemaless_database_refuses(self):
         """Shipping no citation graph at all is a decision, and the packager
@@ -83,13 +133,6 @@ class ResolveCitationModeTests(unittest.TestCase):
             with self.assertRaises(citation_profile.CitationUnclassified):
                 citation_profile.resolve_citation_mode(
                     {}, "public", CitationMode.FULL_SKELETON)
-
-    def test_full_profile_ships_the_whole_schema_whatever_the_policy_row_says(self):
-        with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \
-             mock.patch.object(citation_profile, "require_citation_mode") as require_mock:
-            self.assertEqual(citation_profile.resolve_citation_mode({}, "full"),
-                             (CitationMode.FULL_SKELETON, PolicySource.NOT_APPLICABLE))
-        require_mock.assert_not_called()
 
     def test_public_profile_defers_to_the_owners_row(self):
         with mock.patch.object(citation_profile, "citation_schema_exists", return_value=True), \

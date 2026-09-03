@@ -101,8 +101,9 @@ def gather_manifest(
     """The manifest for `profile`, read against the live instance.
 
     citation_mode and policy_source are required and keyword-only: they are
-    the two halves of ONE resolution (citation_profile.resolve_citation_mode),
-    and this function can arrive at neither. A default would make omission
+    the two halves of ONE resolution -- citation_profile's, whichever of its
+    two questions the profile asks (resolve_citation_mode for public,
+    full_profile_mode for full) -- and this function can arrive at neither. A default would make omission
     indistinguishable from a decision -- and the decision it would fabricate
     is the owner's own: mode `none` with provenance `owner` is a
     self-consistent package asserting the owner said the citation graph does
@@ -131,7 +132,7 @@ def gather_manifest(
     # decision about what travels.
     #
     # The citation-schema policy gate is the caller's: build_package.main()
-    # resolves the mode (citation_profile.resolve_citation_mode) before it
+    # resolves the mode (citation_profile, by profile) before it
     # gets here and hands the resolved literal to this function and to the
     # dump alike.
     legal_profile.require_classified(env)
