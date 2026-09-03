@@ -46,6 +46,7 @@ from deploy_pathfix import ensure_corpus_importable
 
 ensure_corpus_importable()
 
+from citation_columns import JOURNAL_KEY_COLUMNS  # noqa: E402
 from legal_profile import SHIPPED_SQL  # noqa: E402
 from manifest_contract import CitationMode, PolicySource, Profile  # noqa: E402
 from pg_common import scalar  # noqa: E402
@@ -90,15 +91,15 @@ def shipped_work_sql(alias: str = "w") -> str:
 # REFERENCES corpus.documents(id), so "names an unshipped document" is the
 # join below. One scan of corpus.documents for the whole statement.
 #
-# A journal row names things in three columns, and each carries a name from
-# either vocabulary: frontier_key is a document id on seed/twin rows and a
-# work key on the rest, candidate_key is the record the decision was about,
-# node_key is the node it resolved to (a seed work on a twin promotion, see
-# citations/journal.py). So all three are matched against both vocabularies,
-# which is why cut_names unions them.
+# WHICH columns of a journal row name something is deploy/citation_columns.
+# JOURNAL_KEY_COLUMNS -- one declaration, read here to BUILD the branches and
+# by the bundled checker to collect the same columns off the dumped rows. A
+# key column added to the schema therefore reaches the cut and its
+# verification at once; spelled here as three literal joins it reached
+# whichever of the two somebody remembered.
 #
-# The three mention tests are a UNION of three branches rather than one
-# three-way OR, and that is the whole point: an OR of three equalities is one
+# The mention tests are a UNION of one branch PER KEY COLUMN rather than one
+# n-way OR, and that is the whole point: an OR of three equalities is one
 # non-sargable join qualifier, so none of them can reach an index. Split,
 # each branch is a join the planner drives from the tiny cut_names side --
 # EXPLAIN (ANALYZE) of the real COPY select on the live instance, over a
@@ -108,11 +109,14 @@ def shipped_work_sql(alias: str = "w") -> str:
 # cut names and 10 loops each, 21 ms for the whole statement. At today's 604
 # rows the planner hashes the table instead, as it should at that size.
 #
-# The third branch used to be strpos() over `reason`, because the node key
+# The node_key branch used to be strpos() over `reason`, because the node key
 # lived inside that prose -- a full scan no index can serve. It is a column
 # now (pg_schema_citation.sql), and matching a name means matching a name,
 # not searching for its text inside a sentence: an over-matching substring
 # silently dropped journal rows that named nothing sensitive.
+_CUT_STEP_BRANCH = ("    SELECT j.id FROM citation.crawl_step j "
+                    "JOIN cut_names r ON j.{column} = r.ref")
+
 _CUT_CTES = """WITH cut_documents AS MATERIALIZED (
     SELECT d.id AS ref FROM corpus.documents d WHERE NOT ({shipped})
 ), cut_keys AS MATERIALIZED (
@@ -121,13 +125,17 @@ _CUT_CTES = """WITH cut_documents AS MATERIALIZED (
 ), cut_names AS MATERIALIZED (
     SELECT ref FROM cut_documents UNION SELECT ref FROM cut_keys
 ), cut_steps AS MATERIALIZED (
-    SELECT j.id FROM citation.crawl_step j JOIN cut_names r ON j.frontier_key = r.ref
-    UNION
-    SELECT j.id FROM citation.crawl_step j JOIN cut_names r ON j.candidate_key = r.ref
-    UNION
-    SELECT j.id FROM citation.crawl_step j JOIN cut_names r ON j.node_key = r.ref
+{steps}
 )
 """
+
+
+def _cut_steps() -> str:
+    """One join per key column, unioned -- built per call rather than at
+    import, so the branches are the declaration's answer at the moment the
+    statement is written and not at the moment this module was loaded."""
+    return "\n    UNION\n".join(
+        _CUT_STEP_BRANCH.format(column=column) for column in JOURNAL_KEY_COLUMNS)
 
 
 def crawl_step_cut_ctes() -> str:
@@ -138,7 +146,7 @@ def crawl_step_cut_ctes() -> str:
     neither is valid without the other (citation_dump.copy_select pairs
     them, and its tests check the pairing).
     """
-    return _CUT_CTES.format(shipped=SHIPPED_SQL)
+    return _CUT_CTES.format(shipped=SHIPPED_SQL, steps=_cut_steps())
 
 
 def shipped_crawl_step_sql(alias: str = "s") -> str:

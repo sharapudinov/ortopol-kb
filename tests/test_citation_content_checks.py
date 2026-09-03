@@ -5,6 +5,7 @@ right about actual bytes, not a mocked scan).
 """
 from __future__ import annotations
 
+import ast
 import gzip
 import tempfile
 import unittest
@@ -16,10 +17,15 @@ import _pathfix_deploy  # noqa: F401
 
 import citation_columns
 import citation_content_checks
+import citation_profile
 import dump_scan
 from _artifact_fixtures import dump_facts
+from citation_columns import JOURNAL_KEY_COLUMNS
 from manifest_keys import Key
 from manifest_contract import CitationMode
+
+DEPLOY_DIR = Path(citation_columns.__file__).resolve().parent
+OWNER = "citation_columns.py"
 
 
 def _copy_block(table: str, columns: list[str], rows: list[list[str]]) -> str:
@@ -228,6 +234,64 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
         _scans, facts = _scan(dump, CitationMode.TOPOLOGY_ONLY)
         self.assertEqual(facts.citation.leaked.sample, ["citation.work.abstract:k1"])
         self.assertEqual(facts.citation.leaked.total, 1)
+
+
+def _bare_strings(path: Path) -> set[str]:
+    """Every string LITERAL a module evaluates, docstrings excepted.
+
+    Prose about a column is not a use of it -- the comments and docstrings
+    that explain why the journal has three key columns must stay readable
+    where they are.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    documentation = {ast.get_docstring(node, clean=False)
+                     for node in ast.walk(tree)
+                     if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                          ast.AsyncFunctionDef))}
+    return {node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and node.value not in documentation}
+
+
+class JournalKeyColumnsAreDeclaredOnceTests(unittest.TestCase):
+    """The producer's cut and the bundled checker answer "which columns does
+    a journal row name something in" from ONE declaration.
+
+    Two hand-written copies could only agree by accident, and crawl_step
+    grows a column at a time (JOURNAL_FACTS_ARE_COLUMNS): a fourth key
+    column added to the UNION alone leaves the recipient blind to the cut
+    the check exists to verify, added to the checker alone fails a correct
+    package. Either divergence is silent until it fires.
+    """
+
+    def test_only_citation_columns_spells_a_key_column(self):
+        for path in sorted(DEPLOY_DIR.rglob("*.py")):
+            if path.name == OWNER:
+                continue
+            with self.subTest(module=path.name):
+                self.assertFalse(
+                    _bare_strings(path) & set(JOURNAL_KEY_COLUMNS),
+                    f"{path.name}: имя ключевой колонки журнала набрано руками; "
+                    f"импортируйте JOURNAL_KEY_COLUMNS из {OWNER}")
+
+    def test_the_checker_collects_exactly_the_declared_columns(self):
+        self.assertIs(citation_content_checks.JOURNAL_KEY_COLUMNS, JOURNAL_KEY_COLUMNS)
+
+    def test_the_cut_joins_once_per_declared_column(self):
+        ctes = citation_profile.crawl_step_cut_ctes()
+        for column in JOURNAL_KEY_COLUMNS:
+            self.assertEqual(ctes.count(f"j.{column} = r.ref"), 1, column)
+        self.assertEqual(ctes.count("JOIN cut_names r ON"), len(JOURNAL_KEY_COLUMNS))
+
+    def test_a_column_added_to_the_declaration_reaches_the_cut(self):
+        """The declaration is what the SQL is BUILT from, so the branch
+        arrives without citation_profile.py being edited at all.
+        """
+        with mock.patch.object(citation_profile, "JOURNAL_KEY_COLUMNS",
+                               (*JOURNAL_KEY_COLUMNS, "successor_key")):
+            ctes = citation_profile.crawl_step_cut_ctes()
+        self.assertIn("j.successor_key = r.ref", ctes)
+        self.assertEqual(ctes.count("JOIN cut_names r ON"), len(JOURNAL_KEY_COLUMNS) + 1)
 
 
 if __name__ == "__main__":

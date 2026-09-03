@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import dump_scan
-from citation_columns import CITATION_COLUMN_CLASS, content_columns
+from citation_columns import CITATION_COLUMN_CLASS, JOURNAL_KEY_COLUMNS, content_columns
 from manifest_keys import Key
 from manifest_contract import strips_content
 
@@ -48,12 +48,10 @@ LEAK_SAMPLE = 20
 WORK_TABLE = "citation.work"
 CITES_TABLE = "citation.cites"
 JOURNAL_TABLE = "citation.crawl_step"
-# The three columns a journal row NAMES something in. Each carries a name
-# from either vocabulary -- frontier_key is a document id on seed/twin rows
-# and a work key on the rest, candidate_key is the record the decision was
-# about, node_key is the node it resolved to -- which is why the cut matches
-# all three against both, and why all three are collected here.
-JOURNAL_KEY_COLUMNS = ("frontier_key", "candidate_key", "node_key")
+# Which columns a journal row NAMES something in is citation_columns.
+# JOURNAL_KEY_COLUMNS -- imported, never restated: the producer's cut and
+# this collection are two readings of one declaration, and re-typed here the
+# checker would agree with the SQL that built the artifact only by accident.
 ID_COLUMN = "id"
 KEY_COLUMN = "key"
 DOCUMENT_ID_COLUMN = "document_id"

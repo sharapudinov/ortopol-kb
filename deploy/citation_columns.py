@@ -79,6 +79,25 @@ CONTENT_WITHHELD = {
     ("crawl_step", "reason"): "NULL::text",
 }
 
+# Which columns of the journal NAME something -- a document id or a work key,
+# from either vocabulary: frontier_key is a document id on seed/twin rows and
+# a work key on the rest, candidate_key is the record the decision was about,
+# node_key is the node it resolved to (a seed work on a twin promotion, see
+# citations/journal.py). So the cut matches all three against both
+# vocabularies, and the artifact-side check collects all three.
+#
+# Declared HERE, beside the column classes, for the reason this module
+# exists at all: the producer builds the journal cut's three-branch UNION
+# from it (deploy/citation_profile.py) and the recipient's bundled checker
+# collects exactly those columns from the dumped rows
+# (deploy/citation_content_checks.py). Two hand-written copies could only
+# agree by accident, and crawl_step grows a column at a time
+# (JOURNAL_FACTS_ARE_COLUMNS): a fourth key column added to the producer's
+# UNION alone leaves the checker blind to the very cut it verifies, added to
+# the checker alone fails a correct package. CITATION_COLUMN_CLASS cannot
+# answer this -- it says whether a column may leave, not what it names.
+JOURNAL_KEY_COLUMNS = ("frontier_key", "candidate_key", "node_key")
+
 CITATION = ColumnClasses(
     "citation", CITATION_COLUMN_CLASS, CONTENT_WITHHELD,
     hint="дополните CITATION_COLUMN_CLASS в deploy/citation_columns.py",
