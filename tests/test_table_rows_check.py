@@ -18,6 +18,7 @@ import unittest
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import column_class_checks
 import table_rows_check
 from _artifact_fixtures import (
     citation_copy_block as _copy_block,
@@ -199,6 +200,25 @@ class DeclaredSchemasTests(unittest.TestCase):
         self.assertEqual(set(table_rows_check.DECLARED_SCHEMAS), {CORPUS, CITATION})
         self.assertEqual(sorted(table_rows_check.DECLARATION_BLOCK),
                          sorted(table_rows_check.DECLARED_SCHEMAS))
+
+    def test_the_set_is_the_column_classification_s_own(self):
+        """Not "the same today": the same declaration. Which schemas are
+        classified is column_class_checks.CLASSIFIED_SCHEMAS, and the
+        manifest-block mapping here is derived through it rather than
+        listing the schemas a second time.
+        """
+        self.assertEqual(sorted(table_rows_check.DECLARATION_BLOCK),
+                         sorted(column_class_checks.CLASSIFIED_SCHEMAS))
+
+    def test_a_classified_schema_with_no_manifest_block_cannot_be_derived(self):
+        """The positive control, in the form of the defect: a schema
+        classified next door and forgotten here raises where the mapping is
+        built -- at import, i.e. a package that cannot be certified -- and
+        does not resolve to a table count nobody asks for.
+        """
+        with self.assertRaises(KeyError):
+            {schema: table_rows_check._BLOCK[schema]
+             for schema in {**column_class_checks.CLASSIFIED_SCHEMAS, "future": object()}}
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ of an unsigned manifest a self-declaration cannot excuse a check.
 from __future__ import annotations
 
 from citation_columns import CITATION
+from column_class_checks import CLASSIFIED_SCHEMAS
 from corpus_columns import CORPUS
 from manifest_keys import Key
 from manifest_contract import required_schemas
@@ -37,7 +38,16 @@ from manifest_contract import required_schemas
 # One declaration, because the producer stamps it (manifest_rows.py) and
 # the recipient reads it, and a manifest key spelled on both sides of the
 # artifact boundary agrees with itself only while someone remembers both.
-DECLARATION_BLOCK = {CORPUS.schema: Key.CORPUS, CITATION.schema: Key.CITATION}
+#
+# WHICH schemas get one is not a second declaration: the set is
+# column_class_checks.CLASSIFIED_SCHEMAS, the same one whose columns the
+# recipient holds to the classification, and the mapping is derived
+# through it. So a schema classified there and forgotten here is a
+# KeyError at import -- a package that cannot be certified at all --
+# rather than a table count nobody asks for, which is the shape this
+# module exists to refuse.
+_BLOCK = {CORPUS.schema: Key.CORPUS, CITATION.schema: Key.CITATION}
+DECLARATION_BLOCK = {schema: _BLOCK[schema] for schema in CLASSIFIED_SCHEMAS}
 # The schemas this check runs for, in a fixed order so a report reads the
 # same way twice.
 DECLARED_SCHEMAS = tuple(sorted(DECLARATION_BLOCK))
