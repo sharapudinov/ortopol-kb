@@ -98,19 +98,28 @@ class ArtifactBuilder:
             + _copy_block("documents", DOCUMENT_COLUMNS, self.documents)
             + _copy_block("pages", self.page_columns, self.pages)
         )
+        # {table: rows} as this fixture actually wrote them, so a package
+        # built here declares what it carries the way the packager does
+        # (manifest.citation.table_rows). A test about a MISMATCH sets
+        # citation["table_rows"] itself and the declaration below stands
+        # instead of this one.
+        shipped_tables: dict[str, int] = {}
         if self.citation is not None and self.citation["mode"] != "none":
-            dump_text += _citation_copy_block(
-                "work", self.citation.get("work_columns", []), self.citation.get("work", []))
-            dump_text += _citation_copy_block(
-                "cites", self.citation.get("cites_columns", []), self.citation.get("cites", []))
+            for table, columns_key in (("work", "work_columns"),
+                                       ("cites", "cites_columns")):
+                rows = self.citation.get(table, [])
+                dump_text += _citation_copy_block(
+                    table, self.citation.get(columns_key, []), rows)
+                shipped_tables[table] = len(rows)
             # The journal ships under every mode that ships the schema, and
             # its cut is the one this fixture is asked about most: a row
             # naming EXCLUDED_DOC in any of the three key columns is the
             # leak deploy/citation_cut_checks.py exists to catch.
             if self.citation.get("crawl_step_columns"):
+                rows = self.citation.get("crawl_step", [])
                 dump_text += _citation_copy_block(
-                    "crawl_step", self.citation["crawl_step_columns"],
-                    self.citation.get("crawl_step", []))
+                    "crawl_step", self.citation["crawl_step_columns"], rows)
+                shipped_tables["crawl_step"] = len(rows)
         dump_path = self.directory / "01_dump.sql.gz"
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
@@ -140,6 +149,7 @@ class ArtifactBuilder:
                 "work_count": citation["work_count"],
                 "cites_count": citation["cites_count"],
                 "work_by_kind": citation.get("work_by_kind", {}),
+                "table_rows": citation.get("table_rows", shipped_tables),
             }
         (self.directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False))
         return self.directory

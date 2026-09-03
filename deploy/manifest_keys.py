@@ -103,6 +103,12 @@ class Key:
     WORK_COUNT = "work_count"
     CITES_COUNT = "cites_count"
     WORK_BY_KIND = "work_by_kind"
+    # {table: rows} for EVERY citation table the dump carries, not only the
+    # two the counts above describe. What a recipient can otherwise learn
+    # about crawl_step, public_policy and schema_backfill is nothing: a
+    # check that finds no such block has no way to tell "cut correctly" from
+    # "never shipped", and reports a green nought either way.
+    TABLE_ROWS = "table_rows"
 
 
 # 4: added profile/schemas/legal to the manifest (two-profile packager). A
@@ -131,4 +137,11 @@ class Key:
 # artifact asserts an owner decision that was never read, and a v7 reader
 # would refuse the honest value as unknown, so the two must not meet: the
 # version gate separates them instead of either side guessing.
-MANIFEST_SCHEMA_VERSION = 8
+# 9: added citation.table_rows. Without it the artifact-side checks assert
+# the presence and the row count of exactly two citation tables and read the
+# absence of every other as nothing to check -- so the journal cut, the
+# schema's most intricate policy SQL, was certified by a check that passed
+# vacuously on a dump carrying no journal at all. A v8 manifest names no
+# tables, and read with a default that would be the same silence, so the
+# version gate separates them.
+MANIFEST_SCHEMA_VERSION = 9

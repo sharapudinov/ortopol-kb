@@ -44,6 +44,7 @@ from __future__ import annotations
 from typing import IO, NamedTuple
 
 from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
+from pg_common import scalar, scalar_row
 from schema_catalog import (
     classified_tables,
     columns_of,
@@ -148,6 +149,49 @@ def copy_select(table: str, columns: list[str], mode: str) -> str:
     projection = ",\n       ".join(_select_expression(table, c, mode) for c in columns)
     prefix = _QUERY_PREFIX[table]() if table in _QUERY_PREFIX else ""
     return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
+
+
+def count_select(table: str) -> str:
+    """How many rows this table's COPY block will write, asked with the
+    block's OWN cut -- the same _SOURCE clause and the same CTE prefix, so
+    the number and the rows cannot describe two different policies.
+
+    Wrapped in a subquery because the source clause carries the ORDER BY the
+    dump needs and an aggregate cannot: what is counted is the row set, the
+    order is the block's business.
+    """
+    prefix = _QUERY_PREFIX[table]() if table in _QUERY_PREFIX else ""
+    return f"{prefix}SELECT count(*) FROM (SELECT 1 {_source_clause(table)}) shipped;"
+
+
+def plan_row_counts(env: dict, plan: CitationPlan) -> dict[str, int]:
+    """{table: rows} for every block the plan carries.
+
+    Read BEFORE the dump file is opened, beside the plan itself, and handed
+    back to the caller for the manifest: MANIFEST_DESCRIBES_ARTIFACT means
+    every number in manifest.json is about the package, and the recipient's
+    check compares exactly these against the COPY blocks the file turns out
+    to contain (deploy/citation_cut_checks.py).
+    """
+    return {block.table: int(scalar(env, count_select(block.table)))
+            for block in plan.blocks}
+
+
+def live_row_counts(env: dict) -> dict[str, int]:
+    """The same map for a profile that applies no cut at all.
+
+    The full profile is pg_dump over the whole schema, so what it writes is
+    every table pg_class holds and every row in it -- the catalog's answer,
+    not the classification's: pg_dump emits a table nobody classified too,
+    and a manifest that quietly omitted it would leave that table
+    undeclared and unchecked on the other side.
+    """
+    tables = present_tables(env, SCHEMA)
+    if not tables:
+        return {}
+    projection = ", ".join(f"(SELECT count(*) FROM {SCHEMA}.{table})" for table in tables)
+    counts = scalar_row(env, f"SELECT {projection};", expected_columns=len(tables))
+    return {table: int(count) for table, count in zip(tables, counts)}
 
 
 class CopyBlock(NamedTuple):

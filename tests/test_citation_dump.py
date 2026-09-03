@@ -305,6 +305,92 @@ class DumpCitationTests(unittest.TestCase):
         self.assertIn("--exclude-schema=ag_catalog", argv)
 
 
+class RowCountsTests(unittest.TestCase):
+    """How many rows each block will write -- the numbers manifest.json
+    declares and the recipient holds the dump to.
+
+    Counted through the block's OWN source clause rather than a count of
+    the table: the public dump cuts by the document classification, and a
+    manifest carrying live totals would describe a package that does not
+    exist (MANIFEST_DESCRIBES_ARTIFACT) while the check on the other side
+    read the cut ones.
+    """
+
+    def test_the_count_asks_the_same_cut_the_copy_block_does(self):
+        for table in DUMPED_TABLES:
+            with self.subTest(table=table):
+                counted = citation_dump.count_select(table)
+                first = next(iter(citation_columns.CITATION_COLUMN_CLASS[table]))
+                copied = citation_dump.copy_select(
+                    table, [first], CitationMode.FULL_SKELETON)
+                source = citation_dump._source_clause(table)
+                self.assertIn(source, counted)
+                self.assertIn(source, copied)
+                self.assertTrue(counted.startswith(
+                    citation_dump._QUERY_PREFIX[table]()
+                    if table in citation_dump._QUERY_PREFIX else "SELECT count(*)"))
+
+    def test_the_journals_cut_ctes_travel_with_its_count(self):
+        """The journal's predicate is non-membership in a CTE the statement
+        itself derives: without the prefix the count is not a slower answer
+        but an invalid statement.
+        """
+        counted = citation_dump.count_select("crawl_step")
+        self.assertTrue(counted.startswith("WITH cut_documents AS MATERIALIZED"))
+        self.assertIn("cut_steps", counted)
+
+    def test_the_order_by_lives_inside_the_subquery(self):
+        """count(*) and ORDER BY cannot share a level -- the source clause
+        carries the order the dump needs, so the count wraps it.
+        """
+        counted = citation_dump.count_select("work")
+        self.assertIn("FROM (SELECT 1 FROM citation.work w", counted)
+        self.assertLess(counted.index("ORDER BY w.id"), counted.index(") shipped"))
+
+    def test_one_count_per_block_and_nothing_for_a_plan_that_ships_nothing(self):
+        asked = []
+
+        def scalar(_env, sql, **_kwargs):
+            asked.append(sql)
+            return str(len(asked))
+
+        plan = citation_dump.CitationPlan(True, (
+            citation_dump.CopyBlock("work", ["id"], (), "COPY ..."),
+            citation_dump.CopyBlock("crawl_step", ["id"], (), "COPY ..."),
+        ))
+        with mock.patch.object(citation_dump, "scalar", side_effect=scalar):
+            counts = citation_dump.plan_row_counts({}, plan)
+        self.assertEqual(counts, {"work": 1, "crawl_step": 2})
+        self.assertEqual(len(asked), 2)
+        with mock.patch.object(citation_dump, "scalar") as never:
+            self.assertEqual(
+                citation_dump.plan_row_counts({}, citation_dump.CitationPlan(False, ())), {})
+        never.assert_not_called()
+
+    def test_the_uncut_profile_counts_every_table_in_one_round_trip(self):
+        """pg_dump writes the whole schema, so the full profile's numbers
+        are the catalog's list counted whole -- and asked as ONE statement,
+        because a psql process per table is the same answer at five times
+        the cost.
+        """
+        with mock.patch.object(citation_dump, "present_tables",
+                               return_value=["work", "cites"]), \
+             mock.patch.object(citation_dump, "scalar_row",
+                               return_value=["441", "2427"]) as row:
+            counts = citation_dump.live_row_counts({})
+        self.assertEqual(counts, {"work": 441, "cites": 2427})
+        statement = row.call_args.args[1]
+        self.assertEqual(statement,
+                         "SELECT (SELECT count(*) FROM citation.work), "
+                         "(SELECT count(*) FROM citation.cites);")
+
+    def test_a_schema_with_no_table_at_all_is_no_statement_at_all(self):
+        with mock.patch.object(citation_dump, "present_tables", return_value=[]), \
+             mock.patch.object(citation_dump, "scalar_row") as never:
+            self.assertEqual(citation_dump.live_row_counts({}), {})
+        never.assert_not_called()
+
+
 class LegalCutSqlTests(unittest.TestCase):
     """The citation slice honours corpus.documents.public_distribution, and
     it does so the LEGAL_IS_DATA way: through the predicate legal_profile.py

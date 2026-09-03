@@ -41,7 +41,8 @@ def do_hub_report(cache, tree_root: Path, writer, hub_cap: int) -> int:
     try:
         record = record_hub_report(cache, tree_root, writer, hub_cap)
     except NothingToMeasure as exc:
-        print(f"{exc} (записей в кэше: {len(cache.names())})", file=sys.stderr)
+        print(f"{exc} (кэш {cache.directory}: {len(cache.names())} записей)",
+              file=sys.stderr)
         return 1
     if writer.dry:
         print("--dry-run: ничего не записано. meta.count батчей cites: "

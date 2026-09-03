@@ -11,8 +11,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from citation_dump import live_row_counts
 from dump_integrity import sha256_file
-from manifest_contract import Profile, schemas_for
+from manifest_contract import Profile, schemas_for, ships_citation
 from pg_stream import CommandFailed, stream_stdout
 
 # Paths are relative to this file's own directory (deploy/).
@@ -135,11 +136,20 @@ CORPUS_LIB_FILES = [
 DUMP_COMPRESSLEVEL = 6
 
 
-def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> None:
+def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> dict[str, int]:
     """The FULL profile's dump: pg_dump of every schema the profile carries
     (manifest_contract.schemas_for -- the same list manifest.json declares),
     streamed straight through gzip into gz_path -- one pass, no
-    uncompressed intermediate file. The dump embeds every source PDF/djvu blob in the corpus (hundreds
+    uncompressed intermediate file. Returns {table: rows} for the citation
+    tables it carried, the same answer public_dump.dump_public() gives and
+    for the same consumer: manifest.citation.table_rows, which the
+    recipient's gate holds the shipped bytes to.
+
+    pg_dump applies no cut, so those numbers are the catalog's whole answer
+    (citation_dump.live_row_counts) rather than the classification's: this
+    profile writes a table nobody classified too, and a manifest that
+    quietly omitted it would leave that table undeclared and unchecked on
+    the other side. The dump embeds every source PDF/djvu blob in the corpus (hundreds
     of MB to several GB compressed), so writing it out uncompressed first
     and re-reading it to compress would roughly double both wall-clock and
     peak disk usage for no benefit.
@@ -166,6 +176,7 @@ def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> None:
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc
+    return live_row_counts(env) if ships_citation(citation_mode) else {}
 
 
 def bundle_runtime_files(workdir: Path) -> dict[str, str]:

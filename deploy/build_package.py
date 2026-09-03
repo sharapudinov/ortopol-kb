@@ -79,8 +79,9 @@ from public_dump import dump_public  # noqa: E402
 OLLAMA_URL = "http://127.0.0.1:5471/api/embed"
 
 
-def write_dump(profile: str, env: dict, gz_path: Path, *, citation_mode: str) -> None:
-    """Dispatches to the profile's dump writer, both (env, gz_path) -> None.
+def write_dump(profile: str, env: dict, gz_path: Path, *, citation_mode: str) -> dict[str, int]:
+    """Dispatches to the profile's dump writer and returns {table: rows} for
+    every citation table the dump carries.
 
     Here rather than inside artifact_bundle.dump_schemas so the two writers
     stay independent modules: public_dump.py imports artifact_bundle (for the
@@ -97,9 +98,8 @@ def write_dump(profile: str, env: dict, gz_path: Path, *, citation_mode: str) ->
     was told the other.
     """
     if profile == Profile.PUBLIC:
-        dump_public(env, gz_path, citation_mode=citation_mode)
-    else:
-        dump_schemas(env, gz_path, citation_mode=citation_mode)
+        return dump_public(env, gz_path, citation_mode=citation_mode)
+    return dump_schemas(env, gz_path, citation_mode=citation_mode)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,7 +211,15 @@ def main(argv: list[str] | None = None) -> int:
         manifest[Key.FILES] = bundle_runtime_files(workdir)
         print(f"дамп схем {', '.join(manifest[Key.SCHEMAS])} (профиль {args.profile})...")
         dump_gz = workdir / "01_dump.sql.gz"
-        write_dump(args.profile, env, dump_gz, citation_mode=citation_mode)
+        # Which citation tables the dump carried, and how many rows each
+        # got: known only once the dump is written, and stamped into the
+        # block the manifest already declares -- like dump{} below, and for
+        # the same reason (MANIFEST_DESCRIBES_ARTIFACT). The recipient's
+        # gate requires every declared table to be in the file with exactly
+        # that many rows, so a mode that ships a schema and declares no
+        # table fails there rather than being read as nothing to check.
+        manifest[Key.CITATION][Key.TABLE_ROWS] = write_dump(
+            args.profile, env, dump_gz, citation_mode=citation_mode)
         manifest[Key.DUMP] = {
             Key.FILE: dump_gz.name,
             Key.BYTES: dump_gz.stat().st_size,

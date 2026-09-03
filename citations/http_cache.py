@@ -66,6 +66,12 @@ class Cache(Protocol):
 
     read_only: bool
     hits: int
+    # WHERE the cache is -- for saying which one, never for reading through:
+    # every read and every write is a method above, and a client that took
+    # this path to open a file itself is the sidecar bug all over again. A
+    # refusal that cannot name the directory it means ("there is no cache of
+    # answers here") sends the operator looking for it.
+    directory: Path
 
     def names(self) -> list[str]: ...
 

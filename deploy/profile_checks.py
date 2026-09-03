@@ -169,6 +169,8 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
          *citation_policy_check.check_policy_is_the_owners(manifest)),
         ("citation: схема/счётчики совпадают с манифестом",
          *citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)),
+        ("citation: каждая заявленная таблица приехала целиком",
+         *citation_cut_checks.check_every_declared_table_shipped(manifest, scans)),
         ("citation: content-колонки вырезаны вне full-skeleton",
          *citation_content_checks.check_content_is_stripped(manifest, facts)),
         ("citation.work ссылается только на документы этого пакета",

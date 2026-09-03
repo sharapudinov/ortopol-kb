@@ -228,8 +228,15 @@ PREAMBLE = (
 )
 
 
-def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
-    """Writes the filtered dump to gz_path, gzip-streamed in one pass.
+def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> dict[str, int]:
+    """Writes the filtered dump to gz_path, gzip-streamed in one pass, and
+    returns {table: rows} for every citation table it carried.
+
+    The counts go back to the caller rather than being re-derived for the
+    manifest: they are read from the plan this call dumped by, so the
+    numbers manifest.json declares and the COPY blocks the file holds are
+    one resolution of one cut (MANIFEST_DESCRIBES_ARTIFACT), and the
+    recipient's check is what compares them against the shipped bytes.
 
     Refuses to write anything at all while any document lacks a usable
     classification (legal_profile.require_classified) -- that must stop the
@@ -258,6 +265,9 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
     # promise in this docstring is that nothing is written at all, and a
     # refusal keeps that promise only while it is still cheap.
     citation_plan = citation_dump.plan_citation(env, citation_mode)
+    # Counted here for the same reason the plan is resolved here: before the
+    # file exists, so a failing read is a build that wrote nothing.
+    citation_rows = citation_dump.plan_row_counts(env, citation_plan)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             dst.write(PREAMBLE.encode())
@@ -272,3 +282,4 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> None:
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc
+    return citation_rows

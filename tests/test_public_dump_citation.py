@@ -48,6 +48,7 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         dst.write(b"-- DDL\n" if "pg_dump" in argv[0] else b"row\n")
 
     def _run(self, tmp, citation_mode):
+        self.carried = None
         gz_path = Path(tmp) / "01_dump.sql.gz"
         with mock.patch.object(public_dump, "require_classified"), \
              mock.patch.object(public_dump, "corpus_tables",
@@ -63,9 +64,26 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                 return_value=dict(self.CITATION_COLUMNS)), \
              mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
+             mock.patch.object(citation_dump, "scalar", return_value="1"), \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
-            public_dump.dump_public({}, gz_path, citation_mode=citation_mode)
+            self.carried = public_dump.dump_public(
+                {}, gz_path, citation_mode=citation_mode)
         return gz_path
+
+    def test_the_dump_reports_the_rows_of_every_table_it_wrote(self):
+        """What the manifest then declares (citation.table_rows): a count
+        per block, from the plan this very call dumped by, so the numbers
+        and the COPY blocks are one resolution of one cut.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp, CitationMode.FULL_SKELETON)
+        self.assertEqual(sorted(self.carried), sorted(DUMPED_CITATION_TABLES))
+        self.assertEqual(set(self.carried.values()), {1})
+
+    def test_a_mode_that_ships_nothing_reports_no_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp, CitationMode.NONE)
+        self.assertEqual(self.carried, {})
 
     def test_none_mode_ships_no_citation_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,6 +133,7 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
+                 mock.patch.object(citation_dump, "scalar", return_value="1"), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.TOPOLOGY_ONLY)
         work_select = next(s for s in seen_selects if "citation.work" in s)
@@ -163,6 +182,7 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
+                 mock.patch.object(citation_dump, "scalar", return_value="1"), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.FULL_SKELETON)
         pg_dump_argvs = [argv for argv in seen_argv if argv[0] == "pg_dump"]

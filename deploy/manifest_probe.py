@@ -62,8 +62,15 @@ def _citation_block(env: dict, mode: str, public: bool, policy_source: str) -> d
     `policy_source` travels the same way and says whose decision that mode
     was -- the owner's row, or the command line's --policy-override.
     """
+    # table_rows is declared here and FILLED by build_package.main() from
+    # what the dump actually wrote: this function runs before the dump
+    # exists, and a count of the live schema would describe a package
+    # nobody has produced yet. Empty here means the key exists in every
+    # manifest this packager writes -- the recipient's gate refuses an
+    # empty one under a shipping mode rather than reading it as silence.
     block = {Key.CITATION_MODE: mode, Key.CITATION_POLICY_SOURCE: policy_source,
-             Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {}}
+             Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {},
+             Key.TABLE_ROWS: {}}
     # manifest_contract.ships_citation(), the predicate the dump itself is
     # written by: a mode that carries no citation byte must not have the
     # live schema's counts stamped into the block describing it.

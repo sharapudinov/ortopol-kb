@@ -316,6 +316,11 @@ class CitationManifestTests(unittest.TestCase):
             "mode": "topology-only", "policy_source": "owner",
             "work_count": 438, "cites_count": 2425,
             "work_by_kind": {"external-skeleton": 382, "our-document": 56},
+            # Declared empty here and stamped by build_package.main() from
+            # what the dump actually wrote: this function runs before the
+            # dump exists, and a live count would describe a package nobody
+            # has produced yet.
+            "table_rows": {},
         })
         self.assertEqual(manifest["schemas"], ["corpus", "citation"])
 
@@ -363,7 +368,8 @@ class CitationManifestTests(unittest.TestCase):
                                              policy_source="not-applicable")
         self.assertEqual(manifest["citation"],
                           {"mode": "none", "policy_source": "not-applicable",
-                           "work_count": 0, "cites_count": 0, "work_by_kind": {}})
+                           "work_count": 0, "cites_count": 0, "work_by_kind": {},
+                           "table_rows": {}})
         self.assertEqual(manifest["schemas"], ["corpus", "measurements"])
         counts_mock.assert_not_called()
 

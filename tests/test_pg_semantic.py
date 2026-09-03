@@ -131,6 +131,14 @@ class PendingEmbeddingIndexTests(unittest.TestCase):
     def test_the_pending_read_uses_it_on_the_live_table(self):
         """One pending row, inside a transaction that is rolled back: the
         plan is read on the real table rather than on a claim about it.
+
+        With enable_seqscan off, as the other planner assertions in this
+        repository are written (tests/test_pg_graph_consumers_live.py): what
+        is being asserted is that an index CAN serve this read, which is a
+        property of the schema. Whether the planner prefers it is a property
+        of the day's statistics -- the crawl grew citation.work past the
+        point where one pending row among thousands is worth an index probe,
+        and a schema assertion must not turn on that.
         """
         table, text_expr, content_pred = TARGETS["works"]
         plan = run_sql(
@@ -139,6 +147,7 @@ class PendingEmbeddingIndexTests(unittest.TestCase):
             "INSERT INTO citation.work (key, title, source, kind) VALUES "
             "('test:pending-embedding-plan', 'Chebyshev pending row', "
             "'manual', 'external-skeleton');\n"
+            "SET enable_seqscan = off;\n"
             "EXPLAIN (COSTS OFF) SELECT id, left(" + text_expr + ", 100) "
             f"FROM {table} WHERE embedding IS NULL AND ({content_pred}) "
             "ORDER BY id LIMIT 16;\n"
