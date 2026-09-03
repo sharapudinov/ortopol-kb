@@ -98,5 +98,5 @@ python3 deploy/build_package.py --profile public
 python3 -m unittest discover -s tests -t tests
 ```
 
-1391 тест, без Docker и без сети; тестам, которым нужна живая база, при её
+1405 тестов, без Docker и без сети; тестам, которым нужна живая база, при её
 отсутствии положено пропускаться с внятным сообщением.
