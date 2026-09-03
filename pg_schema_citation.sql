@@ -53,10 +53,10 @@ CREATE TABLE IF NOT EXISTS citation.work (
     -- ON DELETE: nothing, deliberately -- NOT the SET NULL this column
     -- carried. Under SET NULL the two constraints on this table could not
     -- both hold: deleting a corpus.documents row UPDATEs the referencing
-    -- work row to document_id = NULL, and the CHECK below (an our-document
-    -- row must name its document) rejects exactly that, so the delete
-    -- aborted with a CHECK violation naming a row the deleter never
-    -- touched. The loaders DO delete documents -- pg_load_djvu.py and
+    -- work row to document_id = NULL, and
+    -- work_our_document_has_document_check (an our-document row must name
+    -- its document) rejects exactly that, so the delete aborted with a
+    -- CHECK violation naming a row the deleter never touched. The loaders DO delete documents -- pg_load_djvu.py and
     -- pg_load_metadata.py re-insert each of theirs, pg_load.py and
     -- pg_load_external.py drop what vanished from a manifest -- and the IIS
     -- documents they delete are precisely the crawl's seeds. So the refusal
@@ -69,13 +69,18 @@ CREATE TABLE IF NOT EXISTS citation.work (
     -- it to re-derive a verdict without re-fetching), not prose.
     evidence          JSONB,
     fetched_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    embedding         vector(1024),
+    embedding         vector(1024)
     -- A document already in our own corpus must be traceable to it; an
     -- excluded item must carry the reason it was excluded for -- either
     -- omission would make the corresponding column decorative rather than
-    -- load-bearing.
-    CHECK (kind <> 'our-document' OR document_id IS NOT NULL),
-    CHECK (kind <> 'excluded' OR exclusion_reason IS NOT NULL)
+    -- load-bearing. Both are stated in
+    -- pg_schema_citation_constraints.sql, as
+    -- work_our_document_has_document_check and
+    -- work_excluded_has_reason_check: each consumes a value of the closed
+    -- kind vocabulary, and a value spelled inline here can never be
+    -- corrected -- CREATE TABLE IF NOT EXISTS is a no-op on every instance
+    -- that already carries the table, which is every instance. Anonymous
+    -- besides, so nothing could even have found them by name to migrate.
 );
 
 CREATE INDEX IF NOT EXISTS work_document_id_idx ON citation.work (document_id);

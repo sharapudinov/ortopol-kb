@@ -84,6 +84,43 @@ DO $mode_check$ BEGIN PERFORM public.ensure_vocabulary_check(
     ARRAY['full-skeleton', 'topology-only', 'none']);
 END $mode_check$;
 
+-- The two conditional statements about a work row, each consuming ONE value
+-- of the kind vocabulary: an our-document node must be traceable to the
+-- corpus row it IS, and an excluded one must carry the reason it was
+-- excluded for. Either omission would make the corresponding column
+-- decorative rather than load-bearing.
+--
+-- Here rather than inline on citation.work for the reason every vocabulary
+-- above is here, and one more: an inline table CHECK is ANONYMOUS, so
+-- Postgres named them work_check / work_check1 and nothing could locate
+-- them to migrate. Rename or retire a WorkKind and the named
+-- work_kind_check migrates on a live instance while these did not -- the
+-- predicate goes vacuously true (kind never equals the retired name) and
+-- the rule silently stops being enforced on every existing database, while
+-- a fresh one still enforces it. No error surfaces anywhere.
+--
+-- Through the general half of the migrator (public.ensure_check_constraint):
+-- these are not `col IN (...)` and so are not vocabularies, but they are
+-- the same unwidenable literal, compared the same way -- and its last step
+-- is what drops the anonymous predecessor once the named one carries the
+-- identical predicate. The value is spelled ONCE per constraint, and the
+-- CHECK body is built from it.
+DO $our_document_check$
+DECLARE kind_value text := 'our-document';
+BEGIN
+    PERFORM public.ensure_check_constraint(
+        'citation.work', 'work_our_document_has_document_check', ARRAY[kind_value],
+        format('kind <> %L OR document_id IS NOT NULL', kind_value));
+END $our_document_check$;
+
+DO $excluded_check$
+DECLARE kind_value text := 'excluded';
+BEGIN
+    PERFORM public.ensure_check_constraint(
+        'citation.work', 'work_excluded_has_reason_check', ARRAY[kind_value],
+        format('kind <> %L OR exclusion_reason IS NOT NULL', kind_value));
+END $excluded_check$;
+
 -- citation.work.document_id: ON DELETE NO ACTION, migrated onto instances
 -- created while it was ON DELETE SET NULL.
 --

@@ -68,7 +68,8 @@ from pg_graph_common import citation_schema_exists, kind_counts  # noqa: E402
 # metadata-only document DOES ship a row, so the work row naming it ships
 # too -- bibliography is precisely what metadata-only means. Blanking
 # document_id instead of dropping the row is not available:
-# CHECK (kind <> 'our-document' OR document_id IS NOT NULL).
+# work_our_document_has_document_check (an our-document row must name its
+# document -- pg_schema_citation_constraints.sql).
 
 def shipped_work_sql(alias: str = "w") -> str:
     """SQL boolean: this citation.work row may leave in a public artifact."""

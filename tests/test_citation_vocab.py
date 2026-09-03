@@ -370,17 +370,29 @@ class VocabularyMatchesTheDeclarationTests(unittest.TestCase):
                 self.assertIn("ensure_vocabulary_check", declared.sql)
                 self.assertIn(f"'{declared.constraint}'", declared.sql)
 
-    def test_no_vocabulary_is_left_as_an_inline_check(self):
-        """The other half of the same rule, read off the sources an inline
-        CHECK could hide in: the data definition, and each declaration's own
-        text.
+    def test_no_vocabulary_literal_is_left_in_the_data_definition(self):
+        """The other half of the same rule, and read as WHICH VALUES the
+        file spells rather than as one CHECK shape.
+
+        Anchored on `CHECK (<col> IN (` it saw only the vocabulary form.
+        citation.work also stated "an our-document row must name its
+        document" and "an excluded row must carry its reason" -- one value
+        of the same closed vocabulary each, in a `<>` predicate, and
+        anonymous besides, so nothing could even find them by name to
+        migrate. Every literal outside a comment is compared now, so any
+        shape of them fails here.
         """
-        definition = SCHEMA_FILE.read_text(encoding="utf-8")
+        definition = re.sub(r"--[^\n]*", "", SCHEMA_FILE.read_text(encoding="utf-8"))
+        spelled = set(re.findall(r"'([^']*)'", definition))
         for name, declared in DECLARATIONS.items():
             with self.subTest(vocabulary=name):
-                pattern = rf"CHECK \({declared.column} IN \("
-                self.assertNotRegex(definition, pattern)
-                self.assertNotRegex(declared.sql, pattern)
+                self.assertFalse(
+                    spelled & set(declared.python),
+                    f"{name}: значение словаря набрано литералом в "
+                    f"{SCHEMA_FILE.name} -- CREATE TABLE IF NOT EXISTS ничего "
+                    "не меняет на существующем экземпляре; объявляйте через "
+                    "миграцию в pg_schema_citation_constraints.sql")
+                self.assertNotRegex(declared.sql, rf"CHECK \({declared.column} IN \(")
 
     def test_the_work_kinds_are_the_ones_the_declaration_allows(self):
         self.assertEqual(self._literals("citation.work.kind"), set(WorkKind.ALL))
