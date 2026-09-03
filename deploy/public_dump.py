@@ -43,29 +43,9 @@ NULL survives. Empty body means to_tsvector('russian','') -- an empty tsv,
 i.e. no fulltext content, which profile_checks.py verifies rather than
 assumes.
 
-Column lists are read from the catalog, not typed here: when the legal
-classification columns were added to corpus.documents, a hardcoded list
-would have silently dropped legal_class/public_distribution/legal_note from
-the public artifact -- the one artifact whose whole point is carrying that
-information. Only generated columns (recomputed on restore) and pages.id
-(the sequence reassigns it, see PAGES_EXCLUDED) are left out.
-
-The table list is read the same way, through the same module the citation
-dump reads (schema_catalog.py). It was a hand-typed map and a hand-ordered
-sequence of calls, which agreed with pg_schema.sql by nothing but
-attention: a fourth corpus table would have shipped its DDL with no COPY
-block, and profile_checks.check_schemas compares SCHEMAS, not tables, so
-nothing downstream contradicts an empty one. What stays hand-written is
-the per-schema knowledge -- which alias a table's projection uses and
-which rows it contributes -- and an unclassified table is a refusal.
-
-So is the third catalog question, WHICH columns own a sequence: every one
-of them gets a setval() after its COPY block. The corpus half used to emit
-none, and was correct only because the single BIGSERIAL it has is the one
-PAGES_EXCLUDED happens to drop from the COPY -- hand-kept knowledge, and
-knowledge nothing checks, since a table only has to appear in TABLE_ALIASES
-and _SOURCE to build. A sequence left at 1 restores cleanly and collides on
-the recipient's first insert.
+Which rows of each table travel, and how each column is projected, is
+deploy/corpus_cut.py -- the corpus counterpart of citation_profile.py /
+citation_dump.py's own maps. This module assembles the file.
 """
 from __future__ import annotations
 
@@ -78,14 +58,18 @@ from deploy_pathfix import ensure_corpus_importable
 ensure_corpus_importable()
 
 import citation_dump  # noqa: E402
-import corpus_columns  # noqa: E402
 import schema_catalog  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
+from copy_rows import DumpedRows, RowCounter  # noqa: E402
+from corpus_cut import (  # noqa: E402
+    EXCLUDED_COLUMNS,
+    SCHEMA,
+    copy_select,
+    corpus_tables,
+)
 from manifest_contract import Profile, base_schemas_for  # noqa: E402
-from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL, require_classified  # noqa: E402
+from legal_profile import require_classified  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
-
-SCHEMA = "corpus"
 
 # What _dump_ddl() asks pg_dump for: the public profile's schemas before
 # the citation mode is applied, because citation_dump.dump_citation()
@@ -98,98 +82,15 @@ SCHEMA = "corpus"
 # (profile_checks compares schema NAMES, not statements).
 PUBLIC_SCHEMAS = base_schemas_for(Profile.PUBLIC)
 
-# pages.id is a BIGSERIAL nothing references (probes address a page by
-# document_id + page_number). Omitting it from the COPY lets the sequence
-# assign ids on restore, in the deterministic order of the ORDER BY below.
-# The sequence is then repositioned explicitly like every other one in the
-# dump (write_copy_block's serials), so nothing about the restore rests on
-# this exclusion: a corpus table whose id DOES travel gets the same
-# treatment, which is what the exclusion used to be standing in for.
-PAGES_EXCLUDED = ("id",)
-
-# One alias per dumped table, so _select_expression() never has to guess.
-TABLE_ALIASES = {"documents": "d", "pages": "p", "embedding_model": "m"}
-
-# Which rows each table contributes, keyed exactly as citation_dump._SOURCE
-# is and for the same reason: there is no else branch to fall into. A table
-# reached through an `else` shipped `FROM corpus.<table> ORDER BY id` -- every
-# row, no legal predicate, no join to corpus.documents -- so the next corpus
-# table carrying per-document rows was made to build by one line in
-# TABLE_ALIASES and then shipped rows belonging to excluded documents. The
-# refusal is the only answer a packager may give to a table nobody classified.
-_SOURCE = {
-    "documents": f"FROM corpus.documents d WHERE {SHIPPED_SQL} ORDER BY d.id",
-    # The join supplies public_distribution twice over: for the body CASE in
-    # _select_expression() and for the WHERE here. The class lives on the
-    # document, both the cut and the omission apply to its pages -- a page of
-    # an excluded document is dropped with it, so the artifact cannot carry
-    # an orphan vector for text it does not ship.
-    "pages": ("FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id "
-              f"WHERE {SHIPPED_SQL} "
-              "ORDER BY p.document_id, p.page_number"),
-    # Which model every vector above was computed with: one row, naming no
-    # document and carrying no third-party text.
-    "embedding_model": "FROM corpus.embedding_model m ORDER BY m.id",
-}
-
-# A table is classified only if ALL THREE maps know it: what of it may
-# leave (corpus_columns), which alias its projection uses, and which rows it
-# contributes. Any one missing is the same silence -- the discipline the
-# citation half already followed (citation_dump.CLASSIFIED), applied here
-# now that this schema has a column classification of its own.
-CLASSIFIED = set(corpus_columns.CORPUS_COLUMN_CLASS) & set(TABLE_ALIASES) & set(_SOURCE)
-
-_UNCLASSIFIED_HINT = ("дополните CORPUS_COLUMN_CLASS "
-                      "(deploy/corpus_columns.py), TABLE_ALIASES и _SOURCE "
-                      "(deploy/public_dump.py)")
-
-# Columns the dump leaves to the restore side, per table.
-EXCLUDED_COLUMNS = {"pages": PAGES_EXCLUDED}
-
-
-def corpus_tables(env: dict) -> list[str]:
-    """The tables to dump: the catalog's list, held to the classification
-    and put in the order a restore needs (corpus.pages references
-    corpus.documents, and pg_constraint is where that is written down).
-    """
-    present = schema_catalog.classified_tables(
-        schema_catalog.present_tables(env, SCHEMA), CLASSIFIED,
-        SCHEMA, _UNCLASSIFIED_HINT)
-    return schema_catalog.restore_order(
-        present, schema_catalog.foreign_key_edges(env, SCHEMA), SCHEMA)
-
-
-def _select_expression(table: str, column: str) -> str:
-    """The expression written into the COPY select for one column: the
-    column itself, except where the legal filter replaces its value.
-
-    WHICH columns those are is corpus_columns.py, the same map the
-    artifact-side checker holds the shipped bytes to -- not a pair of
-    hardcoded names here. Two hardcoded branches over a catalog-driven
-    column list ended in a fall-through, i.e. a denylist: a column added to
-    corpus.documents and forgotten SHIPPED, whatever it carried. Every
-    column is classified now, and an unclassified one raises
-    ColumnUnclassified and stops the build (UNCLASSIFIED_FAILS_BUILD).
-    """
-    alias = TABLE_ALIASES[table]
-    withheld = corpus_columns.withheld_value(table, column)
-    if withheld is None:
-        return f"{alias}.{column}"
-    return (f"CASE WHEN {FULL_CONTENT_SQL} THEN {alias}.{column} "
-            f"ELSE {withheld} END AS {column}")
-
-
-def _copy_select(table: str, columns: list[str]) -> str:
-    projection = ",\n       ".join(_select_expression(table, c) for c in columns)
-    return f"COPY (SELECT {projection}\n{_SOURCE[table]}) TO STDOUT"
-
 
 def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
-                     serials=()) -> None:
+                     serials=()) -> int:
     """Writes one `COPY corpus.<table> (cols) FROM stdin;` block, streaming
     the server-side COPY TO STDOUT output between the header and the `\\.`
     terminator -- the same shape pg_dump emits, so the result is an ordinary
-    psql-restorable dump with no special-case loader.
+    psql-restorable dump with no special-case loader. Returns how many rows
+    went past (copy_rows.RowCounter): the manifest is stamped from what was
+    written, never from a second reading of the live database.
 
     `serials` are the table's sequence-owning columns, and each gets the
     setval() the citation half has always written (schema_catalog.
@@ -201,12 +102,14 @@ def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
     header = f"COPY corpus.{table} ({', '.join(columns)}) FROM stdin;\n"
     dst.write(header.encode())
     argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
-            "-c", _copy_select(table, columns)]
-    stream_stdout(argv, env, dst)
+            "-c", copy_select(table, columns)]
+    counter = RowCounter(dst)
+    stream_stdout(argv, env, counter)
     dst.write(b"\\.\n")
     for column in serials:
         dst.write(schema_catalog.setval_sql(SCHEMA, table, column))
     dst.write(b"\n")
+    return counter.rows
 
 
 def _dump_ddl(env: dict, dst: IO[bytes]) -> None:
@@ -241,15 +144,17 @@ PREAMBLE = (
 )
 
 
-def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> dict[str, int]:
+def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> DumpedRows:
     """Writes the filtered dump to gz_path, gzip-streamed in one pass, and
-    returns {table: rows} for every citation table it carried.
+    returns {table: rows} per schema for what it actually wrote.
 
-    The counts go back to the caller rather than being re-derived for the
-    manifest: they are read from the plan this call dumped by, so the
-    numbers manifest.json declares and the COPY blocks the file holds are
-    one resolution of one cut (MANIFEST_DESCRIBES_ARTIFACT), and the
-    recipient's check is what compares them against the shipped bytes.
+    Those counts are the blocks' own output, counted as it streamed past
+    (copy_rows.py), and they are what manifest.json is stamped from: the
+    numbers the package declares and the COPY blocks it holds are then one
+    fact rather than two readings of a live instance the crawl keeps
+    writing to (MANIFEST_DESCRIBES_ARTIFACT). The recipient's check
+    compares them against the shipped bytes, and that equality now holds by
+    construction.
 
     Refuses to write anything at all while any document lacks a usable
     classification (legal_profile.require_classified) -- that must stop the
@@ -278,21 +183,20 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> dict[str, in
     # promise in this docstring is that nothing is written at all, and a
     # refusal keeps that promise only while it is still cheap.
     citation_plan = citation_dump.plan_citation(env, citation_mode)
-    # Counted here for the same reason the plan is resolved here: before the
-    # file exists, so a failing read is a build that wrote nothing.
-    citation_rows = citation_dump.plan_row_counts(env, citation_plan)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             dst.write(PREAMBLE.encode())
             _dump_ddl(env, dst)
             dst.write(b"\n")
-            for table in tables:
-                write_copy_block(env, dst, table, schema_catalog.columns_of(
+            corpus_rows = {
+                table: write_copy_block(env, dst, table, schema_catalog.columns_of(
                     columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ())),
                     serials=serials.get(table, ()))
+                for table in tables
+            }
             dst.write(b"\n")
-            citation_dump.dump_citation(env, dst, citation_plan)
+            citation_rows = citation_dump.dump_citation(env, dst, citation_plan)
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc
-    return citation_rows
+    return DumpedRows(corpus=corpus_rows, citation=citation_rows)

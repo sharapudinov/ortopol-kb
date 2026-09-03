@@ -5,6 +5,7 @@ transport/matching logic is tested directly in test_ollama_registry.py.
 """
 from __future__ import annotations
 
+import json
 import unittest
 from unittest import mock
 
@@ -13,7 +14,9 @@ import _pathfix_deploy  # noqa: F401
 
 import manifest_citation
 import manifest_probe
+import manifest_rows
 import probe_overlap
+from copy_rows import DumpedRows
 
 
 class StemmedTokenOverlapTests(unittest.TestCase):
@@ -43,9 +46,11 @@ class StemmedTokenOverlapTests(unittest.TestCase):
         self.assertEqual(kwargs["variables"], {"q": "запрос", "doc": "2015_demr1", "page": "69"})
 
 
-# A well-formed 8-column row for _MANIFEST_SCALARS_SQL: documents_count,
-# pages_count, model, dims, runs_count, blob_len, blob_sha, fulltext_hits.
-_GOOD_ROW = ["70", "2462", "bge-m3", "1024", "5", "12345", "a" * 64, "3"]
+# A well-formed 6-column row for _MANIFEST_SCALARS_SQL: model, dims,
+# runs_count, blob_len, blob_sha, fulltext_hits. The document and page
+# counts are NOT among them any more -- how many rows the artifact carries
+# is answered by the artifact (manifest_rows.py), after the dump exists.
+_GOOD_ROW = ["bge-m3", "1024", "5", "12345", "a" * 64, "3"]
 
 # What legal_profile.legal_summary() returns, stubbed: it is four independent
 # SQL reads of its own, tested against the real database shape in
@@ -134,7 +139,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
         self.assertIn("модуль", str(ctx.exception))
 
     def test_missing_embedding_model_row_raises_informative_error(self):
-        row = ["70", "2462", "", "", "5", "12345", "a" * 64, "3"]  # NULL model/dims
+        row = ["", "", "5", "12345", "a" * 64, "3"]  # NULL model/dims
         scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
         with scalar_row_p, digest_p, legal_p:
             with self.assertRaises(RuntimeError) as ctx:
@@ -142,7 +147,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
         self.assertIn("embedding_model is empty", str(ctx.exception))
 
     def test_missing_blob_probe_document_raises_informative_error(self):
-        row = ["70", "2462", "bge-m3", "1024", "5", "", "", "3"]  # NULL blob columns
+        row = ["bge-m3", "1024", "5", "", "", "3"]  # NULL blob columns
         scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
         with scalar_row_p, digest_p, legal_p:
             with self.assertRaises(RuntimeError) as ctx:
@@ -202,7 +207,7 @@ class ProfileAwarenessTests(unittest.TestCase):
         # shipping one, so the schema is declared (schemas_for()).
         self.assertEqual(manifest["schemas"], ["corpus", "measurements", "citation"])
         self.assertEqual(manifest["citation"]["mode"], "full-skeleton")
-        self.assertEqual(manifest["measurements_run_count"], int(_GOOD_ROW[4]))
+        self.assertEqual(manifest["measurements_run_count"], int(_GOOD_ROW[2]))
         self.assertEqual(manifest["blob_probe"]["document_id"], manifest_probe.BLOB_PROBE_DOC)
         # No legal gate on the full profile: it never leaves the owner's
         # machines, and refusing to back up an unclassified corpus would be
@@ -235,21 +240,19 @@ class ProfileAwarenessTests(unittest.TestCase):
         self.assertIn("public_distribution IN ('full-text', 'internal')", sql)
         self.assertIn("JOIN corpus.documents", sql)
 
-    def test_public_counts_leave_out_the_documents_the_artifact_omits(self):
-        # Counting the live corpus would describe a package that does not
-        # exist: an excluded document contributes neither a documents row
-        # nor a page row to the public dump.
-        _manifest, row_mock, _classified = self._gather("public")
-        sql = row_mock.call_args[0][1]
-        shipped = "public_distribution IN ('full-text', 'metadata-only', 'internal')"
-        self.assertIn(f"FROM corpus.documents WHERE {shipped}", sql)
-        self.assertEqual(sql.count(shipped), 2)  # documents and pages alike
-
-    def test_full_counts_are_unrestricted(self):
-        _manifest, row_mock, _classified = self._gather("full")
-        sql = row_mock.call_args[0][1]
-        self.assertIn("FROM corpus.documents WHERE TRUE", sql)
-        self.assertNotIn("'metadata-only'", sql)
+    def test_the_row_counts_are_not_read_here_at_all(self):
+        """Counting the live corpus described a package that did not exist
+        yet, and the recipient's gate then demanded the dump agree with it.
+        The probe declares the keys and stamps nothing into them; the
+        numbers arrive from what the dump wrote.
+        """
+        for profile in ("public", "full"):
+            with self.subTest(profile=profile):
+                manifest, row_mock, _classified = self._gather(profile)
+                self.assertEqual(manifest["documents_count"], 0)
+                self.assertEqual(manifest["pages_count"], 0)
+                sql = row_mock.call_args[0][1]
+                self.assertNotIn("count(*) FROM corpus.documents", sql)
 
     def test_public_refuses_a_vector_probe_naming_a_document_it_omits(self):
         # Recording it would produce a manifest the artifact's own smoke
@@ -339,18 +342,41 @@ class CitationManifestTests(unittest.TestCase):
         census.assert_called_once()
         self.assertEqual(census.call_args.kwargs, {"shipped_only": True})
 
-    def test_the_dumps_answer_is_what_the_two_totals_are_stamped_from(self):
-        block = {"work_count": 0, "cites_count": 0, "table_rows": {}}
-        manifest_citation.stamp_dumped_rows(block, {"work": 438, "cites": 2425,
-                                                 "crawl_step": 5})
-        self.assertEqual(block, {"work_count": 438, "cites_count": 2425,
-                                 "table_rows": {"work": 438, "cites": 2425,
-                                                "crawl_step": 5}})
+    @staticmethod
+    def _blank_manifest() -> dict:
+        return {"documents_count": 0, "pages_count": 0,
+                "citation": {"work_count": 0, "cites_count": 0, "table_rows": {}}}
+
+    def test_the_dumps_answer_is_what_every_count_is_stamped_from(self):
+        manifest = self._blank_manifest()
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(
+            corpus={"documents": 70, "pages": 2462},
+            citation={"work": 438, "cites": 2425, "crawl_step": 5}))
+        self.assertEqual(manifest, {
+            "documents_count": 70, "pages_count": 2462,
+            "citation": {"work_count": 438, "cites_count": 2425,
+                         "table_rows": {"work": 438, "cites": 2425, "crawl_step": 5}}})
 
     def test_a_dump_that_carried_no_such_table_stamps_a_zero(self):
-        block = {"work_count": 0, "cites_count": 0, "table_rows": {}}
-        manifest_citation.stamp_dumped_rows(block, {})
-        self.assertEqual(block, {"work_count": 0, "cites_count": 0, "table_rows": {}})
+        manifest = self._blank_manifest()
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(corpus={}, citation={}))
+        self.assertEqual(manifest, self._blank_manifest())
+
+    def test_a_live_count_cannot_reach_the_manifest_any_more(self):
+        """The whole point: whatever the database says at any other moment,
+        the stamped numbers are the dump's. A "live" tally that disagrees
+        with what was written changes nothing here, because nothing reads
+        it.
+        """
+        manifest = self._blank_manifest()
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(
+            corpus={"documents": 70, "pages": 2462}, citation={"work": 438}))
+        stamped = json.loads(json.dumps(manifest))
+        manifest_rows.stamp_dumped_rows(manifest, DumpedRows(
+            corpus={"documents": 70, "pages": 2462}, citation={"work": 438}))
+        self.assertEqual(manifest, stamped)
+        self.assertEqual(manifest["documents_count"], 70)
+        self.assertEqual(manifest["citation"]["work_count"], 438)
 
     def test_the_manifest_records_whose_decision_the_mode_was(self):
         """The filename is not part of the package; this field is. Without

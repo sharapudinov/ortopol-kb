@@ -29,6 +29,7 @@ from _dump_fixtures import CORPUS_COLUMNS, CORPUS_SERIALS
 
 import dump_scan
 import corpus_columns
+import corpus_cut
 import public_dump
 import schema_catalog
 from legal_profile import Unclassified
@@ -46,29 +47,29 @@ class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
     """
 
     def test_the_list_and_the_order_are_the_catalogs(self):
-        with mock.patch.object(public_dump.schema_catalog, "present_tables",
+        with mock.patch.object(corpus_cut.schema_catalog, "present_tables",
                                 return_value=["documents", "pages", "embedding_model"]), \
-             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+             mock.patch.object(corpus_cut.schema_catalog, "foreign_key_edges",
                                 return_value=[("pages", "documents")]):
-            self.assertEqual(public_dump.corpus_tables({}),
+            self.assertEqual(corpus_cut.corpus_tables({}),
                              ["documents", "pages", "embedding_model"])
 
     def test_a_child_written_before_its_parent_is_reordered(self):
-        with mock.patch.object(public_dump.schema_catalog, "present_tables",
+        with mock.patch.object(corpus_cut.schema_catalog, "present_tables",
                                 return_value=["pages", "documents", "embedding_model"]), \
-             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+             mock.patch.object(corpus_cut.schema_catalog, "foreign_key_edges",
                                 return_value=[("pages", "documents")]):
-            self.assertEqual(public_dump.corpus_tables({}),
+            self.assertEqual(corpus_cut.corpus_tables({}),
                              ["documents", "pages", "embedding_model"])
 
     def test_a_table_nobody_classified_stops_the_build(self):
-        with mock.patch.object(public_dump.schema_catalog, "present_tables",
+        with mock.patch.object(corpus_cut.schema_catalog, "present_tables",
                                 return_value=["documents", "pages", "embedding_model",
                                               "annotations"]), \
-             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+             mock.patch.object(corpus_cut.schema_catalog, "foreign_key_edges",
                                 return_value=[]):
-            with self.assertRaises(public_dump.schema_catalog.TableUnclassified) as caught:
-                public_dump.corpus_tables({})
+            with self.assertRaises(corpus_cut.schema_catalog.TableUnclassified) as caught:
+                corpus_cut.corpus_tables({})
         self.assertIn("corpus.annotations", str(caught.exception))
 
     def test_a_table_with_an_alias_but_no_row_source_is_unclassified(self):
@@ -77,34 +78,34 @@ class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
         hold the list to TABLE_ALIASES alone and hand anything else an
         unfiltered `FROM corpus.<table> ORDER BY id`.
         """
-        aliased = dict(public_dump.TABLE_ALIASES, annotations="a")
-        classified = set(aliased) & set(public_dump._SOURCE)
-        with mock.patch.object(public_dump, "CLASSIFIED", classified), \
-             mock.patch.object(public_dump.schema_catalog, "present_tables",
+        aliased = dict(corpus_cut.TABLE_ALIASES, annotations="a")
+        classified = set(aliased) & set(corpus_cut._SOURCE)
+        with mock.patch.object(corpus_cut, "CLASSIFIED", classified), \
+             mock.patch.object(corpus_cut.schema_catalog, "present_tables",
                                 return_value=["documents", "pages", "embedding_model",
                                               "annotations"]), \
-             mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+             mock.patch.object(corpus_cut.schema_catalog, "foreign_key_edges",
                                 return_value=[]):
-            with self.assertRaises(public_dump.schema_catalog.TableUnclassified) as caught:
-                public_dump.corpus_tables({})
+            with self.assertRaises(corpus_cut.schema_catalog.TableUnclassified) as caught:
+                corpus_cut.corpus_tables({})
         self.assertIn("corpus.annotations", str(caught.exception))
         self.assertIn("_SOURCE", str(caught.exception))
 
     def test_both_maps_answer_for_the_same_tables(self):
-        self.assertEqual(set(public_dump.TABLE_ALIASES), set(public_dump._SOURCE))
-        self.assertEqual(public_dump.CLASSIFIED, set(public_dump._SOURCE))
+        self.assertEqual(set(corpus_cut.TABLE_ALIASES), set(corpus_cut._SOURCE))
+        self.assertEqual(corpus_cut.CLASSIFIED, set(corpus_cut._SOURCE))
 
     def test_the_dump_writes_no_byte_when_a_table_is_unclassified(self):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump.schema_catalog, "present_tables",
+                 mock.patch.object(corpus_cut.schema_catalog, "present_tables",
                                     return_value=["documents", "pages",
                                                   "embedding_model", "annotations"]), \
-                 mock.patch.object(public_dump.schema_catalog, "foreign_key_edges",
+                 mock.patch.object(corpus_cut.schema_catalog, "foreign_key_edges",
                                     return_value=[]), \
                  mock.patch.object(public_dump, "stream_stdout") as stream_mock:
-                with self.assertRaises(public_dump.schema_catalog.TableUnclassified):
+                with self.assertRaises(corpus_cut.schema_catalog.TableUnclassified):
                     public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
             self.assertFalse(gz_path.exists())
             stream_mock.assert_not_called()
@@ -171,7 +172,7 @@ class BaseSchemasAreAskedForByNameTests(unittest.TestCase):
 
 class CopySelectTests(unittest.TestCase):
     def test_documents_blob_is_cut_by_the_legal_predicate(self):
-        sql = public_dump._copy_select(
+        sql = corpus_cut.copy_select(
             "documents", ["id", "legal_class", "public_distribution", "source_blob"],
         )
         # ELSE NULL::bytea, not a bare END: what stands in for a withheld
@@ -185,7 +186,7 @@ class CopySelectTests(unittest.TestCase):
         self.assertIn("d.public_distribution", sql)
 
     def test_pages_body_becomes_empty_for_metadata_only_documents(self):
-        sql = public_dump._copy_select("pages", ["document_id", "page_number", "body", "embedding"])
+        sql = corpus_cut.copy_select("pages", ["document_id", "page_number", "body", "embedding"])
         self.assertIn("CASE WHEN public_distribution IN ('full-text', 'internal') "
                       "THEN p.body ELSE '' END AS body", sql)
         # The embedding is never cut -- semantic search must still find the
@@ -197,27 +198,27 @@ class CopySelectTests(unittest.TestCase):
         # Not blanked -- filtered: no documents row and no page row is
         # written for a document whose regime the owner has not established.
         shipped = "WHERE public_distribution IN ('full-text', 'metadata-only', 'internal')"
-        documents = public_dump._copy_select("documents", ["id", "source_blob"])
-        pages = public_dump._copy_select("pages", ["document_id", "page_number", "embedding"])
+        documents = corpus_cut.copy_select("documents", ["id", "source_blob"])
+        pages = corpus_cut.copy_select("pages", ["document_id", "page_number", "embedding"])
         self.assertIn(shipped, documents)
         self.assertIn(shipped, pages)
 
     def test_the_filter_is_the_shared_predicate_not_a_second_list(self):
         from legal_profile import SHIPPED_SQL
-        self.assertIn(SHIPPED_SQL, public_dump._copy_select("documents", ["id"]))
+        self.assertIn(SHIPPED_SQL, corpus_cut.copy_select("documents", ["id"]))
 
     def test_pages_are_ordered_so_the_reassigned_sequence_is_deterministic(self):
-        sql = public_dump._copy_select("pages", ["document_id", "page_number"])
+        sql = corpus_cut.copy_select("pages", ["document_id", "page_number"])
         self.assertIn("ORDER BY p.document_id, p.page_number", sql)
 
     def test_embedding_model_is_copied_verbatim(self):
-        sql = public_dump._copy_select("embedding_model", ["id", "model", "dims"])
+        sql = corpus_cut.copy_select("embedding_model", ["id", "model", "dims"])
         self.assertIn("m.model", sql)
         self.assertNotIn("CASE WHEN", sql)
 
     def test_unknown_table_raises_instead_of_guessing_an_alias(self):
         with self.assertRaises(KeyError):
-            public_dump._copy_select("findings", ["id"])
+            corpus_cut.copy_select("findings", ["id"])
 
     def test_a_table_with_an_alias_and_no_source_still_has_no_select(self):
         """The projection can be spelled for it, the rows cannot: an alias
@@ -228,9 +229,9 @@ class CopySelectTests(unittest.TestCase):
         which no more knows this table than _SOURCE does. The point is that
         no statement comes out.
         """
-        with mock.patch.dict(public_dump.TABLE_ALIASES, {"findings": "f"}):
+        with mock.patch.dict(corpus_cut.TABLE_ALIASES, {"findings": "f"}):
             with self.assertRaises((KeyError, corpus_columns.ColumnUnclassified)):
-                public_dump._copy_select("findings", ["id"])
+                corpus_cut.copy_select("findings", ["id"])
 
     def test_a_column_nobody_classified_stops_the_build(self):
         """The fall-through this map replaced: a column added to
@@ -239,7 +240,7 @@ class CopySelectTests(unittest.TestCase):
         projection on its own.
         """
         with self.assertRaises(corpus_columns.ColumnUnclassified) as raised:
-            public_dump._copy_select("documents", ["id", "brand_new"])
+            corpus_cut.copy_select("documents", ["id", "brand_new"])
         self.assertIn("corpus.documents.brand_new", str(raised.exception))
 
     def test_every_classified_column_of_every_table_can_be_projected(self):
@@ -248,13 +249,13 @@ class CopySelectTests(unittest.TestCase):
         without one raises just as loudly as an unclassified one).
         """
         for table, columns in corpus_columns.CORPUS_COLUMN_CLASS.items():
-            sql = public_dump._copy_select(table, list(columns))
+            sql = corpus_cut.copy_select(table, list(columns))
             for column, kind in columns.items():
                 with self.subTest(table=table, column=column):
                     if kind == corpus_columns.CONTENT:
                         self.assertIn(f"END AS {column}", sql)
                     else:
-                        self.assertIn(f"{public_dump.TABLE_ALIASES[table]}.{column}", sql)
+                        self.assertIn(f"{corpus_cut.TABLE_ALIASES[table]}.{column}", sql)
 
 
 class WriteCopyBlockTests(unittest.TestCase):
@@ -345,11 +346,11 @@ class SerialColumnsAreRepositionedTests(unittest.TestCase):
             with mock.patch.object(public_dump, "require_classified"), \
                  mock.patch.object(public_dump, "corpus_tables",
                                     return_value=list(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                     return_value=dict(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value=CORPUS_SERIALS), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value=CORPUS_SERIALS) as serials_mock, \
                  mock.patch.object(public_dump, "stream_stdout",
                                     side_effect=lambda argv, env, dst: dst.write(b"row\n")):
@@ -366,9 +367,9 @@ class SerialColumnsAreRepositionedTests(unittest.TestCase):
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
                  mock.patch.object(public_dump, "corpus_tables", return_value=list(columns)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                     return_value=columns), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value={"documents": ["id"], "pages": ["id"]}), \
                  mock.patch.object(public_dump, "stream_stdout",
                                     side_effect=lambda argv, env, dst: dst.write(b"row\n")):
@@ -392,9 +393,9 @@ class DumpPublicTests(unittest.TestCase):
         with mock.patch.object(public_dump, "require_classified") as classified_mock, \
              mock.patch.object(public_dump, "corpus_tables",
                                 return_value=list(DumpPublicTests.COLUMNS)), \
-             mock.patch.object(public_dump.schema_catalog, "schema_columns",
+             mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                 return_value=dict(DumpPublicTests.COLUMNS)), \
-             mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+             mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                 return_value=CORPUS_SERIALS), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=fake_stream):
             public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
@@ -441,9 +442,9 @@ class DumpPublicTests(unittest.TestCase):
             with mock.patch.object(public_dump, "require_classified"), \
                  mock.patch.object(public_dump, "corpus_tables",
                                     return_value=list(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                     return_value=dict(DumpPublicTests.COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value=CORPUS_SERIALS), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=boom):
                 with self.assertRaises(RuntimeError) as ctx:

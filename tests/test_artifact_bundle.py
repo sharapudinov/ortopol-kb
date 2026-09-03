@@ -68,39 +68,49 @@ class FakeProc:
 
 
 class DumpSchemasTests(unittest.TestCase):
-    """pg_dump is stubbed here, and so is the ONE read that follows it: the
-    full profile's dump reports how many rows each citation table carried
-    (manifest.citation.table_rows), and asking the catalog for that is a
-    live question these offline tests have no server for.
+    """pg_dump is stubbed here; nothing else is. The full profile's row
+    counts are READ BACK OFF the file it wrote, so a stubbed pg_dump output
+    carrying real COPY blocks is the whole input the count needs -- there is
+    no second database read left to stub.
     """
 
-    def setUp(self):
-        counts = mock.patch.object(artifact_bundle, "live_row_counts",
-                                   return_value={"work": 441, "cites": 2427})
-        self.live_row_counts = counts.start()
-        self.addCleanup(counts.stop)
+    # A miniature pg_dump output: two COPY blocks, one per schema the
+    # manifest is stamped from, plus a table of neither.
+    DUMP = (b"CREATE SCHEMA corpus;\n"
+            b"COPY corpus.documents (id) FROM stdin;\n2009_isu34\n1997_sm280\n\\.\n"
+            b"COPY citation.work (id) FROM stdin;\n1\n2\n3\n\\.\n"
+            b"COPY measurements.run (id) FROM stdin;\n7\n\\.\n")
 
     def test_the_dump_reports_what_the_manifest_will_declare(self):
-        """Both writers answer with {table: rows}: the packager stamps it
-        into the citation block, and the recipient's gate holds the shipped
-        bytes to it.
+        """Both writers answer with {table: rows} per schema: the packager
+        stamps it into the manifest, and the recipient's gate holds the
+        shipped bytes to it. Here the answer IS the shipped bytes.
         """
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "dump.sql.gz"
             with mock.patch.object(artifact_bundle.subprocess, "Popen",
-                                    return_value=FakeProc(b"-- fake\n")):
+                                    return_value=FakeProc(self.DUMP)):
                 carried = artifact_bundle.dump_schemas(
                     {}, gz_path, CitationMode.FULL_SKELETON)
-        self.assertEqual(carried, {"work": 441, "cites": 2427})
+        self.assertEqual(carried.citation, {"work": 3})
+        self.assertEqual(carried.corpus, {"documents": 2})
 
-    def test_a_mode_that_ships_no_schema_declares_no_table_and_asks_nothing(self):
+    def test_a_dump_carrying_no_citation_block_reports_no_citation_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "dump.sql.gz"
             with mock.patch.object(artifact_bundle.subprocess, "Popen",
                                     return_value=FakeProc(b"-- fake\n")):
                 carried = artifact_bundle.dump_schemas({}, gz_path, CitationMode.NONE)
-        self.assertEqual(carried, {})
-        self.live_row_counts.assert_not_called()
+        self.assertEqual(carried.citation, {})
+        self.assertEqual(carried.corpus, {})
+
+    def test_no_count_is_asked_of_the_live_database_at_all(self):
+        """The read that used to follow pg_dump is gone, not merely
+        unused: a count from a fresh connection describes whatever the
+        database held at that moment, and the gate demands it equal the
+        file.
+        """
+        self.assertFalse(hasattr(artifact_bundle, "live_row_counts"))
 
     def test_the_dump_asks_for_exactly_what_the_manifest_declares(self):
         """One source of truth for "which schemas does this profile ship":

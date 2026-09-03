@@ -25,6 +25,7 @@ import _pathfix_deploy  # noqa: F401
 
 import artifact_bundle
 import build_package
+from copy_rows import DumpedRows
 import public_dump
 from citation_profile import CitationUnclassified
 from legal_profile import Unclassified
@@ -57,7 +58,8 @@ class MainHappyPathTests(unittest.TestCase):
                 gz_path.write_bytes(b"\x1f\x8b\x08\x00fake-gzip")
                 # Both writers answer with what they carried, per citation
                 # table -- main() stamps it into the manifest block.
-                return {"work": 441, "cites": 2427}
+                return DumpedRows(corpus={"documents": 70, "pages": 2462},
+                                  citation={"work": 441, "cites": 2427})
 
             def fake_package(workdir, out_path):
                 captured["manifest"] = json.loads((workdir / "manifest.json").read_text())
@@ -100,13 +102,15 @@ class ProfileDispatchTests(unittest.TestCase):
             def fake_full(env, gz_path, *, citation_mode):
                 seen["writer"] = "full"
                 gz_path.write_bytes(b"full")
-                return {"work": 441}
+                return DumpedRows(corpus={"documents": 70, "pages": 2462},
+                                  citation={"work": 441})
 
             def fake_public(env, gz_path, *, citation_mode):
                 seen["writer"] = "public"
                 seen["dump_citation_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
-                return {"work": 2, "cites": 1}
+                return DumpedRows(corpus={"documents": 3, "pages": 4},
+                                  citation={"work": 2, "cites": 1})
 
             def fake_package(workdir, out_path):
                 seen["manifest"] = json.loads((workdir / "manifest.json").read_text())
@@ -239,7 +243,8 @@ class ProfileDispatchTests(unittest.TestCase):
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_schemas",
                                     side_effect=lambda env, gz, citation_mode="none":
-                                    gz.write_bytes(b"x") and {}), \
+                                    gz.write_bytes(b"x")
+                                    and DumpedRows(corpus={}, citation={})), \
                  mock.patch.object(build_package, "sha256_file", return_value="a" * 64), \
                  mock.patch.object(build_package, "package", side_effect=fake_package):
                 exit_code = build_package.main(["--pgenv", str(explicit_pgenv), "--out-dir", str(out_dir)])

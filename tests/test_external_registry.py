@@ -27,7 +27,7 @@ import _pathfix_deploy  # noqa: F401
 import corpus_completeness
 import external_registry
 import pg_load_external
-import public_dump
+import corpus_cut
 from external_registry import RegistryError
 from manifest_contract import Distribution
 
@@ -137,8 +137,8 @@ class PublicBoundaryTests(unittest.TestCase):
 
     def test_the_dump_filters_such_a_document_out_of_both_tables(self):
         predicate = f"public_distribution IN ("
-        documents = public_dump._copy_select("documents", ["id", "source_blob"])
-        pages = public_dump._copy_select("pages", ["document_id", "page_number", "embedding"])
+        documents = corpus_cut.copy_select("documents", ["id", "source_blob"])
+        pages = corpus_cut.copy_select("pages", ["document_id", "page_number", "embedding"])
         for sql in (documents, pages):
             self.assertIn(predicate, sql)
             self.assertNotIn(f"'{pg_load_external.PUBLIC_DISTRIBUTION}'", sql)

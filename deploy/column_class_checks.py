@@ -3,7 +3,7 @@
 The polarity column_classes.py is built on -- a cut written as a denylist
 ships whatever nobody named, so every column is named and an unclassified
 one is a refusal -- was implemented on the PRODUCER side only
-(citation_dump._select_expression, public_dump._select_expression, both
+(citation_dump._select_expression, corpus_cut.select_expression, both
 raising ColumnUnclassified). This module is the same question asked of the
 finished file, from inside the artifact.
 

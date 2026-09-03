@@ -20,7 +20,7 @@ differ (which rows a table contributes, how a column is projected under a
 mode); they no longer differ in how they ask what a schema contains.
 
 Nothing here classifies anything: the maps live with the dumps
-(citation_dump._SOURCE, public_dump.TABLE_ALIASES, citation_columns), and
+(citation_dump._SOURCE, corpus_cut.TABLE_ALIASES, citation_columns), and
 the answers below are only what the database says. classified_tables()
 holds an answer to a classification the CALLER supplies -- the refusal is
 generic, the knowledge is not.
@@ -220,7 +220,7 @@ def columns_of(columns: dict[str, list[str]], table: str, schema: str,
     An empty list means the name does not match anything the catalog holds,
     and a COPY block with no columns is not something to write and find out
     about at the recipient's end. `exclude` drops a column the dump leaves
-    to the restore side (public_dump.PAGES_EXCLUDED) -- after the guard, so
+    to the restore side (corpus_cut.PAGES_EXCLUDED) -- after the guard, so
     excluding everything is still a refusal.
     """
     found = columns.get(table) or []

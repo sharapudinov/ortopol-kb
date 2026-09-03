@@ -64,28 +64,64 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                 return_value=dict(self.CITATION_COLUMNS)), \
              mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-             mock.patch.object(citation_dump, "scalar_row",
-                                side_effect=lambda env, sql, expected_columns:
-                                ["1"] * expected_columns), \
              mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
             self.carried = public_dump.dump_public(
                 {}, gz_path, citation_mode=citation_mode)
         return gz_path
 
     def test_the_dump_reports_the_rows_of_every_table_it_wrote(self):
-        """What the manifest then declares (citation.table_rows): a count
-        per block, from the plan this very call dumped by, so the numbers
-        and the COPY blocks are one resolution of one cut.
+        """What the manifest is then stamped with: one count per block, and
+        the count is the rows that went into the block. The fake stream
+        writes one row per COPY, so both halves report 1 per table.
         """
         with tempfile.TemporaryDirectory() as tmp:
             self._run(tmp, CitationMode.FULL_SKELETON)
-        self.assertEqual(sorted(self.carried), sorted(DUMPED_CITATION_TABLES))
-        self.assertEqual(set(self.carried.values()), {1})
+        self.assertEqual(sorted(self.carried.citation), sorted(DUMPED_CITATION_TABLES))
+        self.assertEqual(set(self.carried.citation.values()), {1})
+        self.assertEqual(sorted(self.carried.corpus), sorted(CORPUS_COLUMNS))
+        self.assertEqual(set(self.carried.corpus.values()), {1})
 
     def test_a_mode_that_ships_nothing_reports_no_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._run(tmp, CitationMode.NONE)
-        self.assertEqual(self.carried, {})
+        self.assertEqual(self.carried.citation, {})
+        self.assertEqual(sorted(self.carried.corpus), sorted(CORPUS_COLUMNS))
+
+    def test_the_counts_are_the_rows_the_file_turns_out_to_hold(self):
+        """The equality the recipient's gate demands, asserted end to end:
+        what dump_public() reports and what a scan of the file it just
+        wrote finds are the same numbers, with no database read between
+        them to disagree with either.
+        """
+        rows = {"documents": 3, "pages": 5, "embedding_model": 1, "work": 2,
+                "cites": 1, "crawl_step": 4, "public_policy": 6,
+                "schema_backfill": 7}
+        # Which block is being written is the ORDER, not the SQL: every
+        # statement mentions several tables (the legal predicate joins
+        # corpus.documents, the journal's cut derives two CTEs), and the
+        # two patched table lists are exactly what the dump walks.
+        widths = {name: len(columns) for name, columns in CORPUS_COLUMNS.items()}
+        widths.update({name: len(columns)
+                       for name, columns in self.CITATION_COLUMNS.items()})
+        blocks = iter(list(CORPUS_COLUMNS) + list(DUMPED_CITATION_TABLES))
+
+        def counted_stream(argv, env, dst):
+            if "pg_dump" in argv[0]:
+                dst.write(b"-- DDL\n")
+                return
+            table = next(blocks)
+            row = b"\t".join([b"v"] * widths[table]) + b"\n"
+            dst.write(row * rows[table])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(self, "_fake_stream", counted_stream):
+                gz_path = self._run(tmp, CitationMode.FULL_SKELETON)
+            scanned = dump_scan.scan(gz_path).tables
+        for table, count in self.carried.corpus.items():
+            self.assertEqual(scanned[f"corpus.{table}"].rows, count, table)
+        for table, count in self.carried.citation.items():
+            self.assertEqual(scanned[f"citation.{table}"].rows, count, table)
+        self.assertEqual(self.carried.corpus["documents"], rows["documents"])
 
     def test_none_mode_ships_no_citation_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,9 +171,6 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-                 mock.patch.object(citation_dump, "scalar_row",
-                                    side_effect=lambda env, sql, expected_columns:
-                                    ["1"] * expected_columns), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.TOPOLOGY_ONLY)
         work_select = next(s for s in seen_selects if "citation.work" in s)
@@ -186,9 +219,6 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-                 mock.patch.object(citation_dump, "scalar_row",
-                                    side_effect=lambda env, sql, expected_columns:
-                                    ["1"] * expected_columns), \
                  mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.FULL_SKELETON)
         pg_dump_argvs = [argv for argv in seen_argv if argv[0] == "pg_dump"]

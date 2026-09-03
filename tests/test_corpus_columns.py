@@ -30,6 +30,7 @@ import _pathfix_deploy  # noqa: F401
 
 import corpus_columns
 import corpus_content_checks
+import corpus_cut
 import public_dump
 import schema_catalog
 from paths import default_corpus_dir
@@ -61,7 +62,7 @@ class ClassificationCoversTheCatalogTests(unittest.TestCase):
 
     def test_every_table_in_the_schema_is_classified_and_nothing_else_is(self):
         self.assertEqual(
-            set(public_dump.corpus_tables(self.env)),
+            set(corpus_cut.corpus_tables(self.env)),
             set(corpus_columns.CORPUS_COLUMN_CLASS),
             "каталог схемы corpus и классификация таблиц разошлись",
         )
@@ -71,10 +72,10 @@ class ClassificationCoversTheCatalogTests(unittest.TestCase):
         COPY may not carry them (schema_catalog.schema_columns reads
         attgenerated = '').
         """
-        columns = schema_catalog.schema_columns(self.env, public_dump.SCHEMA)
-        for table in public_dump.corpus_tables(self.env):
+        columns = schema_catalog.schema_columns(self.env, corpus_cut.SCHEMA)
+        for table in corpus_cut.corpus_tables(self.env):
             self.assertEqual(
-                set(schema_catalog.columns_of(columns, table, public_dump.SCHEMA)),
+                set(schema_catalog.columns_of(columns, table, corpus_cut.SCHEMA)),
                 set(corpus_columns.CORPUS_COLUMN_CLASS[table]),
                 f"corpus.{table}: каталог и классификация разошлись",
             )
@@ -89,18 +90,18 @@ class ClassificationCoversTheCatalogTests(unittest.TestCase):
             "ALTER TABLE corpus.documents ADD COLUMN test_unclassified_probe text;\n"
             + schema_catalog._COLUMNS_SQL
             + "ROLLBACK;",
-            variables={"schema": public_dump.SCHEMA},
+            variables={"schema": corpus_cut.SCHEMA},
             extra_args=["-t", "-A"],
         ).stdout
         self.assertIn("test_unclassified_probe", added)
         with self.assertRaises(corpus_columns.ColumnUnclassified) as caught:
-            public_dump._copy_select("documents", ["id", "test_unclassified_probe"])
+            corpus_cut.copy_select("documents", ["id", "test_unclassified_probe"])
         self.assertIn("corpus.documents.test_unclassified_probe", str(caught.exception))
 
     def test_the_probe_column_did_not_survive_the_rollback(self):
-        columns = schema_catalog.schema_columns(self.env, public_dump.SCHEMA)
+        columns = schema_catalog.schema_columns(self.env, corpus_cut.SCHEMA)
         self.assertNotIn("test_unclassified_probe",
-                         schema_catalog.columns_of(columns, "documents", public_dump.SCHEMA))
+                         schema_catalog.columns_of(columns, "documents", corpus_cut.SCHEMA))
 
 
 class BothSidesReadOneMapTests(unittest.TestCase):
@@ -137,7 +138,7 @@ class BothSidesReadOneMapTests(unittest.TestCase):
         with mock.patch.dict(corpus_columns.CORPUS_COLUMN_CLASS,
                              {"documents": promoted}), \
              mock.patch.dict(corpus_columns.CONTENT_WITHHELD, withheld, clear=True):
-            self.assertIn("END AS note", public_dump._copy_select("documents", ["note"]))
+            self.assertIn("END AS note", corpus_cut.copy_select("documents", ["note"]))
             self.assertIn("note", corpus_columns.content_columns("documents"))
 
     def test_a_content_column_with_nothing_to_stand_in_for_it_is_a_refusal(self):
@@ -149,7 +150,7 @@ class BothSidesReadOneMapTests(unittest.TestCase):
         with mock.patch.dict(corpus_columns.CORPUS_COLUMN_CLASS,
                              {"documents": promoted}):
             with self.assertRaises(corpus_columns.ColumnUnclassified) as caught:
-                public_dump._copy_select("documents", ["note"])
+                corpus_cut.copy_select("documents", ["note"])
         self.assertIn("CONTENT_WITHHELD", str(caught.exception))
 
     def test_the_two_schemas_share_one_engine_rather_than_two_copies(self):

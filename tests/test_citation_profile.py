@@ -59,8 +59,8 @@ class WorkByKindTests(unittest.TestCase):
     """The census, and only the census.
 
     The work and cites totals are NOT read here: they are the dump's own
-    row counts (citation_dump.plan_row_counts / live_row_counts), stamped
-    into the manifest from what was actually written. Read here as well,
+    row counts, counted as the COPY blocks stream past (copy_rows.py) and
+    stamped into the manifest afterwards. Read here as well,
     they were the same two cut row sets counted a second time -- the
     correlated EXISTS over citation.work and the double-ended join over
     citation.cites -- for numbers the recipient's gate requires to equal

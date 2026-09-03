@@ -44,7 +44,7 @@ from __future__ import annotations
 from typing import IO, NamedTuple
 
 from citation_columns import CITATION_COLUMN_CLASS, blanked_value
-from pg_common import scalar_row
+from copy_rows import RowCounter
 from schema_catalog import (
     classified_tables,
     columns_of,
@@ -61,7 +61,7 @@ from pg_stream import stream_stdout
 
 SCHEMA = "citation"
 
-# One alias per dumped table (the same discipline public_dump.TABLE_ALIASES
+# One alias per dumped table (the same discipline corpus_cut.TABLE_ALIASES
 # follows): an unlisted table raises KeyError instead of quietly producing
 # SQL with the wrong alias.
 TABLE_ALIASES = {"work": "w", "cites": "c", "crawl_step": "s", "public_policy": "p",
@@ -151,62 +151,6 @@ def copy_select(table: str, columns: list[str], mode: str) -> str:
     return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
-def count_expression(table: str) -> str:
-    """How many rows this table's COPY block will write, asked with the
-    block's OWN cut -- the same _SOURCE clause and the same CTE prefix, so
-    the number and the rows cannot describe two different policies.
-
-    Wrapped in a subquery because the source clause carries the ORDER BY the
-    dump needs and an aggregate cannot: what is counted is the row set, the
-    order is the block's business.
-
-    An EXPRESSION, not a statement: the counts of a plan travel in one
-    statement (plan_row_counts), and the journal's WITH belongs to the
-    expression that reads it -- two blocks derive two different cuts, and a
-    hoisted one would have the other count someone else's row set.
-    """
-    prefix = _QUERY_PREFIX[table]() if table in _QUERY_PREFIX else ""
-    return f"{prefix}SELECT count(*) FROM (SELECT 1 {_source_clause(table)}) shipped"
-
-
-def plan_row_counts(env: dict, plan: CitationPlan) -> dict[str, int]:
-    """{table: rows} for every block the plan carries, in ONE statement.
-
-    Read BEFORE the dump file is opened, beside the plan itself, and handed
-    back to the caller for the manifest: MANIFEST_DESCRIBES_ARTIFACT means
-    every number in manifest.json is about the package, and the recipient's
-    check compares exactly these against the COPY blocks the file turns out
-    to contain (deploy/citation_cut_checks.py).
-
-    One statement, the way live_row_counts() below asks its own: a psql
-    process, a temp script and a fresh connection per block is the cost
-    this module family prices explicitly elsewhere, and it grows with every
-    table the schema gains.
-    """
-    if not plan.blocks:
-        return {}
-    projection = ", ".join(f"({count_expression(block.table)})" for block in plan.blocks)
-    counts = scalar_row(env, f"SELECT {projection};", expected_columns=len(plan.blocks))
-    return {block.table: int(count) for block, count in zip(plan.blocks, counts)}
-
-
-def live_row_counts(env: dict) -> dict[str, int]:
-    """The same map for a profile that applies no cut at all.
-
-    The full profile is pg_dump over the whole schema, so what it writes is
-    every table pg_class holds and every row in it -- the catalog's answer,
-    not the classification's: pg_dump emits a table nobody classified too,
-    and a manifest that quietly omitted it would leave that table
-    undeclared and unchecked on the other side.
-    """
-    tables = present_tables(env, SCHEMA)
-    if not tables:
-        return {}
-    projection = ", ".join(f"(SELECT count(*) FROM {SCHEMA}.{table})" for table in tables)
-    counts = scalar_row(env, f"SELECT {projection};", expected_columns=len(tables))
-    return {table: int(count) for table, count in zip(tables, counts)}
-
-
 class CopyBlock(NamedTuple):
     """One table's COPY block, fully resolved: no classification question is
     left to ask while the file is open."""
@@ -255,16 +199,25 @@ def plan_citation(env: dict, mode: str) -> CitationPlan:
     return CitationPlan(True, tuple(blocks))
 
 
-def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock) -> None:
+def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock) -> int:
+    """Writes one block and returns how many rows it wrote.
+
+    Counted at the seam the rows pass through (copy_rows.RowCounter), not
+    asked of the database beside it: the manifest's numbers and the file's
+    COPY blocks have to be one fact, and two reads of a live instance are
+    two (see copy_rows.py).
+    """
     dst.write(f"COPY citation.{block.table} ({', '.join(block.columns)}) "
               "FROM stdin;\n".encode())
     argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
             "-c", block.statement]
-    stream_stdout(argv, env, dst)
+    counter = RowCounter(dst)
+    stream_stdout(argv, env, counter)
     dst.write(b"\\.\n")
     for column in block.serials:
         dst.write(setval_sql(SCHEMA, block.table, column))
     dst.write(b"\n")
+    return counter.rows
 
 
 def dump_ddl(env: dict, dst: IO[bytes]) -> None:
@@ -275,9 +228,10 @@ def dump_ddl(env: dict, dst: IO[bytes]) -> None:
     )
 
 
-def dump_citation(env: dict, dst: IO[bytes], plan: CitationPlan) -> None:
+def dump_citation(env: dict, dst: IO[bytes], plan: CitationPlan) -> dict[str, int]:
     """Writes the citation schema's DDL + every table's COPY block, or
-    nothing at all under a plan that does not ship it.
+    nothing at all under a plan that does not ship it, and returns
+    {table: rows} for what it wrote.
 
     Takes the PLAN rather than the mode: every question whose answer could
     be a refusal is plan_citation()'s, asked before the caller opened `dst`.
@@ -292,8 +246,7 @@ def dump_citation(env: dict, dst: IO[bytes], plan: CitationPlan) -> None:
     carrying them.
     """
     if not plan.ships:
-        return
+        return {}
     dump_ddl(env, dst)
     dst.write(b"\n")
-    for block in plan.blocks:
-        write_copy_block(env, dst, block)
+    return {block.table: write_copy_block(env, dst, block) for block in plan.blocks}

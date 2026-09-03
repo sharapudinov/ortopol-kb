@@ -21,6 +21,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import build_package
+from copy_rows import DumpedRows
 import citation_profile
 from citation_profile import CitationUnclassified
 from _build_package_fixtures import fake_manifest
@@ -69,7 +70,8 @@ class CitationPolicyOverrideTests(unittest.TestCase):
                  mock.patch.object(build_package, "bundle_runtime_files", return_value={}), \
                  mock.patch.object(build_package, "dump_public",
                                     side_effect=lambda e, p, citation_mode="none":
-                                    p.write_bytes(b"x") and {}), \
+                                    p.write_bytes(b"x")
+                                    and DumpedRows(corpus={}, citation={})), \
                  mock.patch.object(build_package, "sha256_file", return_value="a" * 64), \
                  mock.patch.object(build_package, "package",
                                     side_effect=lambda w, o: o.write_bytes(b"z")):
@@ -113,7 +115,8 @@ class CitationPolicyOverrideTests(unittest.TestCase):
             def fake_public(env, gz_path, *, citation_mode):
                 seen["dump_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
-                return {"work": 2, "cites": 1}
+                return DumpedRows(corpus={"documents": 3, "pages": 4},
+                                  citation={"work": 2, "cites": 1})
 
             def fake_package(workdir, out_path):
                 out_path.write_bytes(b"fake-tar-zst")
@@ -157,12 +160,14 @@ class CitationModeResolvedOnceTests(unittest.TestCase):
             def fake_public(env, gz_path, *, citation_mode):
                 seen["dump_mode"] = citation_mode
                 gz_path.write_bytes(b"public")
-                return {"work": 2, "cites": 1}
+                return DumpedRows(corpus={"documents": 3, "pages": 4},
+                                  citation={"work": 2, "cites": 1})
 
             def fake_full(env, gz_path, *, citation_mode):
                 seen["dump_mode"] = "<full writer>"
                 gz_path.write_bytes(b"full")
-                return {"work": 441}
+                return DumpedRows(corpus={"documents": 70, "pages": 2462},
+                                  citation={"work": 441})
 
             resolve = mock.Mock(
                 side_effect=resolve_error or resolve,

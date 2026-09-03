@@ -255,9 +255,9 @@ def work_by_kind(env: dict, *, shipped_only: bool = False) -> dict[str, int]:
     breakdown against the dumped rows.
 
     The census, and nothing beside it. The work and cites TOTALS are the
-    dump's own row counts (citation_dump.plan_row_counts for the cut
-    profile, live_row_counts for the whole one), stamped into the manifest
-    from what was actually written -- manifest_probe.stamp_dumped_rows().
+    dump's own row counts -- counted as the COPY blocks stream past
+    (copy_rows.py) and stamped into the manifest afterwards
+    (manifest_rows.stamp_dumped_rows).
     Counted here as well they were the same two cut row sets counted a
     second time: the correlated EXISTS against corpus.documents per work
     row, and the whole citation.cites joined to citation.work on both

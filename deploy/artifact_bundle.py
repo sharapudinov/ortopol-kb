@@ -11,9 +11,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from citation_dump import live_row_counts
+import dump_scan
+from copy_rows import DumpedRows
 from dump_integrity import sha256_file
-from manifest_contract import Profile, schemas_for, ships_citation
+from manifest_contract import Profile, schemas_for
 from pg_stream import CommandFailed, stream_stdout
 
 # Paths are relative to this file's own directory (deploy/).
@@ -151,23 +152,30 @@ CORPUS_LIB_FILES = [
 DUMP_COMPRESSLEVEL = 6
 
 
-def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> dict[str, int]:
+def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> DumpedRows:
     """The FULL profile's dump: pg_dump of every schema the profile carries
     (manifest_contract.schemas_for -- the same list manifest.json declares),
     streamed straight through gzip into gz_path -- one pass, no
-    uncompressed intermediate file. Returns {table: rows} for the citation
-    tables it carried, the same answer public_dump.dump_public() gives and
-    for the same consumer: manifest.citation.table_rows, which the
-    recipient's gate holds the shipped bytes to.
+    uncompressed intermediate file. Returns {table: rows} per schema for
+    what the file turned out to hold, the same answer public_dump.
+    dump_public() gives and for the same consumer: the manifest's counts,
+    which the recipient's gate holds the shipped bytes to.
 
-    pg_dump applies no cut, so those numbers are the catalog's whole answer
-    (citation_dump.live_row_counts) rather than the classification's: this
-    profile writes a table nobody classified too, and a manifest that
-    quietly omitted it would leave that table undeclared and unchecked on
-    the other side. The dump embeds every source PDF/djvu blob in the corpus (hundreds
+    Those numbers are READ BACK OFF THE DUMP (dump_scan) rather than
+    counted against the live database afterwards. pg_dump owns the whole
+    file, so there is no per-block seam to count at as the public profile
+    does -- but the polarity is the same one and it is the whole point: a
+    count taken from a second connection describes whatever the database
+    held at that moment, and the crawl adds ~100k journal rows per pass to
+    the same instance. It also answers the catalog's question rather than
+    the classification's for free: pg_dump writes a table nobody
+    classified, and reading the file finds it.
+
+    The dump embeds every source PDF/djvu blob in the corpus (hundreds
     of MB to several GB compressed), so writing it out uncompressed first
     and re-reading it to compress would roughly double both wall-clock and
-    peak disk usage for no benefit.
+    peak disk usage for no benefit. Reading it back costs one more inflate;
+    a manifest that describes the package is what it buys.
 
     The public profile's filtered equivalent lives in public_dump.py; both
     are dispatched from build_package.py by --profile, and both stream
@@ -191,7 +199,7 @@ def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> dict[str, int]
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc
-    return live_row_counts(env) if ships_citation(citation_mode) else {}
+    return DumpedRows.from_contents(dump_scan.scan(gz_path))
 
 
 def bundle_runtime_files(workdir: Path) -> dict[str, str]:

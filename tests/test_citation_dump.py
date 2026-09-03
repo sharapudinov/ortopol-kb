@@ -9,6 +9,7 @@ foreign keys require -- is test_citation_dump_live.py.
 from __future__ import annotations
 
 import io
+import pathlib
 import re
 import unittest
 from unittest import mock
@@ -306,108 +307,74 @@ class DumpCitationTests(unittest.TestCase):
         self.assertIn("--exclude-schema=ag_catalog", argv)
 
 
-class RowCountsTests(unittest.TestCase):
-    """How many rows each block will write -- the numbers manifest.json
-    declares and the recipient holds the dump to.
+class RowCountsComeFromTheBlockTests(unittest.TestCase):
+    """How many rows each block wrote -- the numbers manifest.json declares
+    and the recipient holds the dump to -- come from the block itself.
 
-    Counted through the block's OWN source clause rather than a count of
-    the table: the public dump cuts by the document classification, and a
-    manifest carrying live totals would describe a package that does not
-    exist (MANIFEST_DESCRIBES_ARTIFACT) while the check on the other side
-    read the cut ones.
+    They used to be a count query issued beside the plan, on its own psql
+    process and its own implicit transaction, while the gate on the other
+    side demands exact equality with the COPY blocks the file turns out to
+    contain. Nothing held the two readings together, and the crawl writes
+    ~100k journal rows per pass to the same instance. Counting what streams
+    past makes the equality structural (MANIFEST_DESCRIBES_ARTIFACT).
     """
 
-    def test_the_count_asks_the_same_cut_the_copy_block_does(self):
-        for table in DUMPED_TABLES:
-            with self.subTest(table=table):
-                counted = citation_dump.count_expression(table)
-                first = next(iter(citation_columns.CITATION_COLUMN_CLASS[table]))
-                copied = citation_dump.copy_select(
-                    table, [first], CitationMode.FULL_SKELETON)
-                source = citation_dump._source_clause(table)
-                self.assertIn(source, counted)
-                self.assertIn(source, copied)
-                self.assertTrue(counted.startswith(
-                    citation_dump._QUERY_PREFIX[table]()
-                    if table in citation_dump._QUERY_PREFIX else "SELECT count(*)"))
+    COLUMNS = {"work": ["id", "key"], "crawl_step": ["id", "crawl_id"]}
 
-    def test_the_journals_cut_ctes_travel_with_its_count(self):
-        """The journal's predicate is non-membership in a CTE the statement
-        itself derives: without the prefix the count is not a slower answer
-        but an invalid statement.
-        """
-        counted = citation_dump.count_expression("crawl_step")
-        self.assertTrue(counted.startswith("WITH cut_documents AS MATERIALIZED"))
-        self.assertIn("cut_steps", counted)
+    def _plan(self, mode=CitationMode.FULL_SKELETON, tables=("work", "crawl_step")):
+        with mock.patch.object(citation_dump, "citation_tables", return_value=list(tables)), \
+             mock.patch.object(citation_dump, "schema_columns",
+                               return_value=dict(self.COLUMNS)), \
+             mock.patch.object(citation_dump, "schema_serial_columns", return_value={}):
+            return citation_dump.plan_citation({}, mode)
 
-    def test_the_order_by_lives_inside_the_subquery(self):
-        """count(*) and ORDER BY cannot share a level -- the source clause
-        carries the order the dump needs, so the count wraps it.
-        """
-        counted = citation_dump.count_expression("work")
-        self.assertIn("FROM (SELECT 1 FROM citation.work w", counted)
-        self.assertLess(counted.index("ORDER BY w.id"), counted.index(") shipped"))
+    def test_a_block_reports_the_rows_it_streamed(self):
+        buffer = io.BytesIO()
+        with mock.patch.object(citation_dump, "stream_stdout",
+                               side_effect=lambda argv, env, dst: dst.write(b"a\nb\nc\n")):
+            rows = citation_dump.write_copy_block({}, buffer, citation_dump.CopyBlock(
+                "work", ["id", "key"], (), "COPY ..."))
+        self.assertEqual(rows, 3)
+        self.assertIn("COPY citation.work (id, key) FROM stdin;\na\nb\nc\n\\.\n",
+                      buffer.getvalue().decode())
 
-    PLAN = citation_dump.CitationPlan(True, (
-        citation_dump.CopyBlock("work", ["id"], (), "COPY ..."),
-        citation_dump.CopyBlock("crawl_step", ["id"], (), "COPY ..."),
-    ))
+    def test_an_empty_block_reports_zero(self):
+        with mock.patch.object(citation_dump, "stream_stdout",
+                               side_effect=lambda argv, env, dst: None):
+            rows = citation_dump.write_copy_block({}, io.BytesIO(), citation_dump.CopyBlock(
+                "work", ["id"], (), "COPY ..."))
+        self.assertEqual(rows, 0)
 
-    def test_every_block_is_counted_in_one_round_trip(self):
-        """A psql process, a temp script and a connection per block was the
-        cost live_row_counts() twenty lines below already refuses to pay --
-        and the journal's block pays it over the whole crawl_step cut.
-        """
-        with mock.patch.object(citation_dump, "scalar_row",
-                               return_value=["1", "2"]) as row:
-            counts = citation_dump.plan_row_counts({}, self.PLAN)
-        self.assertEqual(counts, {"work": 1, "crawl_step": 2})
-        row.assert_called_once()
-        statement = row.call_args.args[1]
-        self.assertEqual(row.call_args.kwargs["expected_columns"], 2)
-        for table in ("work", "crawl_step"):
-            self.assertIn(citation_dump.count_expression(table), statement)
+    def test_the_dump_answers_with_every_block_s_own_count(self):
+        written = {"work": b"1\tk\n2\tk\n", "crawl_step": b"9\tc\n"}
 
-    def test_the_one_statement_carries_each_cut_as_its_own_subquery(self):
-        """The journal's WITH belongs to the expression that reads it, not
-        to the statement: two blocks derive two different cuts, and hoisting
-        either would make the other's count answer someone else's question.
-        """
-        with mock.patch.object(citation_dump, "scalar_row", return_value=["1", "2"]) as row:
-            citation_dump.plan_row_counts({}, self.PLAN)
-        statement = row.call_args.args[1]
-        self.assertTrue(statement.startswith("SELECT (SELECT count(*)"), statement[:40])
-        self.assertIn("(WITH cut_documents AS MATERIALIZED", statement)
-        self.assertTrue(statement.endswith(";"), statement[-40:])
+        def fake_stream(argv, env, dst):
+            if "pg_dump" in argv[0]:
+                dst.write(b"-- DDL\n")
+                return
+            table = "crawl_step" if "FROM citation.crawl_step" in argv[-1] else "work"
+            dst.write(written[table])
 
-    def test_a_plan_that_ships_nothing_asks_nothing(self):
-        with mock.patch.object(citation_dump, "scalar_row") as never:
+        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
+            counts = citation_dump.dump_citation({}, io.BytesIO(), self._plan())
+        self.assertEqual(counts, {"work": 2, "crawl_step": 1})
+
+    def test_a_plan_that_ships_nothing_counts_nothing(self):
+        with mock.patch.object(citation_dump, "stream_stdout") as never:
             self.assertEqual(
-                citation_dump.plan_row_counts({}, citation_dump.CitationPlan(False, ())), {})
+                citation_dump.dump_citation(
+                    {}, io.BytesIO(), citation_dump.CitationPlan(False, ())), {})
         never.assert_not_called()
 
-    def test_the_uncut_profile_counts_every_table_in_one_round_trip(self):
-        """pg_dump writes the whole schema, so the full profile's numbers
-        are the catalog's list counted whole -- and asked as ONE statement,
-        because a psql process per table is the same answer at five times
-        the cost.
+    def test_the_module_asks_the_database_for_no_count_at_all(self):
+        """The count query is gone, not merely unused: a second reading of
+        the live database is what the numbers must not come from.
         """
-        with mock.patch.object(citation_dump, "present_tables",
-                               return_value=["work", "cites"]), \
-             mock.patch.object(citation_dump, "scalar_row",
-                               return_value=["441", "2427"]) as row:
-            counts = citation_dump.live_row_counts({})
-        self.assertEqual(counts, {"work": 441, "cites": 2427})
-        statement = row.call_args.args[1]
-        self.assertEqual(statement,
-                         "SELECT (SELECT count(*) FROM citation.work), "
-                         "(SELECT count(*) FROM citation.cites);")
-
-    def test_a_schema_with_no_table_at_all_is_no_statement_at_all(self):
-        with mock.patch.object(citation_dump, "present_tables", return_value=[]), \
-             mock.patch.object(citation_dump, "scalar_row") as never:
-            self.assertEqual(citation_dump.live_row_counts({}), {})
-        never.assert_not_called()
+        self.assertFalse(hasattr(citation_dump, "plan_row_counts"))
+        self.assertFalse(hasattr(citation_dump, "live_row_counts"))
+        self.assertFalse(hasattr(citation_dump, "count_expression"))
+        self.assertNotIn("count(*)", pathlib.Path(citation_dump.__file__).read_text(
+            encoding="utf-8"))
 
 
 class LegalCutSqlTests(unittest.TestCase):
