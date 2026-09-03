@@ -365,6 +365,49 @@ class TwinPromotionBatchTests(unittest.TestCase):
     def test_merge_twins_has_no_dry_run_flag_left_to_get_wrong(self):
         self.assertNotIn("dry_run", inspect.signature(twin_pass.merge_twins).parameters)
 
+    def _matched_nothing(self, writer):
+        """The same pass over a skeleton whose only node resembles no seed:
+        a different title, a different year and no DOI, so neither rule can
+        fire.
+        """
+        with mock.patch.object(twin_pass, "seed_titles", return_value=self.SEEDS), \
+             mock.patch.object(twin_pass, "corpus_years", return_value={"2019_rm9846": [2019]}), \
+             mock.patch.object(twin_pass, "skeleton_nodes", return_value=[
+                 ("W_XX", "Совершенно другая работа", 1975, "")]):
+            return twin_pass.merge_twins({}, "crawl-1", writer)
+
+    def test_a_round_that_matches_nothing_asks_the_writer_for_nothing(self):
+        """The empty batch never reaches the writer at all.
+
+        promote([]) and journal([]) are no-ops in the live writer TODAY, so
+        moving these calls out of the `if merged:` guard would break no
+        assertion about the database -- it would just issue two writes per
+        no-op round, and DRY_RUN_WRITES_NOTHING is a property of what gets
+        CALLED, not of what the callee then decides to skip.
+        """
+        writer = DryRunWriter()
+        promote = mock.patch.object(writer, "promote", side_effect=AssertionError(
+            "promote() вызван на раунде без совпадений"))
+        journalled = mock.patch.object(writer, "journal", side_effect=AssertionError(
+            "journal() вызван на раунде без совпадений"))
+        with promote, journalled:
+            merged = self._matched_nothing(writer)
+        self.assertEqual(merged, [])
+        self.assertEqual(writer.counts["twin"], 0)
+        self.assertEqual(writer.steps_seen, [])
+
+    def test_a_corpus_seeded_before_the_twin_rule_stops_the_pass(self):
+        """No seed carries titles or a mathnet id -> both indexes would be
+        empty, and every skeleton node would be tested against nothing and
+        pass as "no twin". The guard says so instead.
+        """
+        with mock.patch.object(twin_pass, "seed_titles", return_value=[]), \
+             mock.patch.object(twin_pass, "skeleton_nodes") as nodes:
+            with self.assertRaises(RuntimeError) as raised:
+                twin_pass.merge_twins({}, "crawl-1", DryRunWriter())
+        nodes.assert_not_called()
+        self.assertIn("перезапустите посев", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
