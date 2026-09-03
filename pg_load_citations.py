@@ -31,7 +31,7 @@ from citations.crawl import HUB_CAP, Snowball
 from citations.http_cache import cache_for
 from citations.openalex_client import OpenAlexClient, OpenAlexError, QuotaExhausted
 from citations.spike_cli import do_calibrate, do_hub_report
-from citations.spike_runs import DryRunMeasurementsWriter, MeasurementsWriter
+from citations.spike_runs import DryRunMeasurementsWriter, PostgresMeasurementsWriter
 from citations.inputs import (
     COVERAGE_RUN,
     corpus_document_ids,
@@ -80,7 +80,7 @@ def writers_for(args, env):
     """
     graph_dry = args.dry_run or args.calibrate
     return (DryRunWriter() if graph_dry else PostgresWriter(env),
-            DryRunMeasurementsWriter() if args.dry_run else MeasurementsWriter(env))
+            DryRunMeasurementsWriter() if args.dry_run else PostgresMeasurementsWriter(env))
 
 
 def tree_read_only(args) -> bool:

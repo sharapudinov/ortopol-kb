@@ -211,7 +211,8 @@ class RecordCalibrationTests(unittest.TestCase):
         record, writer = self._run([0.30, 0.32, 0.60, 0.62, 0.64])
         self.assertEqual((record.run_id, record.written), (7, 5))
         order = [name for name, _payload in writer.calls]
-        self.assertEqual(order, ["ddl", "upsert_run", "threshold_rows", "report"])
+        self.assertEqual(
+            order, ["ensure_threshold_table", "upsert_run", "threshold_rows", "report"])
         self.assertEqual(dict(zip(order, [p for _n, p in writer.calls]))["threshold_rows"], 5)
 
     def test_the_schema_is_applied_once_per_calibration(self):
@@ -238,7 +239,7 @@ class RecordCalibrationTests(unittest.TestCase):
              mock.patch.object(threshold_store, "copy_csv_rows",
                                 return_value=mock.Mock(rows=2)):
             spike_runs.record_calibration(
-                snowball, Path(tmp), spike_runs.MeasurementsWriter({}))
+                snowball, Path(tmp), spike_runs.PostgresMeasurementsWriter({}))
         self.assertEqual(applied.count(threshold_store.THRESHOLD_DDL), 1, applied)
 
     def test_the_report_goes_to_the_spike_path_in_the_data_tree(self):

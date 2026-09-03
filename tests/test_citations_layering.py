@@ -10,6 +10,7 @@ in the argparse module simply cannot be called without argparse.
 from __future__ import annotations
 
 import ast
+import inspect
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,7 +19,11 @@ import _pathfix  # noqa: F401
 import paths
 import pg_load_citations
 from citations import inputs
-from citations.spike_runs import DryRunMeasurementsWriter, MeasurementsWriter
+from citations.spike_runs import (
+    DryRunMeasurementsWriter,
+    MeasurementsWriter,
+    PostgresMeasurementsWriter,
+)
 from citations.dry_store import DryRunWriter
 from citations.store import PostgresWriter, Writer
 from pg_common import FIELD_SEP, RECORD_SEP
@@ -256,11 +261,11 @@ class WriterModeIsAnObjectTests(unittest.TestCase):
     MODES = {LOADER: ("do_crawl", "do_merge_twins"),
              SPIKE_CLI: ("do_hub_report", "do_calibrate")}
     CONSTRUCTORS = ("DryRunWriter", "PostgresWriter",
-                    "DryRunMeasurementsWriter", "MeasurementsWriter")
+                    "DryRunMeasurementsWriter", "PostgresMeasurementsWriter")
 
     def test_both_seams_carry_the_mode_on_the_writer(self):
         for writer, dry in ((PostgresWriter({}), False), (DryRunWriter(), True),
-                            (MeasurementsWriter({}), False),
+                            (PostgresMeasurementsWriter({}), False),
                             (DryRunMeasurementsWriter(), True)):
             with self.subTest(writer=type(writer).__name__):
                 self.assertIs(writer.dry, dry)
@@ -270,6 +275,32 @@ class WriterModeIsAnObjectTests(unittest.TestCase):
         for writer in (PostgresWriter({}), DryRunWriter()):
             with self.subTest(writer=type(writer).__name__):
                 self.assertIsInstance(writer, Writer)
+
+    def test_the_measurement_writers_conform_to_the_protocol_too(self):
+        """The seam next door, pinned the same way. It had no Protocol and
+        no conformance test at all, so a method on one implementation and
+        not the other was a mode reaching the database through an
+        AttributeError, or a dry mode quietly skipping a step.
+        """
+        self.assertIn("dry", MeasurementsWriter.__annotations__)
+        for writer in (PostgresMeasurementsWriter({}), DryRunMeasurementsWriter()):
+            with self.subTest(writer=type(writer).__name__):
+                self.assertIsInstance(writer, MeasurementsWriter)
+
+    def test_no_measurement_operation_takes_a_statement(self):
+        """Domain operations, not a run_sql proxy with a generic escape
+        hatch: ddl(sql)/populate(sql, run_id) accepted statement text the
+        caller authored, so a new measurement stayed inside the guarantee
+        only while its author remembered to route it through writer.*, and
+        the dry mode's record was SQL rather than what would be written.
+        """
+        for name in dir(MeasurementsWriter):
+            if name.startswith("_") or name == "dry":
+                continue
+            with self.subTest(operation=name):
+                parameters = inspect.signature(
+                    getattr(MeasurementsWriter, name)).parameters
+                self.assertNotIn("sql", parameters)
 
     def test_no_mode_branches_on_the_flag_once_a_writer_exists(self):
         """The flag builds objects and is never consulted again: inside the

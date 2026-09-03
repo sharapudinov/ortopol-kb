@@ -25,7 +25,7 @@ Store пишет долговременный граф (upsert, сохранён
 from __future__ import annotations
 
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Protocol, runtime_checkable
 
 from pg_common import run_sql
 
@@ -45,7 +45,44 @@ class HubStats(NamedTuple):
     worst: list
 
 
-class MeasurementsWriter:
+@runtime_checkable
+class MeasurementsWriter(Protocol):
+    """Шов, через который ходят оба спайк-режима, — доменными операциями.
+
+    store.Writer соседа доменный (works/edges/journal/promote/project/
+    census), и именно это делает «--dry-run ничего не пишет» и «сухой
+    писатель говорит, ЧТО записал бы» свойствами конструкции. Здесь было не
+    так: ddl(sql) и populate(sql, run_id) принимали произвольный текст
+    оператора, который сочинял вызывающий, — то есть прокси к run_sql с
+    универсальной лазейкой, а не контракт. Новый оператор замера оставался
+    внутри гарантии ровно до тех пор, пока автор помнил провести его через
+    writer.*, а .calls сухого режима хранил SQL — по нему нельзя сказать,
+    какие строки появились бы.
+
+    Каждая операция ниже ВЛАДЕЕТ своим оператором: имя говорит, что
+    записывается, модуль замера — чем именно.
+    """
+
+    dry: bool
+
+    def ensure_threshold_table(self) -> None: ...
+
+    def ensure_hub_table(self) -> None: ...
+
+    def upsert_run(self, spike: str, fields: dict) -> int: ...
+
+    def update_run_fields(self, spike: str, fields: dict) -> None: ...
+
+    def threshold_rows(self, run_id: int, rows) -> int: ...
+
+    def populate_hub_expansion(self, run_id: int) -> None: ...
+
+    def hub_stats(self, run_id: int, hub_cap: int) -> HubStats: ...
+
+    def report(self, path: Path, text: str) -> None: ...
+
+
+class PostgresMeasurementsWriter:
     """Живая база и диск: то, что режим записывает на самом деле."""
 
     dry = False
@@ -53,8 +90,11 @@ class MeasurementsWriter:
     def __init__(self, env):
         self.env = env
 
-    def ddl(self, sql: str) -> None:
-        run_sql(self.env, sql)
+    def ensure_threshold_table(self) -> None:
+        run_sql(self.env, threshold_store.THRESHOLD_DDL)
+
+    def ensure_hub_table(self) -> None:
+        run_sql(self.env, hub_report.DDL)
 
     def upsert_run(self, spike: str, fields: dict) -> int:
         return threshold_store.upsert_run(self.env, spike, fields)
@@ -65,8 +105,8 @@ class MeasurementsWriter:
     def threshold_rows(self, run_id: int, rows) -> int:
         return threshold_store.insert_threshold_rows(self.env, run_id, rows)
 
-    def populate(self, sql: str, run_id: int) -> None:
-        run_sql(self.env, sql, variables={"run": str(int(run_id))})
+    def populate_hub_expansion(self, run_id: int) -> None:
+        run_sql(self.env, hub_report.POPULATE, variables={"run": str(int(run_id))})
 
     def hub_stats(self, run_id: int, hub_cap: int) -> HubStats:
         return HubStats(hub_report.stats(self.env, run_id, hub_cap),
@@ -82,7 +122,10 @@ class DryRunMeasurementsWriter:
 
     Возвращает 0 вместо id прогона: под --dry-run строки прогона нет, и
     номер, которого никто не создавал, печатать нельзя. Вызовы копятся в
-    .calls, чтобы режим мог сказать, что именно он записал бы.
+    .calls, чтобы режим мог сказать, что именно он записал бы, — и рядом с
+    именем операции лежит её ПРЕДМЕТ (таблица, спайк, число строк, id
+    прогона), а не текст оператора: по SQL нельзя сказать, какие строки
+    появились бы.
     """
 
     dry = True
@@ -90,8 +133,11 @@ class DryRunMeasurementsWriter:
     def __init__(self):
         self.calls: list[tuple[str, object]] = []
 
-    def ddl(self, sql: str) -> None:
-        self.calls.append(("ddl", sql))
+    def ensure_threshold_table(self) -> None:
+        self.calls.append(("ensure_threshold_table", threshold_store.THRESHOLD_TABLE))
+
+    def ensure_hub_table(self) -> None:
+        self.calls.append(("ensure_hub_table", hub_report.TABLE))
 
     def upsert_run(self, spike: str, fields: dict) -> int:
         self.calls.append(("upsert_run", spike))
@@ -105,8 +151,8 @@ class DryRunMeasurementsWriter:
         self.calls.append(("threshold_rows", len(rows)))
         return len(rows)
 
-    def populate(self, sql: str, run_id: int) -> None:
-        self.calls.append(("populate", run_id))
+    def populate_hub_expansion(self, run_id: int) -> None:
+        self.calls.append(("populate_hub_expansion", run_id))
 
     def hub_stats(self, run_id: int, hub_cap: int) -> HubStats:
         self.calls.append(("hub_stats", run_id))
@@ -157,7 +203,7 @@ def record_calibration(snowball, data_root: Path, writer) -> CalibrationRecord:
     if not rows:
         raise NothingToMeasure("кандидатов depth-1 нет — калибровать нечего")
     tau_hint = calibration.suggest_tau(rows)
-    writer.ddl(threshold_store.THRESHOLD_DDL)
+    writer.ensure_threshold_table()
     run_id = writer.upsert_run(calibration.SPIKE, calibration.run_fields(rows))
     written = writer.threshold_rows(run_id, rows)
     report = data_root / calibration.REPORT_PATH
@@ -193,10 +239,10 @@ def record_hub_report(cache, data_root: Path, writer, hub_cap: int) -> HubRecord
         raise NothingToMeasure(
             "в кэше нет ни одного батча cites: — мерить нечего; это кэш "
             "другого прогона либо страницы направления «вниз»")
-    writer.ddl(hub_report.DDL)
+    writer.ensure_hub_table()
     run_id = writer.upsert_run(hub_report.SPIKE,
                                hub_report.run_fields(counts, [], hub_cap))
-    writer.populate(hub_report.POPULATE, run_id)
+    writer.populate_hub_expansion(run_id)
     stats = writer.hub_stats(run_id, hub_cap)
     # verify_query называет ожидаемые числа, а они известны только после
     # заполнения таблицы. Правка НА МЕСТЕ: перезапись строки прогона унесла

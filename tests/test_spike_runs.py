@@ -72,13 +72,13 @@ class HubReportWriteOrderTests(unittest.TestCase):
     def test_the_aggregation_pass_runs_once(self):
         record, writer = self._run()
         self.assertEqual(record.run_id, 7)
-        self.assertEqual([name for name, _payload in writer.calls].count("populate"), 1)
+        self.assertEqual([name for name, _payload in writer.calls].count("populate_hub_expansion"), 1)
         self.assertEqual([name for name, _payload in writer.calls].count("upsert_run"), 1)
 
     def test_verify_query_is_stamped_by_an_in_place_update(self):
         _record, writer = self._run()
         order = [name for name, _payload in writer.calls]
-        self.assertEqual(order.index("update_run_fields") > order.index("populate"), True)
+        self.assertEqual(order.index("update_run_fields") > order.index("populate_hub_expansion"), True)
         self.assertIn("update_run_fields", order)
 
     def test_the_stamped_verify_query_names_the_measured_numbers(self):
@@ -104,8 +104,8 @@ class HubReportWriteOrderTests(unittest.TestCase):
         self.assertEqual((record.run_id, record.rows), (0, []))
         self.assertEqual(record.report, Path(tmp) / hub_report.REPORT_PATH)
         self.assertEqual([name for name, _payload in writer.calls],
-                         ["ddl", "upsert_run", "populate", "hub_stats",
-                          "update_run_fields", "report"])
+                         ["ensure_hub_table", "upsert_run", "populate_hub_expansion",
+                          "hub_stats", "update_run_fields", "report"])
 
 
 class CapIsTheRunsNotTheModulesTests(unittest.TestCase):
@@ -260,7 +260,8 @@ class BothWritersSeeTheSameSequenceTests(unittest.TestCase):
 
     def test_the_hub_measurement_calls_the_same_methods_in_both_modes(self):
         live, dry = self._sequences(self._hub)
-        self.assertEqual(live, ["ddl", "upsert_run", "populate", "hub_stats",
+        self.assertEqual(live, ["ensure_hub_table", "upsert_run",
+                                "populate_hub_expansion", "hub_stats",
                                 "update_run_fields", "report"])
         self.assertEqual(dry, live)
 
@@ -268,7 +269,8 @@ class BothWritersSeeTheSameSequenceTests(unittest.TestCase):
         """The mode that never branched, asserted the same way, so the two
         are held to one rule rather than to each other's history."""
         live, dry = self._sequences(self._calibration)
-        self.assertEqual(live, ["ddl", "upsert_run", "threshold_rows", "report"])
+        self.assertEqual(live, ["ensure_threshold_table", "upsert_run",
+                                "threshold_rows", "report"])
         self.assertEqual(dry, live)
 
     def test_the_two_shipped_writers_answer_the_same_contract(self):
@@ -276,7 +278,7 @@ class BothWritersSeeTheSameSequenceTests(unittest.TestCase):
         that reaches the database through an AttributeError, or a dry mode
         quietly skipping a step the live one takes.
         """
-        live = {name for name in dir(spike_runs.MeasurementsWriter)
+        live = {name for name in dir(spike_runs.PostgresMeasurementsWriter)
                 if not name.startswith("_")}
         dry = {name for name in dir(spike_runs.DryRunMeasurementsWriter)
                if not name.startswith("_") and name != "calls"}
@@ -284,8 +286,17 @@ class BothWritersSeeTheSameSequenceTests(unittest.TestCase):
         for name in sorted(live - {"dry"}):
             with self.subTest(method=name):
                 self.assertEqual(
-                    inspect.signature(getattr(spike_runs.MeasurementsWriter, name)),
+                    inspect.signature(getattr(spike_runs.PostgresMeasurementsWriter, name)),
                     inspect.signature(getattr(spike_runs.DryRunMeasurementsWriter, name)))
+
+    def test_each_ensure_operation_names_the_table_its_ddl_creates(self):
+        """What the dry writer records is the SUBJECT of the operation, so
+        the mode can say what it would have written. The name is pinned to
+        the statement rather than kept equal by hand.
+        """
+        self.assertIn(threshold_store.THRESHOLD_TABLE, threshold_store.THRESHOLD_DDL)
+        self.assertIn(hub_report.TABLE, hub_report.DDL)
+        self.assertIn(hub_report.TABLE, hub_report.POPULATE)
 
     def test_the_dry_read_back_is_empty_rather_than_absent(self):
         stats = spike_runs.DryRunMeasurementsWriter().hub_stats(0, 1000)

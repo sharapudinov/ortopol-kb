@@ -34,6 +34,11 @@ from pg_copy import copy_csv_rows
 RELATION_CONSTRAINT = "citation_frontier_threshold_relation_check"
 _RELATION_ARRAY = ", ".join(f"'{value}'" for value in Relation.ALL)
 
+# The relation THRESHOLD_DDL creates, named so the measurements seam can say
+# WHICH table it would have ensured without quoting a statement at the
+# caller. Pinned to the DDL by test, not by care.
+THRESHOLD_TABLE = "measurements.citation_frontier_threshold"
+
 THRESHOLD_DDL = f"""
 CREATE TABLE IF NOT EXISTS measurements.citation_frontier_threshold (
     run_id        BIGINT NOT NULL REFERENCES measurements.run(id) ON DELETE CASCADE,

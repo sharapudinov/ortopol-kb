@@ -25,6 +25,11 @@ from pg_common import FIELD_SEP, ROW_ARGS, split_records
 SPIKE = "research/citation-frontier-hub-expansion"
 REPORT_PATH = "research/citation-frontier/hub-expansion.md"
 
+# The relation DDL creates and POPULATE fills, named for the same reason
+# threshold_store.THRESHOLD_TABLE is: the seam reports the table, not the
+# statement.
+TABLE = "measurements.citation_hub_expansion"
+
 DDL = """
 CREATE TABLE IF NOT EXISTS measurements.citation_hub_expansion (
     run_id          BIGINT NOT NULL REFERENCES measurements.run(id) ON DELETE CASCADE,
