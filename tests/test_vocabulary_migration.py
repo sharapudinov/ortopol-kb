@@ -1,7 +1,9 @@
 """citation.ensure_vocabulary_check() -- the migrator itself, driven.
 
-Every closed vocabulary of the citation schema is a NAMED constraint applied
-by pg_schema_citation_constraints.sql through this one function, because
+Every closed vocabulary the crawl writes is a NAMED constraint applied
+through this one function -- four of them by
+pg_schema_citation_constraints.sql, the fifth by the DDL
+citations/threshold_store.py hands the measurements writer -- because
 CREATE TABLE IF NOT EXISTS changes nothing on an instance that already
 carries the table and an inline CHECK therefore can never be widened again.
 The function reads what the instance currently has and DROP+ADDs only on a
@@ -31,6 +33,7 @@ import re
 import unittest
 
 import _pathfix  # noqa: F401
+from citations import threshold_store
 from citation_vocab import CrawlAction, PublicPolicyMode, Relation, WorkKind
 from paths import default_corpus_dir, kb_root
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
@@ -181,12 +184,23 @@ class TheMigratorIsNotCalledFromPythonTests(unittest.TestCase):
     A module issuing its own ensure_vocabulary_check() would be a second
     place a vocabulary is declared to the database -- the thing
     VOCABULARY_ONE_DECLARATION forbids, one layer down from the literals.
+
+    ONE exception, named by module: citations/threshold_store.py owns the
+    DDL of measurements.citation_frontier_threshold, a spike's own data
+    table created by the first calibration and applied through the
+    measurements writer (EXTENDING procedure D) -- there is no schema file
+    for it to be declared in. Its vocabulary is the journal's `relation`,
+    and MEASUREMENTS_MIRROR below holds it to citation_vocab, so the
+    exception is a place, not a licence.
     """
 
-    def test_no_module_issues_the_migration_itself(self):
+    MEASUREMENTS_MIRROR = "threshold_store.py"
+
+    def _spelling_modules(self) -> dict:
         root = kb_root()
         modules = sorted(root.glob("*.py")) + sorted((root / "citations").glob("*.py")) \
             + sorted((root / "deploy").glob("*.py"))
+        found = {}
         for path in modules:
             source = path.read_text(encoding="utf-8")
             if "ensure_vocabulary_check" not in source:
@@ -195,9 +209,24 @@ class TheMigratorIsNotCalledFromPythonTests(unittest.TestCase):
             spelled = [node.lineno for node in ast.walk(tree)
                        if isinstance(node, ast.Constant) and isinstance(node.value, str)
                        and "ensure_vocabulary_check(" in node.value]
-            with self.subTest(module=path.name):
-                self.assertEqual(spelled, [], f"{path.name}: миграцию применяет "
-                                              "pg_schema_citation_constraints.sql")
+            if spelled:
+                found[path.name] = spelled
+        return found
+
+    def test_only_the_named_exception_issues_the_migration_itself(self):
+        self.assertEqual(sorted(self._spelling_modules()), [self.MEASUREMENTS_MIRROR],
+                         "миграцию применяет pg_schema_citation_constraints.sql, "
+                         "кроме таблицы спайка, у которой нет файла схемы")
+
+    def test_the_exception_declares_the_journals_own_vocabulary(self):
+        """The measurements table records one row per scored candidate and
+        groups its verdict by `relation`: the same closed vocabulary, read
+        from citation_vocab rather than spelled a second time.
+        """
+        found = re.search(rf"'{threshold_store.RELATION_CONSTRAINT}',\s*ARRAY\[([^\]]*)\]",
+                          threshold_store.THRESHOLD_DDL, re.S)
+        self.assertIsNotNone(found, threshold_store.THRESHOLD_DDL)
+        self.assertEqual(set(re.findall(r"'([^']*)'", found.group(1))), set(Relation.ALL))
 
 
 if __name__ == "__main__":

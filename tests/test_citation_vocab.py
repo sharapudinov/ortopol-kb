@@ -42,6 +42,7 @@ import ast
 import re
 import unittest
 from pathlib import Path
+from typing import NamedTuple
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
@@ -58,29 +59,50 @@ VOCAB_FILE = Path(citation_vocab.__file__).resolve()
 SCHEMA_FILE = kb_root() / "pg_schema_citation.sql"
 CONSTRAINTS_FILE = kb_root() / "pg_schema_citation_constraints.sql"
 
-# Each vocabulary as the schema FILES spell it. All four live in the
-# constraints file now, as the wanted array handed to the function that
-# widens a NAMED constraint without a validation scan: an inline CHECK
-# cannot be widened on a table that already exists, and CREATE TABLE IF NOT
-# EXISTS makes every deployed instance exactly that case. Anchored on the
-# constraint name, so a clause elsewhere cannot stand in for a missing one,
-# and a clause that stops matching is a failure here rather than a silently
-# empty comparison (test_every_vocabulary_is_found_and_is_not_empty).
+# Each vocabulary as the SQL spells it. All five go through the one
+# function that widens a NAMED constraint without a validation scan: an
+# inline CHECK cannot be widened on a table that already exists, and CREATE
+# TABLE IF NOT EXISTS makes every deployed instance exactly that case.
+# Anchored on the constraint name, so a clause elsewhere cannot stand in for
+# a missing one, and a clause that stops matching is a failure here rather
+# than a silently empty comparison
+# (test_every_vocabulary_is_found_and_is_not_empty).
 def _wanted_array(constraint: str) -> re.Pattern:
     return re.compile(rf"'{constraint}',\s*ARRAY\[([^\]]*)\]", re.S)
 
 
-SQL_CLAUSES = {
-    "kind": (CONSTRAINTS_FILE, _wanted_array("work_kind_check")),
-    "action": (CONSTRAINTS_FILE, _wanted_array("crawl_step_action_check")),
-    "relation": (CONSTRAINTS_FILE, _wanted_array("crawl_step_relation_check")),
-    "mode": (CONSTRAINTS_FILE, _wanted_array("public_policy_mode_check")),
-}
-PYTHON_VOCABULARIES = {
-    "kind": WorkKind.ALL,
-    "action": CrawlAction.ALL,
-    "relation": Relation.ALL,
-    "mode": PublicPolicyMode.ALL,
+class Declaration(NamedTuple):
+    """One closed vocabulary: the column it constrains, the SQL that
+    declares it, the constraint name it is declared under, and the Python
+    constants it has to equal.
+
+    `sql` is TEXT rather than a path because the fifth declaration is not a
+    file at all: citations/threshold_store.py builds the measurements
+    table's DDL in Python and the calibration applies it. Same migrator,
+    same comparison, so the same row here -- it was the one vocabulary left
+    inline, i.e. the one that could never be widened on an instance that
+    already ran a calibration.
+    """
+
+    column: str
+    sql: str
+    constraint: str
+    python: tuple
+
+
+CONSTRAINTS_SQL = CONSTRAINTS_FILE.read_text(encoding="utf-8")
+DECLARATIONS = {
+    "citation.work.kind": Declaration(
+        "kind", CONSTRAINTS_SQL, "work_kind_check", WorkKind.ALL),
+    "citation.crawl_step.action": Declaration(
+        "action", CONSTRAINTS_SQL, "crawl_step_action_check", CrawlAction.ALL),
+    "citation.crawl_step.relation": Declaration(
+        "relation", CONSTRAINTS_SQL, "crawl_step_relation_check", Relation.ALL),
+    "citation.public_policy.mode": Declaration(
+        "mode", CONSTRAINTS_SQL, "public_policy_mode_check", PublicPolicyMode.ALL),
+    "measurements.citation_frontier_threshold.relation": Declaration(
+        "relation", threshold_store.THRESHOLD_DDL,
+        threshold_store.RELATION_CONSTRAINT, Relation.ALL),
 }
 
 _CONSTRAINT_SQL = """
@@ -289,22 +311,6 @@ class JournalActionsAreTheVocabularyTests(unittest.TestCase):
         self.assertIn("hub-skipped", str(ctx.exception))
 
 
-class MeasurementsMirrorTheRelationTests(unittest.TestCase):
-    """citations/threshold_store.py declares its own table, with its own
-    CHECK over the same two values -- the calibration it records is one row
-    per scored candidate, and `relation` is the facet the report groups by.
-    A second spelling there is the same drift the schema's CHECK is held
-    against, so it reads the vocabulary too.
-    """
-
-    def test_the_calibration_table_checks_the_declared_pair(self):
-        found = re.search(r"CHECK \(relation IN \(([^)]*)\)\)",
-                          threshold_store.THRESHOLD_DDL)
-        self.assertIsNotNone(found, threshold_store.THRESHOLD_DDL)
-        self.assertEqual(set(re.findall(r"'([^']*)'", found.group(1))),
-                         set(Relation.ALL))
-
-
 class PackagerSharesTheDeclarationTests(unittest.TestCase):
     """The one consumer outside the modules the AST scan walks.
 
@@ -324,60 +330,91 @@ class PackagerSharesTheDeclarationTests(unittest.TestCase):
             self.assertIn(mode, PublicPolicyMode.ALL)
 
 
-class VocabularyMatchesTheSchemaFileTests(unittest.TestCase):
-    """The Python constants against the SQL file, on any checkout.
+class VocabularyMatchesTheDeclarationTests(unittest.TestCase):
+    """The Python constants against the SQL, on any checkout.
 
     Compared as VOCABULARIES and in both directions: an extra value, a
     missing one and a renamed one each leave the two sets different, and
     nothing else does. What this cannot see is what the SERVER carries --
-    a schema file is a promise about the next init -- which is why the live
+    a declaration is a promise about the next apply -- which is why the live
     comparison below stays beside it.
     """
 
-    def _literals(self, column: str) -> set[str]:
-        path, pattern = SQL_CLAUSES[column]
-        found = pattern.search(path.read_text(encoding="utf-8"))
+    def _literals(self, name: str) -> set[str]:
+        declared = DECLARATIONS[name]
+        found = _wanted_array(declared.constraint).search(declared.sql)
         self.assertIsNotNone(
-            found, f"{column}: словарь не найден в {path.name} -- "
-                   "форма CHECK изменилась, и сравнивать стало нечего")
+            found, f"{name}: словарь не найден рядом с {declared.constraint} -- "
+                   "форма объявления изменилась, и сравнивать стало нечего")
         return set(re.findall(r"'([^']*)'", found.group(1)))
 
     def test_every_vocabulary_is_found_and_is_not_empty(self):
-        for column in SQL_CLAUSES:
-            self.assertTrue(self._literals(column), column)
+        for name in DECLARATIONS:
+            self.assertTrue(self._literals(name), name)
+
+    def test_all_five_vocabularies_go_through_the_migrator(self):
+        """The count is the assertion: five CHECK-constrained columns exist
+        across the two schemas the crawl writes, and every one of them is
+        declared as the `wanted` array of citation.ensure_vocabulary_check.
+
+        An inline CHECK is unwidenable on every instance that already has
+        the table, and CREATE TABLE IF NOT EXISTS makes every deployed
+        instance exactly that case -- so a vocabulary left inline passes the
+        offline tests (they read the declaration) and stays a no-op on the
+        database. Three of the five had been left that way in turn; the
+        measurements mirror was the last.
+        """
+        self.assertEqual(len(DECLARATIONS), 5)
+        for name, declared in DECLARATIONS.items():
+            with self.subTest(vocabulary=name):
+                self.assertIn("ensure_vocabulary_check", declared.sql)
+                self.assertIn(f"'{declared.constraint}'", declared.sql)
 
     def test_no_vocabulary_is_left_as_an_inline_check(self):
-        """An inline CHECK is unwidenable on every instance that already has
-        the table, so the whole point of the shared migrator is that all four
-        vocabularies go through it. Two of them stayed inline, and the
-        offline tests above could not see the difference: they read the
-        schema FILE, which an inline CHECK satisfies exactly as well.
+        """The other half of the same rule, read off the sources an inline
+        CHECK could hide in: the data definition, and each declaration's own
+        text.
         """
         definition = SCHEMA_FILE.read_text(encoding="utf-8")
-        for column in SQL_CLAUSES:
-            with self.subTest(column=column):
-                self.assertNotRegex(definition, rf"CHECK \({column} IN \(")
+        for name, declared in DECLARATIONS.items():
+            with self.subTest(vocabulary=name):
+                pattern = rf"CHECK \({declared.column} IN \("
+                self.assertNotRegex(definition, pattern)
+                self.assertNotRegex(declared.sql, pattern)
 
-    def test_the_work_kinds_are_the_ones_the_file_allows(self):
-        self.assertEqual(self._literals("kind"), set(WorkKind.ALL))
+    def test_the_work_kinds_are_the_ones_the_declaration_allows(self):
+        self.assertEqual(self._literals("citation.work.kind"), set(WorkKind.ALL))
 
-    def test_the_crawl_actions_are_the_ones_the_file_allows(self):
-        self.assertEqual(self._literals("action"), set(CrawlAction.ALL))
+    def test_the_crawl_actions_are_the_ones_the_declaration_allows(self):
+        self.assertEqual(self._literals("citation.crawl_step.action"),
+                         set(CrawlAction.ALL))
 
-    def test_the_relations_are_the_ones_the_file_allows(self):
-        self.assertEqual(self._literals("relation"), set(Relation.ALL))
+    def test_the_relations_are_the_ones_the_declaration_allows(self):
+        self.assertEqual(self._literals("citation.crawl_step.relation"),
+                         set(Relation.ALL))
 
-    def test_the_public_policy_modes_are_the_ones_the_file_allows(self):
-        self.assertEqual(self._literals("mode"), set(PublicPolicyMode.ALL))
+    def test_the_measurements_mirror_declares_the_same_pair(self):
+        """The calibration records one row per scored candidate and groups
+        its whole verdict by `relation`, so the measurements table mirrors
+        the journal's vocabulary -- through the same migrator, on a table
+        the first calibration created and nothing recreates.
+        """
+        self.assertEqual(
+            self._literals("measurements.citation_frontier_threshold.relation"),
+            set(Relation.ALL))
+
+    def test_the_public_policy_modes_are_the_ones_the_declaration_allows(self):
+        self.assertEqual(self._literals("citation.public_policy.mode"),
+                         set(PublicPolicyMode.ALL))
 
     def test_a_value_on_one_side_only_is_what_this_catches(self):
         """The failure this exists for, spelled out: the comparison is over
         sets, so neither direction passes by inclusion.
         """
-        for column, values in PYTHON_VOCABULARIES.items():
-            literals = self._literals(column)
-            self.assertNotEqual(literals, set(values) | {"invented"}, column)
-            self.assertNotEqual(literals, set(values) - {values[0]}, column)
+        for name, declared in DECLARATIONS.items():
+            literals = self._literals(name)
+            self.assertNotEqual(literals, set(declared.python) | {"invented"}, name)
+            self.assertNotEqual(literals, set(declared.python) - {declared.python[0]}, name)
 
 
 class VocabularyMatchesTheSchemaLiveTests(unittest.TestCase):
@@ -425,6 +462,18 @@ class VocabularyMatchesTheSchemaLiveTests(unittest.TestCase):
         self.assertEqual(
             self._check_vocabulary("citation.public_policy", "public_policy_mode_check"),
             set(PublicPolicyMode.ALL))
+
+    def test_the_measurements_mirror_carries_the_named_constraint(self):
+        """The fifth one, on the table a calibration writes. Live because
+        this is the case the offline half cannot reach: the table was
+        created with an INLINE check, and whether the migrator adopted that
+        constraint or left a second one beside it is a fact about the
+        instance, not about the DDL string.
+        """
+        self.assertEqual(
+            self._check_vocabulary("measurements.citation_frontier_threshold",
+                                   threshold_store.RELATION_CONSTRAINT),
+            set(Relation.ALL))
 
 
 if __name__ == "__main__":

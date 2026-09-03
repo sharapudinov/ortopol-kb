@@ -28,12 +28,18 @@ from citation_vocab import Relation
 from pg_common import run_sql, scalar
 from pg_copy import copy_csv_rows
 
+# The name Postgres itself gave the inline column CHECK this table was
+# created with, so the migration below compares that constraint and leaves
+# it alone rather than dropping and re-validating it on every calibration.
+RELATION_CONSTRAINT = "citation_frontier_threshold_relation_check"
+_RELATION_ARRAY = ", ".join(f"'{value}'" for value in Relation.ALL)
+
 THRESHOLD_DDL = f"""
 CREATE TABLE IF NOT EXISTS measurements.citation_frontier_threshold (
     run_id        BIGINT NOT NULL REFERENCES measurements.run(id) ON DELETE CASCADE,
     candidate_key TEXT NOT NULL,
     depth         INTEGER NOT NULL,
-    relation      TEXT NOT NULL CHECK (relation IN ({', '.join(repr(r) for r in Relation.ALL)})),
+    relation      TEXT NOT NULL,
     score         DOUBLE PRECISION NOT NULL,
     title         TEXT,
     year          INTEGER,
@@ -56,6 +62,21 @@ ALTER TABLE measurements.citation_frontier_threshold
     ADD COLUMN IF NOT EXISTS n_references INTEGER;
 CREATE INDEX IF NOT EXISTS citation_frontier_threshold_score
     ON measurements.citation_frontier_threshold (run_id, score);
+-- The fifth closed vocabulary of the crawl, declared the way the four in
+-- pg_schema_citation_constraints.sql are: through the one migrator, as a
+-- NAMED constraint compared before it is replaced. An inline CHECK inside
+-- CREATE TABLE IF NOT EXISTS is unwidenable on every instance that already
+-- carries the table -- and this table is created by the first calibration
+-- and never again -- so a value added to citation_vocab.Relation would pass
+-- every offline test and stay a no-op on the very database the calibration
+-- writes to.
+-- citation.ensure_vocabulary_check is in schema citation because that is
+-- where the other four live; it is applied by `pg_graph.py init`, which the
+-- crawl's own command line runs before any non-dry mode reaches a writer.
+DO $relation_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+    'measurements.citation_frontier_threshold', 'relation',
+    '{RELATION_CONSTRAINT}', ARRAY[{_RELATION_ARRAY}]);
+END $relation_check$;
 """
 
 

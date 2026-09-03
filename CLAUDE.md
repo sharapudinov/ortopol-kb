@@ -176,9 +176,14 @@ VOCABULARY_ONE_DECLARATION [HARD, 2026-09-02]: закрытый словарь �
   action, не добавленное в CHECK, теряет ВЕСЬ журнал уровня уже после того,
   как записаны work-строки и рёбра. Новое значение = строка в citation_vocab
   И в pg_schema_citation_constraints.sql, одним коммитом.
-  ВСЕ ЧЕТЫРЕ — ЧЕРЕЗ МИГРАТОР [2026-09-03]: словарь объявляется вызовом
+  ВСЕ ПЯТЬ — ЧЕРЕЗ МИГРАТОР [2026-09-03]: словарь объявляется вызовом
   citation.ensure_vocabulary_check (именованный constraint, сравнение перед
-  заменой), НИ ОДИН — inline CHECK в CREATE TABLE. CREATE TABLE IF NOT
+  заменой), НИ ОДИН — inline CHECK в CREATE TABLE. Пятый — зеркало
+  словаря relation на measurements.citation_frontier_threshold: у таблицы
+  спайка нет файла схемы, её DDL строит citations/threshold_store.py и
+  применяет писатель measurements, поэтому вызов мигратора из Python здесь
+  разрешён ПОИМЕННО (tests/test_vocabulary_migration.py) — и ровно там же
+  сверяется с citation_vocab.Relation. CREATE TABLE IF NOT
   EXISTS ничего не меняет на существующем инстансе, поэтому inline CHECK
   расширить нельзя НИКОГДА: правка словаря проходит все офлайн-тесты (они
   читают ФАЙЛ схемы) и остаётся no-op на базе, где работают обход и
