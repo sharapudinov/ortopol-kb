@@ -70,10 +70,13 @@ CREATE INDEX IF NOT EXISTS citation_frontier_threshold_score
 -- and never again -- so a value added to citation_vocab.Relation would pass
 -- every offline test and stay a no-op on the very database the calibration
 -- writes to.
--- citation.ensure_vocabulary_check is in schema citation because that is
--- where the other four live; it is applied by `pg_graph.py init`, which the
--- crawl's own command line runs before any non-dry mode reaches a writer.
-DO $relation_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+-- The migrator belongs to no schema: public.ensure_vocabulary_check
+-- (pg_schema_vocabulary.sql). In `citation` it made this measurements DDL
+-- depend at runtime on a domain schema the packager ships in three modes
+-- including none, and which a database can legitimately not carry. It is
+-- applied by `pg_graph.py init`, which the crawl's own command line runs
+-- before any non-dry mode reaches a writer.
+DO $relation_check$ BEGIN PERFORM public.ensure_vocabulary_check(
     'measurements.citation_frontier_threshold', 'relation',
     '{RELATION_CONSTRAINT}', ARRAY[{_RELATION_ARRAY}]);
 END $relation_check$;

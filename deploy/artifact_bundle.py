@@ -119,14 +119,16 @@ CORPUS_LIB_FILES = [
     "citation_vocab.py",
     "pg_graph_cocitation.py",
     "pg_graph_cypher.py",
-    # ... and the four schema files `pg_graph.py init` applies, in order
-    # (data definition, idempotent constraint migrations, AGE projection,
-    # journal backfill -- kb/CLAUDE.md FILE_SIZE split pg_schema_citation.sql
-    # along those seams). pg_graph_common.SCHEMA_PATHS resolves each NEXT TO
-    # THE MODULE, so all four must land in corpus_lib/ or the artifact ships
+    # ... and the five schema files `pg_graph.py init` applies, in order
+    # (the schema-neutral vocabulary migrator, data definition, idempotent
+    # constraint migrations, AGE projection, journal backfill -- kb/CLAUDE.md
+    # FILE_SIZE split pg_schema_citation.sql along those seams).
+    # pg_graph_common.SCHEMA_PATHS resolves each NEXT TO
+    # THE MODULE, so all five must land in corpus_lib/ or the artifact ships
     # a documented first subcommand that cannot run -- a module-relative
     # dependency the bundle list has to model, since nothing in an import
     # graph mentions it.
+    "pg_schema_vocabulary.sql",
     "pg_schema_citation.sql",
     "pg_schema_citation_constraints.sql",
     "pg_schema_citation_graph.sql",

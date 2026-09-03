@@ -182,8 +182,13 @@ VOCABULARY_ONE_DECLARATION [HARD, 2026-09-02]: закрытый словарь �
   как записаны work-строки и рёбра. Новое значение = строка в citation_vocab
   И в pg_schema_citation_constraints.sql, одним коммитом.
   ВСЕ ПЯТЬ — ЧЕРЕЗ МИГРАТОР [2026-09-03]: словарь объявляется вызовом
-  citation.ensure_vocabulary_check (именованный constraint, сравнение перед
-  заменой), НИ ОДИН — inline CHECK в CREATE TABLE. Пятый — зеркало
+  public.ensure_vocabulary_check (именованный constraint, сравнение перед
+  заменой), НИ ОДИН — inline CHECK в CREATE TABLE. Дом мигратора — public
+  (pg_schema_vocabulary.sql, применяется ПЕРВЫМ в SCHEMA_PATHS), а не
+  citation: через него объявляют словарь ДВЕ схемы с независимым
+  жизненным циклом, а citation пакетировщик везёт в трёх режимах, включая
+  «ничего», и база вправе не нести её вовсе. Старая копия в citation
+  снимается DROP FUNCTION IF EXISTS в том же файле, после CREATE. Пятый — зеркало
   словаря relation на measurements.citation_frontier_threshold: у таблицы
   спайка нет файла схемы, её DDL строит citations/threshold_store.py и
   применяет писатель measurements, поэтому вызов мигратора из Python здесь

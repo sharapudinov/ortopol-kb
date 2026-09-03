@@ -34,22 +34,25 @@ from typing import NamedTuple
 
 from pg_common import FIELD_SEP, run_sql, run_sql_file, scalar, scalar_row
 
-# Applied in this order by init_schema(): data definition first (crawl_step's
-# columns/indexes must exist before anything reads or backfills them), the
-# idempotent constraint migrations second (they ALTER the tables the first
-# file declares), the AGE projection functions third (they only reference
-# citation.work/cites, not the journal columns), the journal's one-time
-# backfill last (it depends on the columns the first file adds).
-# kb/CLAUDE.md FILE_SIZE split pg_schema_citation.sql along those seams.
-# Named, not merely ordered: a reader checking one file's own claims names
-# the one it means, so inserting a file cannot re-point it at another.
+# Applied in this order by init_schema(): the vocabulary migrator first (it
+# belongs to no schema -- public.ensure_vocabulary_check -- and the
+# constraint migrations are calls to it), the data definition second
+# (crawl_step's columns/indexes must exist before anything reads or
+# backfills them), the idempotent constraint migrations third (they ALTER
+# the tables the definition declares), the AGE projection functions fourth
+# (they only reference citation.work/cites, not the journal columns), the
+# journal's one-time backfill last (it depends on the columns the definition
+# adds). kb/CLAUDE.md FILE_SIZE split pg_schema_citation.sql along those
+# seams. Named, not merely ordered: a reader checking one file's own claims
+# names the one it means, so inserting a file cannot re-point it at another.
 _HERE = Path(__file__).resolve().parent
+SCHEMA_VOCABULARY = _HERE / "pg_schema_vocabulary.sql"
 SCHEMA_DEFINITION = _HERE / "pg_schema_citation.sql"
 SCHEMA_CONSTRAINTS = _HERE / "pg_schema_citation_constraints.sql"
 SCHEMA_GRAPH = _HERE / "pg_schema_citation_graph.sql"
 SCHEMA_BACKFILL = _HERE / "pg_schema_citation_backfill.sql"
-SCHEMA_PATHS = (SCHEMA_DEFINITION, SCHEMA_CONSTRAINTS, SCHEMA_GRAPH,
-                SCHEMA_BACKFILL)
+SCHEMA_PATHS = (SCHEMA_VOCABULARY, SCHEMA_DEFINITION, SCHEMA_CONSTRAINTS,
+                SCHEMA_GRAPH, SCHEMA_BACKFILL)
 GRAPH_NAME = "citation_graph"
 AGE_PREAMBLE = "LOAD 'age';\nSET search_path = ag_catalog, \"$user\", public;\n"
 

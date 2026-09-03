@@ -15,52 +15,13 @@
 --
 -- Applied after the data definition and before the AGE projection
 -- (pg_graph_common.SCHEMA_PATHS).
-
--- A closed vocabulary as a NAMED constraint rather than an inline CHECK:
--- the crawl grows new kinds of decision (hub-skip arrived when depth-2
--- turned out to pull >51k citers through a handful of heavily-cited
--- classics), and an inline CHECK cannot be widened on a table that exists.
 --
--- Compared as the VOCABULARY, not as text: pg_get_constraintdef() renders
--- the same CHECK as `col = ANY (ARRAY[...])`, and its exact spelling is the
--- server's business (and its version's). The literals inside it are ours,
--- so they are what is compared -- an extra value, a missing one or a
--- renamed one all differ, and nothing else does. Value-idempotent DROP+ADD
--- was never the gap; the gap was paying a full validation scan to arrive at
--- the constraint that was already there.
---
--- One function for all four vocabularies rather than one DO block each: the
--- second copy of a comparison this subtle is the place the next vocabulary
--- gets widened wrongly.
-CREATE OR REPLACE FUNCTION citation.ensure_vocabulary_check(
-    qualified_table text, column_name text, constraint_name text, wanted text[])
-RETURNS void LANGUAGE plpgsql AS $ensure_vocabulary$
-DECLARE
-    definition text;
-    current_vocabulary text[];
-BEGIN
-    SELECT pg_get_constraintdef(c.oid) INTO definition
-    FROM pg_constraint c
-    WHERE c.conrelid = qualified_table::regclass AND c.conname = constraint_name;
-
-    IF definition IS NOT NULL THEN
-        SELECT array_agg(m[1] ORDER BY m[1]) INTO current_vocabulary
-        FROM regexp_matches(definition, '''([^'']*)''', 'g') AS m;
-    END IF;
-
-    IF current_vocabulary IS NOT DISTINCT FROM
-       (SELECT array_agg(value ORDER BY value) FROM unnest(wanted) AS value) THEN
-        RETURN;
-    END IF;
-
-    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I',
-                   qualified_table, constraint_name);
-    EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I CHECK (%I IN (%s))',
-                   qualified_table, constraint_name, column_name,
-                   (SELECT string_agg(quote_literal(value), ', ')
-                      FROM unnest(wanted) AS value));
-END
-$ensure_vocabulary$;
+-- The migrator itself is not here and not in this schema: it is
+-- public.ensure_vocabulary_check (pg_schema_vocabulary.sql, applied first),
+-- because a measurements table declares its vocabulary through it too and
+-- `citation` is a schema the packager ships in three modes including none.
+-- Each vocabulary below is one call: a NAMED constraint, compared before it
+-- is replaced.
 
 -- action: what kind of decision a journal row is. hub-skip means the node
 -- was NOT expanded upward because its citer count is past the cap -- a
@@ -72,7 +33,7 @@ $ensure_vocabulary$;
 -- citation_vocab.CrawlAction, which is where the crawl reads them from;
 -- tests/test_citation_vocab.py compares the two in both directions, against
 -- this file and against pg_get_constraintdef().
-DO $action_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+DO $action_check$ BEGIN PERFORM public.ensure_vocabulary_check(
     'citation.crawl_step', 'action', 'crawl_step_action_check',
     ARRAY['seed', 'seed-missing', 'fetch', 'keep', 'drop', 'hub-skip', 'error']);
 END $action_check$;
@@ -87,7 +48,7 @@ END $action_check$;
 --
 -- NULL stays legal, and that is not laxity: only fetch/keep/drop rows are
 -- ABOUT a relation at all, and seed/error/hub-skip rows have none to state.
-DO $relation_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+DO $relation_check$ BEGIN PERFORM public.ensure_vocabulary_check(
     'citation.crawl_step', 'relation', 'crawl_step_relation_check',
     ARRAY['cites', 'referenced']);
 END $relation_check$;
@@ -106,7 +67,7 @@ END $relation_check$;
 -- citation_vocab.WorkKind is its single Python declaration; the name is the
 -- one Postgres gave the inline column CHECK, so an instance created before
 -- this file is compared, found equal and left alone.
-DO $kind_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+DO $kind_check$ BEGIN PERFORM public.ensure_vocabulary_check(
     'citation.work', 'kind', 'work_kind_check',
     ARRAY['our-document', 'external-skeleton', 'indexed', 'excluded']);
 END $kind_check$;
@@ -118,7 +79,7 @@ END $kind_check$;
 -- nobody can take. citation_vocab.PublicPolicyMode is its single Python
 -- declaration, and deploy/manifest_contract.CitationMode extends that class
 -- rather than restating the values.
-DO $mode_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+DO $mode_check$ BEGIN PERFORM public.ensure_vocabulary_check(
     'citation.public_policy', 'mode', 'public_policy_mode_check',
     ARRAY['full-skeleton', 'topology-only', 'none']);
 END $mode_check$;

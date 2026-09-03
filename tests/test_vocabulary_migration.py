@@ -1,4 +1,4 @@
-"""citation.ensure_vocabulary_check() -- the migrator itself, driven.
+"""public.ensure_vocabulary_check() -- the migrator itself, driven.
 
 Every closed vocabulary the crawl writes is a NAMED constraint applied
 through this one function -- four of them by
@@ -6,6 +6,12 @@ pg_schema_citation_constraints.sql, the fifth by the DDL
 citations/threshold_store.py hands the measurements writer -- because
 CREATE TABLE IF NOT EXISTS changes nothing on an instance that already
 carries the table and an inline CHECK therefore can never be widened again.
+
+The function is declared in `public` (pg_schema_vocabulary.sql), not in
+`citation`: two schemas with independent lifecycles declare vocabularies
+through it, and the packager ships `citation` in three modes including one
+that carries nothing at all. HOME below holds that where the calls are, so
+a copy re-introduced into a domain schema fails here.
 The function reads what the instance currently has and DROP+ADDs only on a
 mismatch -- ALTER TABLE ... ADD CONSTRAINT validates every existing row under
 an ACCESS EXCLUSIVE lock, and citation.crawl_step grows by ~100k rows per
@@ -35,10 +41,15 @@ import unittest
 import _pathfix  # noqa: F401
 from citations import threshold_store
 from citation_vocab import CrawlAction, PublicPolicyMode, Relation, WorkKind
+import pg_graph_common
 from paths import default_corpus_dir, kb_root
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
 CONSTRAINTS_FILE = kb_root() / "pg_schema_citation_constraints.sql"
+VOCABULARY_FILE = kb_root() / "pg_schema_vocabulary.sql"
+
+# The migrator's schema-neutral home, spelled the same by every caller.
+HOME = "public.ensure_vocabulary_check"
 
 # Every vocabulary the schema closes, and the constraint each is applied as.
 # Named here so a vocabulary added to citation_vocab.py and applied inline
@@ -63,13 +74,13 @@ INSERT INTO vocab_probe_log (step, oid, def)
 SELECT 'seeded', oid, pg_get_constraintdef(oid)
 FROM pg_constraint WHERE conname = 'vocab_probe_check';
 
-SELECT citation.ensure_vocabulary_check(
+SELECT public.ensure_vocabulary_check(
     'vocab_probe', 'v', 'vocab_probe_check', ARRAY['a', 'b', 'c']);
 INSERT INTO vocab_probe_log (step, oid, def)
 SELECT 'widened', oid, pg_get_constraintdef(oid)
 FROM pg_constraint WHERE conname = 'vocab_probe_check';
 
-SELECT citation.ensure_vocabulary_check(
+SELECT public.ensure_vocabulary_check(
     'vocab_probe', 'v', 'vocab_probe_check', ARRAY['c', 'b', 'a']);
 INSERT INTO vocab_probe_log (step, oid, def)
 SELECT 'unchanged', oid, pg_get_constraintdef(oid)
@@ -95,9 +106,55 @@ class EveryVocabularyGoesThroughTheMigratorTests(unittest.TestCase):
         """The count is the guard: a fifth call with a name this module does
         not know is a vocabulary nobody is comparing against Python.
         """
-        calls = re.findall(r"citation\.ensure_vocabulary_check\(\s*'[^']*',\s*'[^']*',\s*'([^']*)'",
+        calls = re.findall(rf"{re.escape(HOME)}\(\s*'[^']*',\s*'[^']*',\s*'([^']*)'",
                            self.SOURCE)
         self.assertEqual(sorted(calls), sorted(APPLIED))
+
+
+class TheMigratorHasNoSchemaOfItsOwnTests(unittest.TestCase):
+    """Where the function is declared, and that every caller says so.
+
+    In `citation` it was a schema-agnostic tool owned by a domain schema,
+    and the measurements table's own DDL depended on it at runtime -- the
+    dependency pointing from the research schema, versioned and dumped on
+    its own, into one the packager ships in three modes including none and
+    which a database can legitimately not carry at all.
+    """
+
+    SOURCES = {
+        "pg_schema_vocabulary.sql": VOCABULARY_FILE.read_text(encoding="utf-8"),
+        "pg_schema_citation_constraints.sql": CONSTRAINTS_FILE.read_text(encoding="utf-8"),
+        "threshold_store.py": threshold_store.THRESHOLD_DDL,
+    }
+
+    def test_it_is_declared_once_and_outside_every_domain_schema(self):
+        declarations = [name for name, source in self.SOURCES.items()
+                        if "CREATE OR REPLACE FUNCTION" in source
+                        and "ensure_vocabulary_check" in source]
+        self.assertEqual(declarations, ["pg_schema_vocabulary.sql"])
+        self.assertIn(f"CREATE OR REPLACE FUNCTION {HOME}(",
+                      self.SOURCES["pg_schema_vocabulary.sql"])
+
+    def test_the_older_copy_is_dropped_after_the_new_one_exists(self):
+        """Idempotent migration, not a rename in the file only: the instance
+        this repository runs against carries the citation copy, and two
+        definitions are two answers to which comparison decided.
+        """
+        source = self.SOURCES["pg_schema_vocabulary.sql"]
+        drop = source.index("DROP FUNCTION IF EXISTS citation.ensure_vocabulary_check(")
+        self.assertGreater(drop, source.index("CREATE OR REPLACE FUNCTION"))
+        self.assertIn("(text, text, text, text[])", source[drop:])
+
+    def test_no_caller_names_a_domain_schema(self):
+        for name, source in self.SOURCES.items():
+            with self.subTest(source=name):
+                self.assertNotIn("citation.ensure_vocabulary_check(", source.replace(
+                    "DROP FUNCTION IF EXISTS citation.ensure_vocabulary_check(", ""))
+
+    def test_the_migrator_is_applied_before_anything_calls_it(self):
+        paths = list(pg_graph_common.SCHEMA_PATHS)
+        self.assertEqual(paths[0], VOCABULARY_FILE)
+        self.assertIn(CONSTRAINTS_FILE, paths[1:])
 
 
 class EnsureVocabularyCheckLiveTests(unittest.TestCase):
@@ -176,6 +233,19 @@ class TheLiveSchemaKeepsItsConstraintsTests(unittest.TestCase):
                          "не все словари применены к живой базе: python3 pg_graph.py init")
         run_sql(self.env, CONSTRAINTS_FILE.read_text(encoding="utf-8"))
         self.assertEqual(self._oids(), before)
+
+    def test_the_live_instance_carries_the_migrator_where_the_calls_look(self):
+        """The calls are qualified, so a live instance with the function
+        only in the old schema fails every init -- and the DROP in
+        pg_schema_vocabulary.sql means the old one is gone by then.
+        """
+        found = run_sql(
+            self.env,
+            "SELECT n.nspname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE p.proname = 'ensure_vocabulary_check' ORDER BY 1;",
+            extra_args=["-t", "-A"],
+        ).stdout.split()
+        self.assertEqual(found, ["public"], found)
 
 
 class TheMigratorIsNotCalledFromPythonTests(unittest.TestCase):
