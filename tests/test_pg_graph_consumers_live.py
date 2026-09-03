@@ -21,6 +21,18 @@ import pg_search
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
 
+# The fixtures below rank a node they inserted, so its vector is THE ONE the
+# ranking measures against: the corpus centroid the candidates query itself
+# uses, taken from that query rather than spelled here. An arbitrary vector
+# ([0.1]*1024, as it was) ranks wherever the real graph leaves room for it,
+# so the fixture stopped being found at all once the crawl grew the graph
+# past the top-K it asks for -- a fixture failing on the SIZE of the data is
+# not a fact about the consumer under test. Inserting the mean as an
+# our-document embedding does not move the mean, so the candidate row that
+# follows carries the centroid exactly and comes back at rank 1 whatever
+# else the graph holds.
+CENTROID = pgcand._CENTROID_EXPR
+
 # Enough to defeat the default --limit where a live test has to find one
 # specific fixture pair in a graph whose real pairs outrank it.
 ALL_PAIRS = 100_000
@@ -192,20 +204,18 @@ class LiveConsumersTests(unittest.TestCase):
         answer away".
         """
         self.addCleanup(self._cleanup)
-        vec = "[" + ",".join(["0.1"] * 1024) + "]"
         run_sql(
             self.env,
             f"""
             INSERT INTO citation.work (key, title, source, kind, document_id, embedding) VALUES
-              ('{self.PREFIX}a', 'Seed A', 'manual', 'our-document', 'INDEX', :'vec');
+              ('{self.PREFIX}a', 'Seed A', 'manual', 'our-document', 'INDEX', {CENTROID});
             INSERT INTO citation.work (key, title, source, kind, embedding) VALUES
-              ('{self.PREFIX}b', 'Citer B', 'manual', 'external-skeleton', :'vec'),
-              ('{self.PREFIX}c', 'Cited C', 'manual', 'external-skeleton', :'vec');
+              ('{self.PREFIX}b', 'Citer B', 'manual', 'external-skeleton', {CENTROID}),
+              ('{self.PREFIX}c', 'Cited C', 'manual', 'external-skeleton', {CENTROID});
             INSERT INTO citation.cites (citing, cited, source)
             SELECT x.id, y.id, 'manual' FROM citation.work x, citation.work y
             WHERE x.key = '{self.PREFIX}b' AND y.key = '{self.PREFIX}a';
             """,
-            variables={"vec": vec},
         )
         pg_graph_common.project(self.env)
 
@@ -252,17 +262,15 @@ class CandidateLinksCountDocumentsLiveTests(unittest.TestCase):
         """Two external-skeleton candidates and one of our documents, wired
         by `edges`; returns {key: links} as candidates() reports it."""
         self.addCleanup(self._cleanup)
-        vec = "[" + ",".join(["0.1"] * 1024) + "]"
         run_sql(
             self.env,
             f"""
             INSERT INTO citation.work (key, title, source, kind, document_id, embedding) VALUES
-              ('{self.PREFIX}doc', 'Our doc', 'manual', 'our-document', 'INDEX', :'vec');
+              ('{self.PREFIX}doc', 'Our doc', 'manual', 'our-document', 'INDEX', {CENTROID});
             INSERT INTO citation.work (key, title, source, kind, embedding) VALUES
-              ('{self.PREFIX}cand', 'Candidate', 'manual', 'external-skeleton', :'vec');
+              ('{self.PREFIX}cand', 'Candidate', 'manual', 'external-skeleton', {CENTROID});
             {edges}
             """,
-            variables={"vec": vec},
         )
         return {r["key"]: r["links"] for r in pgcand.candidates(self.env, top=400)}
 
