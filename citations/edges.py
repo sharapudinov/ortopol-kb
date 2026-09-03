@@ -42,8 +42,10 @@ def among_known(registry, frontier_keys, candidates,
             if target and target != citing_key:
                 edges.add((citing_key, target, relation, source_key or citing_key))
 
+    # No per-node sort: the whole answer is sorted once on the way out, and
+    # a set sorted here is a list built (and thrown away) per frontier node.
     for key in frontier_keys:
-        emit(key, sorted(registry.nodes[key].referenced_works), Relation.REFERENCED, key)
+        emit(key, registry.nodes[key].referenced_works, Relation.REFERENCED, key)
     # One name per edge, from the SET the candidate was reached from
     # (gathering.principal_hit): the column holds one, and the level's own
     # per-node counters are where the whole set is accounted for.

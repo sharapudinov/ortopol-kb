@@ -48,6 +48,28 @@ class SelfCitationTests(unittest.TestCase):
         self.assertEqual(edges_mod.among_known(registry, ["W_SEED"], [], {}),
                          [("W_SEED", "W_OTHER", "referenced", "W_SEED")])
 
+class OrderIsTheAnswersOwnTests(unittest.TestCase):
+    """The order of the answer is the answer's own: among_known() sorts the
+    whole set once, on the way out.
+
+    Which is why a per-node sort of a frontier node's reference set could
+    not be observed in the result at all -- it only built, and threw away, a
+    list per node of every level.
+    """
+
+    def test_the_edges_come_back_sorted_however_they_were_derived(self):
+        registry = WorkRegistry()
+        registry.add(work("W_SEED", title="Seed"), kind="our-document", depth=0,
+                     document_id="doc_a")
+        for name in ("W_C", "W_A", "W_B"):
+            registry.add(work(name, title=name), kind="external-skeleton", depth=1)
+        registry.nodes["W_SEED"].referenced_works |= {"W_C", "W_A", "W_B"}
+        derived = edges_mod.among_known(registry, ["W_SEED"], [], {})
+        self.assertEqual(derived, sorted(derived))
+        self.assertEqual([cited for _citing, cited, _r, _s in derived],
+                         ["W_A", "W_B", "W_C"])
+
+
 class DerivationCostTests(unittest.TestCase):
     """The caller has already pruned `references` to the candidates that
     became nodes, so a dropped one is not an endpoint and cannot contribute
