@@ -29,7 +29,6 @@ import json
 from citation_vocab import WorkKind
 from pg_common import run_sql
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
-from pg_graph_common import kind_counts
 
 from . import journal, twins
 
@@ -135,7 +134,3 @@ def merge_twins(env, crawl_id: str, writer) -> list[dict]:
                         for m in merged])
     return merged
 
-
-def kind_census(env) -> str:
-    """The kind breakdown as one printable line, off the shared census."""
-    return " ".join(f"{kind}={n}" for kind, n in sorted(kind_counts(env).items()))

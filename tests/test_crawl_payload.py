@@ -20,7 +20,7 @@ import unittest
 import _pathfix  # noqa: F401
 from _citation_fixtures import FakeClient, PlannedEmbedder, unit, work
 from citations.crawl import Snowball
-from citations.store import DryRunWriter
+from citations.dry_store import DryRunWriter
 
 
 class _WatchingWriter(DryRunWriter):

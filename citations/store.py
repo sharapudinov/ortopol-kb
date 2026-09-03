@@ -5,6 +5,9 @@ The reads a run starts from are next door in citations/inputs.py; nothing
 below writes anywhere except through the two Writer implementations, which
 is what makes "--dry-run writes nothing" a property of construction.
 
+The rehearsal implementation of the same contract is in dry_store.py; the
+two are built in exactly one place, pg_load_citations.writers_for().
+
 Same two mechanisms as the rest of the repository (pg_common.py): script
 variables for parameters, `\\copy` from a csv module-built temp file for
 bulk -- no string interpolation of source-controlled text anywhere near
@@ -29,10 +32,13 @@ twice in this project, and it has two specific consequences below:
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 from pg_common import vector_literal
 from pg_copy import copy_csv_rows
+from pg_graph_common import check as graph_check
+from pg_graph_common import kind_counts
+from pg_graph_common import project as project_graph
 
 from .store_sql import (
     CITES_COLUMNS,
@@ -47,6 +53,25 @@ from .store_sql import (
     WORK_UPSERT,
     json_or_null,
 )
+
+class ProjectionOutcome(NamedTuple):
+    """What a mode may say about the graph after the write, and with which
+    exit code.
+
+    A projection is a WRITE to Postgres -- citation.project_graph() rewrites
+    the citation_graph label tables -- so it belongs to the seam like the
+    other four, and GRAPH_IS_PROJECTION makes it a consequence of having
+    written to citation.work/cites rather than of which argparse branch ran.
+    The caller prints `report` and returns `code` unconditionally: rendered
+    behind `if writer.dry`, the flag was back in the procedure the seam took
+    it out of, and a programmatic driver calling Snowball.run() without a
+    command line either reprojected under a dry writer or left the graph
+    stale until corpus_completeness.py reported PROJECTION STALE much later.
+    """
+
+    report: str
+    code: int
+
 
 # -- writes --------------------------------------------------------------
 @runtime_checkable
@@ -66,10 +91,11 @@ class Writer(Protocol):
     refuse rows on purpose (a self-edge left by the twin union, an edge the
     graph already carries, a promote key with no work row), so each
     statement ends by counting what it wrote and that is what comes back.
-    DryRunWriter has no database to refuse anything, so its number is the
-    ceiling the same batch would reach against an empty graph -- which is
-    what an estimate of a crawl is, and why the two agree on new ground and
-    diverge over ground already covered.
+    DryRunWriter (next door in dry_store.py, module size) has no database
+    to refuse anything, so its number is the ceiling the same batch would
+    reach against an empty graph -- which is what an estimate of a crawl is,
+    and why the two agree on new ground and diverge over ground already
+    covered.
 
     A Protocol rather than a base class: neither writer inherits anything,
     and the point is to pin the contract the crawl depends on, not to share
@@ -97,6 +123,10 @@ class Writer(Protocol):
     def journal(self, steps) -> int: ...
 
     def promote(self, merged) -> int: ...
+
+    def project(self) -> ProjectionOutcome: ...
+
+    def census(self) -> str: ...
 
 
 class PostgresWriter:
@@ -213,67 +243,28 @@ class PostgresWriter:
         self.counts["twin"] += accepted
         return accepted
 
+    def project(self) -> ProjectionOutcome:
+        """Rebuilds citation_graph from what this writer just wrote, and
+        checks that the rebuild is faithful.
 
-class DryRunWriter:
-    """Counts what a real run would write, keeps a sample of it, and writes
-    nothing.
-
-    Same Writer contract as PostgresWriter, per-call counts included: this
-    is the estimate a crawl is authorised against, so its numbers have to
-    be the numbers the real writer would report over ground it has not
-    covered yet. Nothing here can refuse a row, so these are upper bounds:
-    against a graph that already carries an edge, the live writer reports
-    fewer (see the Writer contract above).
-
-    The rows themselves are kept only up to SAMPLE_LIMIT per kind. The
-    live writer streams a level through copy_csv_rows and frees it, so its
-    peak follows ONE level; retaining every row made the rehearsal's peak
-    follow the whole crawl instead -- a depth-2 journal is ~100k rows
-    (pg_copy.py), and the mode whose job is to cost a run cheaply held
-    them all on the machine about to make it. What reads them is a report
-    about the shape of the rows, and a report reads a sample: the counts
-    above are the quantity, these are the specimen.
-    """
-
-    dry = True
-
-    # Enough to see every kind of row a level produces, few enough that
-    # the whole crawl's worth is a rounding error next to one level's.
-    SAMPLE_LIMIT = 50
-
-    def __init__(self, source: str = "openalex"):
-        self.source = source
-        self.works_seen, self.edges_seen, self.steps_seen = [], [], []
-        self.promoted_seen = []
-        self.counts = {"work": 0, "cites": 0, "step": 0, "twin": 0}
-
-    def _sample(self, kept: list, rows: list) -> int:
-        """Extends `kept` up to SAMPLE_LIMIT and returns how many rows the
-        batch held -- the count is of everything, the list is of the first
-        few. Emptying a sample makes room again, which is how a caller
-        asks for the specimen of the NEXT phase rather than of the run.
+        Both halves belong here rather than in the caller: the AGE graph is
+        a projection of citation.work/cites (GRAPH_IS_PROJECTION), so the
+        obligation to rebuild it is the obligation of having written them.
         """
-        room = self.SAMPLE_LIMIT - len(kept)
-        if room > 0:
-            kept += rows[:room]
-        return len(rows)
+        vertices, edges = project_graph(self.env)
+        return ProjectionOutcome(f"проекция графа: V={vertices} E={edges}",
+                                 graph_check(self.env))
 
-    def works(self, nodes) -> int:
-        accepted = self._sample(self.works_seen, list(nodes))
-        self.counts["work"] += accepted
-        return accepted
+    def census(self) -> str:
+        """The kind breakdown of the graph, read back out of the table this
+        writer just wrote to.
 
-    def edges(self, edges) -> int:
-        accepted = self._sample(self.edges_seen, list(edges))
-        self.counts["cites"] += accepted
-        return accepted
-
-    def journal(self, steps) -> int:
-        accepted = self._sample(self.steps_seen, list(steps))
-        self.counts["step"] += accepted
-        return accepted
-
-    def promote(self, merged) -> int:
-        accepted = self._sample(self.promoted_seen, list(merged))
-        self.counts["twin"] += accepted
-        return accepted
+        A method rather than a line the caller guards with `if not
+        writer.dry`: the census is only ABOUT the promotion when the
+        promotion happened, so which answer is true is a property of which
+        writer ran -- the same shape as the measurements seam's hub_stats(),
+        and the same reason.
+        """
+        counts = kind_counts(self.env)
+        return "kind после склейки: " + " ".join(
+            f"{kind}={n}" for kind, n in sorted(counts.items()))

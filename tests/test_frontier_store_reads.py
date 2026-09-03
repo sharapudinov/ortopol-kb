@@ -18,7 +18,7 @@ from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH, KEY_BATCH
 from citations import registry
 from citations.registry import scoring_fields
-from citations.store import DryRunWriter
+from citations.dry_store import DryRunWriter
 
 
 class StoredVectorsAreReusedTests(unittest.TestCase):

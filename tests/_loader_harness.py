@@ -14,8 +14,8 @@ import _pathfix  # noqa: F401
 
 import pg_graph_common
 import pg_load_citations
-from citations import threshold_store
-from citations.store import DryRunWriter
+from citations import store, threshold_store
+from citations.dry_store import DryRunWriter
 
 ENV = {"PGHOST": "test"}
 
@@ -34,6 +34,15 @@ class MainHarness:
                                               return_value=ENV))
         stack.enter_context(mock.patch.object(pg_load_citations, "citation_schema_exists",
                                               return_value=schema_exists))
+        # The live writer's two reads-back-from-the-database methods. main()
+        # calls them unconditionally now (the mode-dependent step is the
+        # method, not a branch on writer.dry), so a CLI test driving the real
+        # writer would otherwise reach Postgres through the seam.
+        self.project = stack.enter_context(mock.patch.object(
+            store.PostgresWriter, "project",
+            return_value=store.ProjectionOutcome("проекция графа: V=0 E=0", 0)))
+        self.census = stack.enter_context(mock.patch.object(
+            store.PostgresWriter, "census", return_value="kind после склейки: "))
         self.writers: list[DryRunWriter] = []
         stack.enter_context(mock.patch.object(pg_load_citations, "DryRunWriter",
                                               side_effect=self._writer))

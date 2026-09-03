@@ -19,7 +19,8 @@ from _citation_fixtures import work
 
 from citations import journal, store, store_sql
 from citations.registry import Node
-from citations.store import DryRunWriter, PostgresWriter, Writer
+from citations.dry_store import DryRunWriter
+from citations.store import PostgresWriter, Writer
 from pg_copy import CopyResult
 
 
@@ -47,7 +48,11 @@ class WriterConformanceTests(unittest.TestCase):
 
     def _drive(self, writer):
         """One fixed sequence; every per-call answer plus the running counts
-        after each write."""
+        after each write. Every method of the protocol is called, and called
+        UNCONDITIONALLY -- which is the contract the modes are held to: a
+        step a mode short-circuits on writer.dry is a step the seam no
+        longer covers.
+        """
         trace = []
         for nodes in (self._nodes("W1", "W2"), self._nodes("W3"), []):
             trace.append(("works", writer.works(nodes), dict(writer.counts)))
@@ -55,6 +60,8 @@ class WriterConformanceTests(unittest.TestCase):
             trace.append(("edges", writer.edges(edges), dict(writer.counts)))
         for steps in (self._steps("W1", "W2"), self._steps("W3"), []):
             trace.append(("journal", writer.journal(steps), dict(writer.counts)))
+        trace.append(("project", writer.project().code, dict(writer.counts)))
+        trace.append(("census", isinstance(writer.census(), str), dict(writer.counts)))
         return trace
 
     def test_both_implementations_satisfy_the_writer_protocol(self):
@@ -71,8 +78,12 @@ class WriterConformanceTests(unittest.TestCase):
             written = sum(1 for _ in rows)
             return CopyResult(written, f"{written}\n" if kwargs.get("epilogue") else "")
 
-        with mock.patch.object(store, "copy_csv_rows", side_effect=accept_everything):
+        with mock.patch.object(store, "copy_csv_rows", side_effect=accept_everything), \
+             mock.patch.object(store, "project_graph", return_value=(3, 2)) as projected, \
+             mock.patch.object(store, "graph_check", return_value=0), \
+             mock.patch.object(store, "kind_counts", return_value={"indexed": 3}):
             live = self._drive(PostgresWriter({}))
+        projected.assert_called_once()
         self.assertEqual(self._drive(DryRunWriter()), live)
 
     def test_a_write_is_one_script_over_a_temp_staging_table(self):
@@ -117,6 +128,53 @@ class WriterConformanceTests(unittest.TestCase):
         self.assertEqual(writer.works(self._nodes("W1", "W2")), 2)
         self.assertEqual(writer.works(self._nodes("W3")), 1)
         self.assertEqual(writer.counts["work"], 3)
+
+
+class ProjectionIsAWriteThroughTheSeamTests(unittest.TestCase):
+    """citation.project_graph() rewrites the citation_graph label tables --
+    a database WRITE, and the fourth one a crawl makes.
+
+    It lived in two argparse mode bodies behind `if writer.dry` / `if not
+    writer.dry`, i.e. as a flag check in the CLI rather than as a property
+    of which object was constructed. A fifth mode, or any programmatic
+    driver calling Snowball.run() without a command line, would then either
+    reproject under a dry writer or leave the graph stale until
+    corpus_completeness.py reported PROJECTION STALE much later.
+    """
+
+    def test_the_protocol_declares_it_beside_the_other_writes(self):
+        for name in ("works", "edges", "journal", "promote", "project", "census"):
+            with self.subTest(method=name):
+                self.assertIn(name, Writer.__annotations__ | vars(Writer))
+
+    def test_the_live_writer_projects_and_returns_the_checks_verdict(self):
+        with mock.patch.object(store, "project_graph", return_value=(441, 2427)) as project, \
+             mock.patch.object(store, "graph_check", return_value=1) as check:
+            outcome = PostgresWriter({"PGHOST": "x"}).project()
+        project.assert_called_once_with({"PGHOST": "x"})
+        check.assert_called_once_with({"PGHOST": "x"})
+        self.assertEqual(outcome.code, 1)
+        self.assertIn("V=441", outcome.report)
+        self.assertIn("E=2427", outcome.report)
+
+    def test_the_dry_writer_projects_nothing_and_says_so(self):
+        with mock.patch.object(store, "project_graph") as project, \
+             mock.patch.object(store, "graph_check") as check:
+            outcome = DryRunWriter().project()
+        project.assert_not_called()
+        check.assert_not_called()
+        self.assertEqual(outcome.code, 0)
+        self.assertIn("--dry-run", outcome.report)
+
+    def test_the_census_is_read_back_only_by_the_writer_that_filled_the_table(self):
+        with mock.patch.object(store, "kind_counts",
+                               return_value={"our-document": 72, "indexed": 3}):
+            live = PostgresWriter({}).census()
+        self.assertIn("our-document=72", live)
+        with mock.patch.object(store, "kind_counts") as counts:
+            dry = DryRunWriter().census()
+        counts.assert_not_called()
+        self.assertIn("--dry-run", dry)
 
 
 if __name__ == "__main__":

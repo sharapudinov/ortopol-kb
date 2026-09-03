@@ -286,8 +286,6 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
             (pg_load_citations, "resolve_model", ("bge-m3", 1024)),
             (pg_load_citations, "corpus_document_ids", []),
             (pg_load_citations, "seed_matches", {}),
-            (pg_load_citations, "project", (0, 0)),
-            (pg_load_citations, "graph_check", 0),
             (seed_metadata, "seed_matches", {}),
             (seed_metadata, "stored_zbmath_abstracts", {}),
             (seed_metadata, "stored_mathnet_titles", {}),

@@ -19,7 +19,8 @@ import paths
 import pg_load_citations
 from citations import inputs
 from citations.spike_runs import DryRunMeasurementsWriter, MeasurementsWriter
-from citations.store import DryRunWriter, PostgresWriter, Writer
+from citations.dry_store import DryRunWriter
+from citations.store import PostgresWriter, Writer
 from pg_common import FIELD_SEP, RECORD_SEP
 
 CITATIONS_DIR = Path(inputs.__file__).resolve().parent
@@ -316,6 +317,57 @@ class WriterModeIsAnObjectTests(unittest.TestCase):
                 with self.subTest(mode=name):
                     self.assertEqual(self._branching_uses(functions[name]), 0,
                                      f"{name}(): режим спрашивается у писателя, не у флага")
+
+    # The two modes that talk about the graph. Their steps AFTER the write
+    # -- reprojecting citation_graph, reading the kind census back -- are
+    # methods of the writer now, so neither body has any use for the flag
+    # at all; the spike modes next door still read it to choose what to
+    # PRINT, which is the sanctioned use (store.Writer's own docstring).
+    GRAPH_MODES = ("do_crawl", "do_merge_twins")
+
+    def test_the_graph_modes_never_branch_on_the_writers_flag_either(self):
+        """`if writer.dry` is the flag back in the procedure the seam took
+        it out of: the mode-dependent step becomes a METHOD (writer.project,
+        writer.census), so both bodies call every step unconditionally.
+
+        Reprojection is the case that made this concrete -- a database write
+        living in two argparse bodies behind a flag check, which a
+        programmatic driver of Snowball.run() bypasses entirely.
+        """
+        functions = self._functions(LOADER)
+        for name in self.GRAPH_MODES:
+            reads = [node.lineno for node in ast.walk(functions[name])
+                     if self._is_writer_flag(node)]
+            with self.subTest(mode=name):
+                self.assertEqual(reads, [], f"{name}(): режимозависимый шаг — "
+                                            "метод писателя, не ветка по writer.dry")
+
+    def test_that_scan_catches_the_branch_it_is_for(self):
+        """Positive control on a synthetic body -- a scan that finds nothing
+        and a scan that looks at nothing read the same.
+        """
+        planted = ast.parse("def do_crawl(writer):\n"
+                            "    if writer.dry:\n"
+                            "        return 0\n"
+                            "    return writer.project().code\n").body[0]
+        self.assertEqual([node.lineno for node in ast.walk(planted)
+                          if self._is_writer_flag(node)], [2])
+
+    def test_both_graph_modes_report_through_the_writers_own_answer(self):
+        """The complement: no branch, because every step is a call."""
+        functions = self._functions(LOADER)
+        for name in self.GRAPH_MODES:
+            called = {node.func.attr for node in ast.walk(functions[name])
+                      if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and isinstance(node.func.value, ast.Name)
+                      and node.func.value.id == "writer"}
+            with self.subTest(mode=name):
+                self.assertIn("project", called)
+
+    @staticmethod
+    def _is_writer_flag(node) -> bool:
+        return (isinstance(node, ast.Attribute) and node.attr == "dry"
+                and isinstance(node.value, ast.Name) and node.value.id == "writer")
 
     def test_neither_graph_mode_is_even_handed_the_command_line(self):
         functions = self._functions(LOADER)

@@ -22,7 +22,7 @@ from citations import seeding
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH
 from citations.registry import Node, WorkRegistry
-from citations.store import DryRunWriter
+from citations.dry_store import DryRunWriter
 
 
 class CrawlTests(unittest.TestCase):

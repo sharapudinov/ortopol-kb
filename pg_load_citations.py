@@ -41,7 +41,8 @@ from citations.inputs import (
 )
 from citations.seed_metadata import mathnet_names, zbmath_abstracts
 from citation_vocab import CrawlAction
-from citations.store import DryRunWriter, PostgresWriter
+from citations.dry_store import DryRunWriter
+from citations.store import PostgresWriter
 from citations.vector_cache import VectorMemo
 from paths import (
     data_root,
@@ -53,8 +54,7 @@ from paths import (
 )
 from pg_common import PostgresUnavailable, load_pgenv
 from pg_search import resolve_model
-from pg_graph_common import check as graph_check
-from pg_graph_common import citation_schema_exists, init_schema, project
+from pg_graph_common import citation_schema_exists, init_schema
 
 
 def build_client(args, cache) -> OpenAlexClient:
@@ -85,39 +85,41 @@ def writers_for(args, env):
 
 def do_merge_twins(env, crawl_id: str, writer) -> int:
     """Склейка двойников: писатель приходит объектом, как во все остальные
-    режимы, и всё сказанное после спрашивается у НЕГО, а не у флага."""
+    режимы, и всё сказанное после спрашивается у НЕГО, а не у флага.
+
+    Перепроекция графа — тоже запись в Postgres, поэтому она метод писателя
+    (writer.project()) и вызывается БЕЗУСЛОВНО: `if not writer.dry` вернул
+    бы флаг ровно туда, откуда шов его убрал. Перепись kind — чтение из
+    таблицы, которую сухой писатель не заполнял, поэтому она тоже метод
+    (writer.census()), как hub_stats() у шва measurements.
+    """
     merged = twin_pass.merge_twins(env, crawl_id, writer)
     for item in merged:
         print(f"  {item['key']} -> {item['document_id']} [{item['rule']}] "
               f"(семя {item['seed_key']}): {item['title'][:64]}")
-    print(f"склеено двойников наших работ: {len(merged)}"
-          + (" (--dry-run, ничего не записано)" if writer.dry else ""))
-    if not writer.dry and merged:
-        print("kind после склейки: " + twin_pass.kind_census(env))
-        vertices, edges = project(env)
-        print(f"проекция графа: V={vertices} E={edges}")
-        return graph_check(env)
-    return 0
+    print(f"склеено двойников наших работ: {len(merged)}")
+    print(writer.census())
+    outcome = writer.project()
+    print(outcome.report)
+    return outcome.code
 
 
-def do_crawl(env, snowball: Snowball, client, writer, depth_limit: int) -> int:
+def do_crawl(snowball: Snowball, client, writer, depth_limit: int) -> int:
     """Обход и отчёт о нём. Записал ли он что-нибудь — знает писатель.
 
     У флага ответ расходится с делом на первом же режиме, который строит
     DryRunWriter без --dry-run (--calibrate уже такой): печаталась бы приёмка
-    живого прогона, а project()/graph_check() — «верная проекция» графа, в
-    который ничего не писали.
+    живого прогона, а проекция — «верная» для графа, в который ничего не
+    писали. Поэтому и перепроекция, и её вердикт приходят из
+    writer.project(): режим не спрашивают, у него получают объект.
     """
     summary = snowball.run(depth_limit)
     for depth in sorted(summary):
         print(f"  depth {depth}: " + ", ".join(f"{k}={v}" for k, v in summary[depth].items()))
     print(f"запросов OpenAlex: {client.n_requests} (из кэша: {client.n_cache_hits})")
-    if writer.dry:
-        print("--dry-run: в базу ничего не записано")
-        return 0
-    vertices, edges = project(env)
-    print(f"проекция графа: V={vertices} E={edges}")
-    return graph_check(env)
+    outcome = writer.project()
+    print(outcome.report)
+    return outcome.code
 
 
 def _journal_error(writer, crawl_id: str, depth: int, exc: Exception) -> None:
@@ -241,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:
             return do_calibrate(snowball, client, data_root(), measurements)
-        return do_crawl(env, snowball, client, writer, args.depth)
+        return do_crawl(snowball, client, writer, args.depth)
     except QuotaExhausted as exc:
         _journal_error(writer, crawl_id, args.depth, exc)
         print(f"квота OpenAlex исчерпана: {exc}", file=sys.stderr)
