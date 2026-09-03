@@ -67,6 +67,10 @@ DEPLOY_FILES = [
     # Static verification of the citation-schema slice of the dump:
     # profile_checks.py's run_checks() calls into it ...
     "citation_content_checks.py",
+    # ... beside the module that asks the other question of the facts it
+    # collects: does everything that shipped name only what this package
+    # carries (work -> document, edge -> work, journal -> neither).
+    "citation_cut_checks.py",
     # ... and, beside it, the one citation check that reads no dump byte:
     # whose decision the mode was (manifest.citation.policy_source). Split
     # off for module size and because it answers a different question --

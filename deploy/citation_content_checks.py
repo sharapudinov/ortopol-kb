@@ -7,11 +7,6 @@ that claim.
 
 Checks:
 
-  schema/counts agree     the dump carries (or, under a mode that ships
-                           nothing, carries NEITHER of)
-                           citation.work/citation.cites,
-                           and their row counts equal
-                           manifest.citation.work_count/cites_count
   content is stripped     no row of any dumped table carries a non-empty
                            value in a column citation_columns classifies as
                            content, under every mode outside
@@ -22,18 +17,10 @@ Checks:
                            the producer by accident, and the one column it
                            forgot was the whole finding that put this module
                            and the dump on one map
-  work -> document holds  every citation.work.document_id in the dump names
-                           a corpus.documents row the SAME dump carries.
-                           citation.work.document_id is a foreign key across
-                           the boundary between two independent policy cuts
-                           (citation.public_policy and corpus.documents.
-                           public_distribution), so this is both a restore
-                           question and a legal one: a surviving row would
-                           publish the title of a document classified out
-  edge -> work holds      every citation.cites endpoint names a
-                           citation.work row the dump carries -- the same
-                           question one level down, for the rows the work
-                           cut takes with it
+
+The counts, and the three checks that hold the citation cut to the DOCUMENT
+cut, read the containers this module fills but ask a different question of
+them, and live next door in citation_cut_checks.py (module size).
 
 profile_checks.py owns the single streaming pass over the dump (dump_scan.
 scan reads the whole file once); attach_visitors() only adds this module's
@@ -47,7 +34,7 @@ from __future__ import annotations
 import dump_scan
 from citation_columns import CITATION_COLUMN_CLASS, content_columns
 from manifest_keys import Key
-from manifest_contract import ships_citation, strips_content
+from manifest_contract import strips_content
 
 # How many offending rows the verdict quotes. The count is exact; the list
 # is a sample, because the scan that fills it runs over citation.crawl_step
@@ -58,7 +45,15 @@ LEAK_SAMPLE = 20
 
 WORK_TABLE = "citation.work"
 CITES_TABLE = "citation.cites"
+JOURNAL_TABLE = "citation.crawl_step"
+# The three columns a journal row NAMES something in. Each carries a name
+# from either vocabulary -- frontier_key is a document id on seed/twin rows
+# and a work key on the rest, candidate_key is the record the decision was
+# about, node_key is the node it resolved to -- which is why the cut matches
+# all three against both, and why all three are collected here.
+JOURNAL_KEY_COLUMNS = ("frontier_key", "candidate_key", "node_key")
 ID_COLUMN = "id"
+KEY_COLUMN = "key"
 DOCUMENT_ID_COLUMN = "document_id"
 CITING_COLUMN = "citing"
 CITED_COLUMN = "cited"
@@ -102,14 +97,22 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
     full-content mode those tables get no visitor at all; a dump carrying no
     citation table pays for the registration and finds nothing to visit.
 
-    work and cites keep their visitors either way: work_documents /
-    work_ids / edge_endpoints feed the two checks that hold the citation
-    cut to the document cut, and those run under every shipping mode.
+    work, cites and crawl_step keep their visitors either way:
+    work_documents / work_ids / edge_endpoints / journal_keys feed the three
+    checks that hold the citation cut to the document cut, and those run
+    under every shipping mode. The journal's visitor therefore costs a
+    dict(zip(...)) per row even under a full-content mode -- ~100k rows per
+    depth-2 crawl -- and that is the price of the cut being CHECKED rather
+    than trusted: registered only `if stripping`, the largest and most
+    delicately cut table in the schema was the one table the recipient
+    could learn nothing about.
     """
     leaked = LeakSample()
     work_documents: dict[str, str] = {}
     work_ids: set[str] = set()
+    work_keys: set[str] = set()
     edge_endpoints: set[str] = set()
+    journal_keys: set[str] = set()
 
     def content_visitor(table: str, name_of):
         """Reports every non-empty content column of `table`, whatever the
@@ -135,11 +138,15 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
         CITES_TABLE,
         lambda row: f"{row.get('citing', '?')}->{row.get('cited', '?')}",
     ) if stripping else no_content_hunt
+    leaked_journal = content_visitor(
+        JOURNAL_TABLE, lambda row: row.get("id", "?")) if stripping else no_content_hunt
 
     def on_work(row: dict) -> None:
         leaked_work(row)
         if ID_COLUMN in row:
             work_ids.add(row[ID_COLUMN])
+        if KEY_COLUMN in row:
+            work_keys.add(row[KEY_COLUMN])
         document_id = row.get(DOCUMENT_ID_COLUMN, dump_scan.NULL_FIELD)
         if document_id not in (dump_scan.NULL_FIELD, ""):
             work_documents.setdefault(document_id, row.get("key", "?"))
@@ -150,14 +157,23 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
             if column in row:
                 edge_endpoints.add(row[column])
 
+    def on_journal(row: dict) -> None:
+        leaked_journal(row)
+        for column in JOURNAL_KEY_COLUMNS:
+            named = row.get(column, dump_scan.NULL_FIELD)
+            if named not in (dump_scan.NULL_FIELD, ""):
+                journal_keys.add(named)
+
     row_visitors[WORK_TABLE] = on_work
     row_visitors[CITES_TABLE] = on_cites
-    # The tables with no facts of their own to collect still carry content
-    # columns, and a table whose visitor nobody registered is a table the
-    # scan never opens: crawl_step.reason shipped unchecked for exactly that
-    # reason before the classification became one map. They exist for the
-    # content hunt and nothing else, so they are registered only when there
-    # is a hunt.
+    row_visitors[JOURNAL_TABLE] = on_journal
+    # The remaining tables have no facts of their own to collect but still
+    # carry content columns, and a table whose visitor nobody registered is
+    # a table the scan never opens: crawl_step.reason shipped unchecked for
+    # exactly that reason before the classification became one map. They
+    # exist for the content hunt and nothing else, so they are registered
+    # only when there is a hunt (the three above are already in
+    # row_visitors and are skipped here).
     if stripping:
         for table in CITATION_COLUMN_CLASS:
             qualified = f"citation.{table}"
@@ -169,66 +185,9 @@ def attach_visitors(row_visitors: dict, mode: str | None) -> dict:
         "citation_work_documents": work_documents,
         "citation_work_ids": work_ids,
         "citation_edge_endpoints": edge_endpoints,
+        "citation_work_keys": work_keys,
+        "citation_journal_keys": journal_keys,
     }
-
-
-def _ships_citation(manifest: dict) -> bool:
-    """manifest_contract.ships_citation() over this manifest's block -- the
-    same allowlist the dump was written by, so a mode neither side has heard
-    of leaves the checks demanding an absent schema rather than exempting
-    themselves."""
-    return ships_citation(manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE))
-
-
-def check_work_documents_are_in_the_dump(manifest: dict, facts: dict) -> tuple[bool, str]:
-    """No citation.work row may name a document this dump does not carry.
-
-    The FK (citation.work.document_id REFERENCES corpus.documents) would
-    abort the restore, and the row itself would publish the bibliography of
-    a document the owner classified out of the public artifact -- two
-    independent reasons, either sufficient.
-    """
-    if not _ships_citation(manifest):
-        return True, "citation schema not in this profile -- nothing to check"
-    named = facts.get("citation_work_documents", {})
-    dangling = sorted(set(named) - facts.get("documents", set()))
-    ok = not dangling
-    return ok, (
-        f"{len(named)} document(s) named by citation.work; "
-        f"absent from the dump: {[f'{d} ({named[d]})' for d in dangling] or 'none'}"
-    )
-
-
-def check_edges_reference_shipped_works(manifest: dict, facts: dict) -> tuple[bool, str]:
-    """No citation.cites endpoint may name a work row the dump dropped --
-    the same FK question one level down, for the edges the work cut takes
-    with it.
-    """
-    if not _ships_citation(manifest):
-        return True, "citation schema not in this profile -- nothing to check"
-    endpoints = facts.get("citation_edge_endpoints", set())
-    dangling = sorted(endpoints - facts.get("citation_work_ids", set()))
-    ok = not dangling
-    return ok, (
-        f"{len(endpoints)} distinct endpoint(s) in citation.cites; "
-        f"without a work row: {dangling or 'none'}"
-    )
-
-
-def check_citation_schema_matches_mode(manifest: dict, scans: dict) -> tuple[bool, str]:
-    citation = manifest.get(Key.CITATION, {})
-    mode = citation.get(Key.CITATION_MODE)
-    present = {WORK_TABLE, CITES_TABLE} & set(scans)
-    if not ships_citation(mode):
-        ok = not present
-        return ok, f"mode={mode!r}, citation table(s) in dump: {sorted(present) or 'none'}"
-    work_rows = scans[WORK_TABLE].rows if WORK_TABLE in scans else 0
-    cites_rows = scans[CITES_TABLE].rows if CITES_TABLE in scans else 0
-    want_work = citation.get(Key.WORK_COUNT)
-    want_cites = citation.get(Key.CITES_COUNT)
-    ok = present == {WORK_TABLE, CITES_TABLE} and work_rows == want_work and cites_rows == want_cites
-    return ok, (f"mode={mode!r}, work rows={work_rows} (manifest {want_work}), "
-                f"cites rows={cites_rows} (manifest {want_cites})")
 
 
 def check_content_is_stripped(manifest: dict, facts: dict) -> tuple[bool, str]:

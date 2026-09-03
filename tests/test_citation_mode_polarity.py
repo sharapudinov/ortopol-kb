@@ -23,7 +23,7 @@ from pathlib import Path
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
-import citation_content_checks
+import citation_cut_checks
 import citation_dump
 import manifest_probe
 import smoke_checks
@@ -41,7 +41,7 @@ MODE_CLASSES = ("CitationMode", "PublicPolicyMode")
 # here rather than a silently unguarded module.
 ASKING_MODULES = (
     "manifest_contract.py", "citation_dump.py", "manifest_probe.py",
-    "citation_content_checks.py", "smoke_checks.py",
+    "citation_cut_checks.py", "smoke_checks.py",
 )
 
 
@@ -123,9 +123,9 @@ class NoSiteDecidesByNoneTests(unittest.TestCase):
         the manifest declares, so a block naming an unheard-of mode is
         treated as shipping nothing rather than as shipping unchecked.
         """
-        self.assertFalse(citation_content_checks._ships_citation(
+        self.assertFalse(citation_cut_checks._ships_citation(
             {"citation": {"mode": "graph-only"}}))
-        ok, _detail = citation_content_checks.check_citation_schema_matches_mode(
+        ok, _detail = citation_cut_checks.check_citation_schema_matches_mode(
             {"citation": {"mode": "graph-only"}}, {"citation.work": object()})
         self.assertFalse(ok)
         verdict, _detail = smoke_checks.check_citation_projection(

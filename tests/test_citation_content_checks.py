@@ -10,6 +10,7 @@ import pathlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
@@ -41,55 +42,6 @@ def _scan(dump_text: str, mode: str = CitationMode.TOPOLOGY_ONLY) -> tuple[dict,
         facts = citation_content_checks.attach_visitors(row_visitors, mode)
         scans = dump_scan.scan(dump_path, row_visitors)
     return scans, dict(facts)
-
-
-class CheckCitationSchemaMatchesModeTests(unittest.TestCase):
-    def test_none_mode_passes_when_dump_carries_neither_table(self):
-        scans, _facts = _scan("CREATE TABLE corpus.documents (id text);\n")
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE}}
-        ok, detail = citation_content_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertTrue(ok, detail)
-
-    def test_none_mode_fails_when_a_citation_table_leaked_in(self):
-        dump = _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE}}
-        ok, detail = citation_content_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertFalse(ok)
-        self.assertIn("citation.work", detail)
-
-    def test_shipping_mode_requires_both_tables_with_matching_counts(self):
-        dump = (
-            _copy_block("citation.work", ["id", "key"], [["1", "k1"], ["2", "k2"]])
-            + _copy_block("citation.cites", ["citing", "cited"], [["1", "2"]])
-        )
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {
-            Key.CITATION_MODE: CitationMode.FULL_SKELETON, Key.WORK_COUNT: 2, Key.CITES_COUNT: 1,
-        }}
-        ok, detail = citation_content_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertTrue(ok, detail)
-
-    def test_shipping_mode_fails_on_a_row_count_mismatch(self):
-        dump = (
-            _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
-            + _copy_block("citation.cites", ["citing", "cited"], [])
-        )
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {
-            Key.CITATION_MODE: CitationMode.FULL_SKELETON, Key.WORK_COUNT: 5, Key.CITES_COUNT: 0,
-        }}
-        ok, detail = citation_content_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertFalse(ok)
-
-    def test_shipping_mode_fails_when_a_table_is_entirely_absent(self):
-        dump = _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
-        scans, _facts = _scan(dump)
-        manifest = {Key.CITATION: {
-            Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY, Key.WORK_COUNT: 1, Key.CITES_COUNT: 0,
-        }}
-        ok, _detail = citation_content_checks.check_citation_schema_matches_mode(manifest, scans)
-        self.assertFalse(ok)
 
 
 class CheckTopologyOnlyStripsTests(unittest.TestCase):
@@ -191,76 +143,16 @@ class CheckTopologyOnlyStripsTests(unittest.TestCase):
         self.assertTrue(ok, detail)
 
 
-class CheckWorkDocumentsPresentTests(unittest.TestCase):
-    """The citation slice and the corpus slice are cut by two different
-    policies (citation.public_policy vs corpus.documents.public_distribution),
-    and citation.work.document_id is a FK across that boundary. A work row
-    naming a document the dump does not carry breaks the restore outright --
-    and, before that, publishes the title of exactly the document the owner
-    classified out.
-    """
-
-    MANIFEST = {Key.CITATION: {Key.CITATION_MODE: CitationMode.FULL_SKELETON}}
-
-    def test_passes_when_every_named_document_is_in_the_dump(self):
-        dump = (
-            _copy_block("corpus.documents", ["id", "filename"], [["1997_sm280", "a.pdf"]])
-            + _copy_block("citation.work", ["id", "key", "document_id"],
-                          [["1", "k1", "1997_sm280"], ["2", "k2", "\\N"]])
-        )
-        _scans, facts = _scan(dump)
-        facts["documents"] = {"1997_sm280"}
-        ok, detail = citation_content_checks.check_work_documents_are_in_the_dump(
-            self.MANIFEST, facts)
-        self.assertTrue(ok, detail)
-
-    def test_fails_when_a_work_names_a_document_the_dump_does_not_carry(self):
-        dump = _copy_block("citation.work", ["id", "key", "document_id"],
-                           [["1", "k1", "excluded_doc"]])
-        _scans, facts = _scan(dump)
-        facts["documents"] = {"1997_sm280"}
-        ok, detail = citation_content_checks.check_work_documents_are_in_the_dump(
-            self.MANIFEST, facts)
-        self.assertFalse(ok)
-        self.assertIn("excluded_doc", detail)
-
-    def test_none_mode_is_a_trivial_pass(self):
-        facts = {"citation_work_documents": {"whatever": {"k1"}}, "documents": set()}
-        ok, detail = citation_content_checks.check_work_documents_are_in_the_dump(
-            {Key.CITATION: {Key.CITATION_MODE: CitationMode.NONE}}, facts)
-        self.assertTrue(ok, detail)
-
-
-class CheckEdgesReferenceShippedWorksTests(unittest.TestCase):
-    MANIFEST = {Key.CITATION: {Key.CITATION_MODE: CitationMode.TOPOLOGY_ONLY}}
-
-    def test_passes_when_both_endpoints_are_in_the_dump(self):
-        dump = (
-            _copy_block("citation.work", ["id", "key"], [["1", "k1"], ["2", "k2"]])
-            + _copy_block("citation.cites", ["citing", "cited"], [["1", "2"]])
-        )
-        _scans, facts = _scan(dump)
-        ok, detail = citation_content_checks.check_edges_reference_shipped_works(
-            self.MANIFEST, facts)
-        self.assertTrue(ok, detail)
-
-    def test_fails_on_an_edge_whose_endpoint_was_cut_away(self):
-        dump = (
-            _copy_block("citation.work", ["id", "key"], [["1", "k1"]])
-            + _copy_block("citation.cites", ["citing", "cited"], [["1", "2"]])
-        )
-        _scans, facts = _scan(dump)
-        ok, detail = citation_content_checks.check_edges_reference_shipped_works(
-            self.MANIFEST, facts)
-        self.assertFalse(ok)
-        self.assertIn("2", detail)
-
-
 class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
     """The content hunt is a no-op under every mode but topology-only, and
     a no-op that is registered is not free: dump_scan builds a dict per row
-    for every table that HAS a visitor, and citation.crawl_step grows by
-    ~100k rows per depth-2 crawl.
+    for every table that HAS a visitor.
+
+    Three tables are registered whatever the mode, because they carry facts
+    the cut checks read -- crawl_step among them, at ~100k rows per depth-2
+    crawl, which is exactly the cost the earlier `if stripping` saved and
+    exactly why the journal cut had no artifact-side check at all. What the
+    mode still decides is the tables registered for the HUNT alone.
     """
 
     CONTENT_TABLES = sorted(
@@ -275,15 +167,44 @@ class VisitorsCostOnlyWhatTheModeAsksTests(unittest.TestCase):
         for table in self.CONTENT_TABLES:
             self.assertIn(table, visitors)
 
-    def test_full_skeleton_registers_only_the_two_that_carry_facts(self):
+    FACT_TABLES = ["citation.cites", "citation.crawl_step", "citation.work"]
+    # A table classified as carrying content but holding no fact any check
+    # reads -- the only shape the hunt-only registration is still about, and
+    # the schema has none today (all three content tables carry facts). A
+    # synthetic one is what keeps the branch tested rather than assumed.
+    FUTURE_TABLE = {"note": citation_columns.CONTENT, "id": citation_columns.TOPOLOGY}
+
+    def test_full_skeleton_registers_only_the_three_that_carry_facts(self):
         visitors: dict = {}
-        citation_content_checks.attach_visitors(visitors, CitationMode.FULL_SKELETON)
-        self.assertEqual(sorted(visitors), ["citation.cites", "citation.work"])
-        extra = [t for t in self.CONTENT_TABLES
-                 if t not in ("citation.work", "citation.cites")]
-        self.assertTrue(extra, "нет таблицы, на которой видна разница")
-        for table in extra:
-            self.assertNotIn(table, visitors)
+        with mock.patch.dict(citation_columns.CITATION_COLUMN_CLASS,
+                             {"future_table": self.FUTURE_TABLE}):
+            citation_content_checks.attach_visitors(visitors, CitationMode.FULL_SKELETON)
+        self.assertEqual(sorted(visitors), self.FACT_TABLES)
+
+    def test_topology_only_also_watches_a_content_table_carrying_no_facts(self):
+        """The complement, on the same synthetic table: the hunt-only
+        registration is what a table added to the classification gets, and a
+        branch nothing exercises is a branch nothing holds.
+        """
+        visitors: dict = {}
+        with mock.patch.dict(citation_columns.CITATION_COLUMN_CLASS,
+                             {"future_table": self.FUTURE_TABLE}):
+            citation_content_checks.attach_visitors(visitors, CitationMode.TOPOLOGY_ONLY)
+        self.assertEqual(sorted(visitors),
+                         sorted(self.FACT_TABLES + ["citation.future_table"]))
+
+    def test_the_journal_is_visited_under_every_mode(self):
+        """The whole of the journal fix: the largest and most delicately cut
+        table in the schema used to get a visitor only when there was
+        content to hunt, so under full-skeleton the recipient could learn
+        nothing at all about the cut that produced it.
+        """
+        for mode in (CitationMode.FULL_SKELETON, CitationMode.TOPOLOGY_ONLY,
+                     CitationMode.NONE, "a-mode-nobody-declared"):
+            visitors: dict = {}
+            with self.subTest(mode=mode):
+                citation_content_checks.attach_visitors(visitors, mode)
+                self.assertIn("citation.crawl_step", visitors)
 
     def test_full_skeleton_collects_no_leak_facts_while_scanning(self):
         """The rows go past the work/cites visitors either way -- what must

@@ -45,13 +45,17 @@ contributing row visitors to that same pass:
                                than being certified as publishable, and one
                                whose manifest names no policy at all fails
                                too (citation_policy_check.py)
-  citation slice holds         the citation-schema checks live in
-                               citation_content_checks.py (module size) and
-                               run in this same pass -- including the two
-                               that hold the citation cut to the DOCUMENT
-                               cut: no work row names a document this dump
-                               does not carry, no edge names a work it does
-                               not carry
+  citation content holds       citation_content_checks.py (module size)
+                               owns the citation row visitors on this pass
+                               and the hunt for content a mode was not
+                               allowed to ship
+  citation cut holds           citation_cut_checks.py (module size): the
+                               counts against the manifest, and the three
+                               checks that hold the citation cut to the
+                               DOCUMENT cut -- no work row names a document
+                               this dump does not carry, no edge names a
+                               work it does not carry, and no journal row
+                               names a document the artifact drops
 
 Same (ok, detail) contract as smoke_checks.py, so smoke_test.py can list
 these beside its live checks; runnable standalone as well:
@@ -67,6 +71,7 @@ import sys
 from pathlib import Path
 
 import citation_content_checks
+import citation_cut_checks
 import citation_policy_check
 import corpus_content_checks
 import dump_scan
@@ -163,13 +168,15 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         ("citation: режим — решение владельца, не --policy-override",
          *citation_policy_check.check_policy_is_the_owners(manifest)),
         ("citation: схема/счётчики совпадают с манифестом",
-         *citation_content_checks.check_citation_schema_matches_mode(manifest, scans)),
+         *citation_cut_checks.check_citation_schema_matches_mode(manifest, scans)),
         ("citation: content-колонки вырезаны вне full-skeleton",
          *citation_content_checks.check_content_is_stripped(manifest, facts)),
         ("citation.work ссылается только на документы этого пакета",
-         *citation_content_checks.check_work_documents_are_in_the_dump(manifest, facts)),
+         *citation_cut_checks.check_work_documents_are_in_the_dump(manifest, facts)),
         ("citation.cites ссылается только на узлы этого пакета",
-         *citation_content_checks.check_edges_reference_shipped_works(manifest, facts)),
+         *citation_cut_checks.check_edges_reference_shipped_works(manifest, facts)),
+        ("citation.crawl_step не называет вырезанных документов",
+         *citation_cut_checks.check_journal_names_nothing_cut(manifest, facts)),
     ]
 
 

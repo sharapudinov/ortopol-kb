@@ -103,6 +103,14 @@ class ArtifactBuilder:
                 "work", self.citation.get("work_columns", []), self.citation.get("work", []))
             dump_text += _citation_copy_block(
                 "cites", self.citation.get("cites_columns", []), self.citation.get("cites", []))
+            # The journal ships under every mode that ships the schema, and
+            # its cut is the one this fixture is asked about most: a row
+            # naming EXCLUDED_DOC in any of the three key columns is the
+            # leak deploy/citation_cut_checks.py exists to catch.
+            if self.citation.get("crawl_step_columns"):
+                dump_text += _citation_copy_block(
+                    "crawl_step", self.citation["crawl_step_columns"],
+                    self.citation.get("crawl_step", []))
         dump_path = self.directory / "01_dump.sql.gz"
         with gzip.open(dump_path, "wt", encoding="utf-8") as f:
             f.write(dump_text)
