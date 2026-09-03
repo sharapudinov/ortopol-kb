@@ -137,6 +137,12 @@ class ArtifactBuilder:
         self.extra_sql = ""
         # None = declare exactly the corpus blocks write() puts in the dump.
         self.corpus_table_rows: dict | None = None
+        # dump{}: None = describe the file write() actually produced; a
+        # value replaces the block wholesale. dump_key=False drops the key
+        # entirely -- a manifest that names no dump at all, which is what
+        # the pass builds the path it opens out of.
+        self.dump: object | None = None
+        self.dump_key = True
         # None = this build shipped no citation schema; the manifest still
         # carries the block saying so, because "the graph does not travel"
         # is a decision the artifact has to name (citation_policy_check).
@@ -211,9 +217,11 @@ class ArtifactBuilder:
             "corpus": {"table_rows": self.corpus_table_rows if self.corpus_table_rows
                        is not None else {"documents": len(self.documents),
                                          "pages": len(self.pages)}},
-            "dump": {"file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"},
             "legal": legal,
         }
+        if self.dump_key:
+            manifest["dump"] = self.dump if self.dump is not None else {
+                "file": dump_path.name, "bytes": dump_path.stat().st_size, "sha256": "x"}
         source = "owner" if self.profile == "public" else "not-applicable"
         if self.citation_block:
             citation = self.citation or {"mode": "none", "work_count": 0, "cites_count": 0}

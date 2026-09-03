@@ -16,16 +16,16 @@ contributing row visitors to that same pass:
   profile/manifest agreement   here: the schemas the profile+mode rule
                                requires (manifest_contract.schemas_for) are
                                the ones the manifest declares AND the ones
-                               the dump actually contains (public: no
-                               measurements schema at all, not merely no
-                               measurements rows) -- three-way, since the
-                               dump and the declaration are both the
-                               producer's word; read off the same pass,
-                               since the schema names and the COPY headers
-                               are the same lines
-  manifest version matches     here: manifest.schema_version is the version
-                               this reader knows; anything else stops the
-                               pass instead of reading missing fields as
+                               the dump contains (public: no measurements
+                               schema at all, not merely no measurements
+                               rows) -- three-way, since the dump and the
+                               declaration are both the producer's word;
+                               read off the same pass, since schema names
+                               and COPY headers are the same lines
+  manifest version matches     manifest_gates.check_manifest_version --
+                               manifest.schema_version is the version this
+                               reader knows; anything else stops the pass
+                               instead of reading missing fields as
                                satisfied checks
   profile is in the vocabulary manifest_classes.check_profile_is_known --
                                every check below picks its strictness off
@@ -33,15 +33,21 @@ contributing row visitors to that same pass:
   legal vocabulary is known    manifest_classes.
                                check_legal_vocabulary_is_known -- the two
                                distribution lists the legal checks derive
-                               their whole expectation from name only
-                               classes this profile may carry, and neither
-                               is empty
+                               their whole expectation from name only classes
+                               this profile may carry, and neither is empty
   citation block is a block    citation_policy_check.
                                check_citation_block_is_shaped -- the pass
                                reads manifest.citation.mode before any
                                check runs, so a field that is not a mapping
                                has to stop the pass rather than raise
                                through it
+  dump block names a file      manifest_gates.
+                               check_dump_block_is_shaped -- the same, one
+                               key over: the pass builds the path it opens
+                               out of manifest.dump, so a block naming
+                               nothing (or a file the package does not
+                               carry) stops the pass with a row, not a
+                               traceback
   every column is classified   column_class_checks.py: each COPY block of
                                schema corpus/citation carries only columns
                                the bundled classification maps name -- the
@@ -52,10 +58,10 @@ contributing row visitors to that same pass:
   every table is declared      table_rows_check.py: each classified
                                schema's manifest block names every table of
                                it the dump carries, with exactly that many
-                               rows, and carries every table it names. Both
-                               schemas from one engine, because a check
-                               that finds no COPY block cannot otherwise
-                               tell "cut correctly" from "never shipped"
+                               rows, and carries every table it names --
+                               both schemas from one engine, because a
+                               check that finds no COPY block cannot
+                               otherwise tell "cut" from "never shipped"
   corpus content holds         corpus_content_checks.py (module size):
                                classification complete, excluded left no
                                trace, metadata-only stripped, full-text
@@ -83,10 +89,10 @@ contributing row visitors to that same pass:
   citation cut holds           citation_cut_checks.py (module size): the
                                counts and the kind census against the
                                manifest, and the three checks that hold the
-                               citation cut to the DOCUMENT cut -- no work row names a document
-                               this dump does not carry, no edge names a
-                               work it does not carry, and no journal row
-                               names a document the artifact drops
+                               citation cut to the DOCUMENT cut -- no work
+                               row names a document this dump does not
+                               carry, no edge a work it does not carry, and
+                               no journal row a document the artifact drops
 
 Same (ok, detail) contract as smoke_checks.py, so smoke_test.py can list
 these beside its live checks; runnable standalone as well:
@@ -111,8 +117,9 @@ import dump_scan
 import sequence_checks
 import table_rows_check
 from manifest_classes import check_legal_vocabulary_is_known, check_profile_is_known
+from manifest_gates import check_dump_block_is_shaped, check_manifest_version
 from manifest_contract import required_schemas
-from manifest_keys import MANIFEST_SCHEMA_VERSION, Key
+from manifest_keys import Key
 
 
 def check_schemas(contents: dump_scan.DumpContents, manifest: dict) -> tuple[bool, str]:
@@ -124,11 +131,11 @@ def check_schemas(contents: dump_scan.DumpContents, manifest: dict) -> tuple[boo
     recipient can certify it without trusting the producer
     (ARTIFACT_SIDE_FAILS_CLOSED). Compared with the declaration alone, a
     build that resolved "which schemas does this profile ship" wrongly
-    agrees with itself -- its dump carries what its manifest says because
-    one decision wrote both -- and the recipient certifies the mistake. The
-    rule itself is manifest_contract.schemas_for(), the same authority the
-    dumpers and the manifest are written by, re-derived here from the two
-    manifest fields the gates above have already validated the shape of.
+    agrees with itself -- one decision wrote both the dump and the claim --
+    and the recipient certifies the mistake. The rule is
+    manifest_contract.schemas_for(), the authority the dumpers and the
+    manifest are written by, re-derived from the two manifest fields the
+    gates above have already validated the shape of.
 
     Read off the pass _visit() already made, not off a pass of its own: the
     schema names and the COPY headers are the same lines, and the full
@@ -153,10 +160,9 @@ class DumpFacts(NamedTuple):
     reads its input by NAME, so a fact that never arrived -- a visitor that
     did not fire, a key renamed on one side of a module split, a bundled
     checker older than the package it travels in -- raises where it is read
-    instead of resolving to an empty set. An empty set is precisely what
-    makes "absent from the dump: none" and "leaked 0 row(s)" true, i.e. the
-    shape in which this package certifies nothing and says [OK]
-    (ARTIFACT_SIDE_FAILS_CLOSED).
+    instead of resolving to an empty set. An empty set is what makes
+    "absent from the dump: none" and "leaked 0 row(s)" true, i.e. the shape
+    in which this package certifies nothing and says [OK].
     """
 
     corpus: corpus_content_checks.CorpusFacts
@@ -167,8 +173,9 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, Dum
     """One streaming pass over the dump, with every subject's visitors on it.
 
     Called only after run_checks() has gated the fields the wiring itself
-    reads: manifest.citation must be a mapping before its mode can be
-    handed to the citation visitors.
+    reads: manifest.citation must be a mapping before its mode can be handed
+    to the citation visitors, and manifest.dump must name a file that exists
+    before this path can be opened.
     """
     row_visitors: dict = {}
     facts = DumpFacts(
@@ -177,25 +184,6 @@ def _visit(dump_path: Path, manifest: dict) -> tuple[dump_scan.DumpContents, Dum
             row_visitors, manifest.get(Key.CITATION, {}).get(Key.CITATION_MODE)),
     )
     return dump_scan.scan(dump_path, row_visitors), facts
-
-
-def check_manifest_version(manifest: dict) -> tuple[bool, str]:
-    """The manifest is the one this reader knows how to read.
-
-    Every check below asks the manifest for a key, and a manifest of
-    another version answers by omission: a field that moved is read as
-    absent, and an absent field is what turns a certification into a row of
-    trivially satisfied checks. The recipient runs this module standalone
-    (AGENT_GUIDE.md) and build_package.py names it as what an override
-    build cannot be certified by, so the gate cannot live only in the
-    Docker path (smoke_checks.py had the only one).
-    """
-    declared = manifest.get(Key.SCHEMA_VERSION)
-    ok = declared == MANIFEST_SCHEMA_VERSION
-    return ok, (f"manifest {Key.SCHEMA_VERSION}={declared!r}, "
-                f"этот проверяльщик читает {MANIFEST_SCHEMA_VERSION}"
-                + ("" if ok else " — пакет и проверка из разных версий, "
-                                 "остальные проверки не запускались"))
 
 
 def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
@@ -232,6 +220,17 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         # and no results at all -- the failure mode the profile gate above
         # exists to prevent, one key over.
         return [version, known, vocabulary, shaped]
+    named = ("манифест несёт блок dump с существующим файлом",
+             *check_dump_block_is_shaped(manifest, artifact_dir))
+    if not named[1]:
+        # The same polarity one key over from the citation block, and the
+        # same failure it prevents: the line below builds the path it opens
+        # out of this block, so a `dump` that is absent, a string or a list
+        # raises out of run_checks() before a single result exists, and a
+        # name pointing at nothing raises from inside gzip.open. A caller
+        # that extends its own list with ours aborts with a traceback and
+        # no results at all.
+        return [version, known, vocabulary, shaped, named]
     dump_path = artifact_dir / manifest[Key.DUMP][Key.FILE]
     contents, facts = _visit(dump_path, manifest)
     scans = contents.tables
@@ -241,6 +240,7 @@ def run_checks(artifact_dir: Path) -> list[tuple[str, bool, str]]:
         known,
         vocabulary,
         shaped,
+        named,
         (f"профиль {profile!r}: схемы дампа = манифест", *check_schemas(contents, manifest)),
         ("каждая колонка дампа классифицирована",
          *column_class_checks.check_columns_are_classified(scans)),

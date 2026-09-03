@@ -92,6 +92,11 @@ DEPLOY_FILES = [
     # split off for module size: without it profile_checks.py does not
     # import at all on the recipient's side.
     "manifest_classes.py",
+    # ... and the two fields the PASS itself reads before any check can
+    # run: the manifest version it is written against and the dump block
+    # whose path it opens. Gates, not checks -- a field the wiring cannot
+    # find raises instead of printing a row.
+    "manifest_gates.py",
     # Static verification of the citation-schema slice of the dump:
     # profile_checks.py's run_checks() calls into it ...
     "citation_content_checks.py",
