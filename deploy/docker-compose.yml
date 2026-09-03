@@ -22,7 +22,7 @@ services:
     # restored. `up` builds it once (~1 min: apt-installs pgvector on top of
     # apache/age); the tag is the one pg/README.md names.
     build: ./pg
-    image: ortopol-pg:17-age1.7-pgvector
+    image: ortopol-pg:17-age1.7.0-pgvector0.8.6
     environment:
       POSTGRES_USER: ${PGUSER:-ortopol}
       POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD in .pgenv, see .pgenv.example}
