@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import gzip
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path
 
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import copy_row
 import dump_scan
 from _artifact_fixtures import ArtifactBuilder, DOCUMENT_COLUMNS, FULL_DOC
 
@@ -37,13 +39,13 @@ class DumpScanTests(unittest.TestCase):
         """Per-column emptiness is a question the ROW VISITORS answer, and
         the only mechanism that answers it: the scan itself keeps no tally
         of its own, so a block nobody registered a visitor for costs one
-        line split and nothing else.
+        line and nothing else.
         """
         empty = {"corpus.documents": 0, "corpus.pages": 0}
 
         def counter(table: str, column: str):
-            def visit(row: dict) -> None:
-                if row[column] in (dump_scan.NULL_FIELD, ""):
+            def visit(row) -> None:
+                if row.is_blank(column):
                     empty[table] += 1
             return visit
 
@@ -81,6 +83,86 @@ class DumpScanTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 dump_scan.scan(dump_path)
         self.assertIn("truncated", str(ctx.exception))
+
+
+class PeakMemoryTests(unittest.TestCase):
+    """A visited block whose rows are hundreds of megabytes costs the line
+    and nothing more.
+
+    The full profile's corpus.documents block carries every source PDF as
+    one hex field on one line, and corpus_content_checks registers a
+    visitor on it unconditionally -- so this is the shape the artifact-side
+    certification actually runs over, and the producer's counter
+    (copy_rows.CopyBlockCounter) caps its retained prefix precisely so it
+    never rebuilds such a line.
+
+    Two controls, both spelled out below rather than described: the FLOOR
+    (iterating the same file's lines and doing nothing, which is what the
+    decompressing reader costs whatever we do) and the OLD SHAPE (rstrip +
+    split + dict(zip(...)), which is what scan() used to hand a visitor).
+    The claim is that the scan now costs the floor.
+    """
+
+    FIELD_BYTES = 50 << 20
+
+    def _dump(self, directory: Path) -> Path:
+        dump_path = directory / "big.sql.gz"
+        with gzip.open(dump_path, "wt", encoding="utf-8", compresslevel=1) as f:
+            f.write("COPY corpus.documents (id, source_blob) FROM stdin;\n")
+            f.write("1997_sm280\t" + "ab" * (self.FIELD_BYTES // 2) + "\n")
+            f.write("\\.\n")
+        return dump_path
+
+    @staticmethod
+    def _floor(dump_path: Path) -> None:
+        """What decompressing the file costs before anybody looks at a row."""
+        with gzip.open(dump_path, "rt", encoding="utf-8", errors="replace") as f:
+            for _raw in f:
+                pass
+
+    @staticmethod
+    def _old_shape(dump_path: Path, visit) -> None:
+        """What the reader did before: a copy of the line without its
+        newline, then a copy of every field, then a dict of them."""
+        with gzip.open(dump_path, "rt", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if line.startswith("COPY ") or line == copy_row.COPY_TERMINATOR:
+                    continue
+                fields = line.split("\t")
+                visit(dict(zip(["id", "source_blob"], fields)))
+
+    @staticmethod
+    def _peak(work) -> int:
+        tracemalloc.start()
+        try:
+            work()
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    def test_a_presence_check_over_a_blob_row_copies_nothing(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp:
+            dump_path = self._dump(Path(tmp))
+
+            def visit(row):
+                seen.append((row["id"], row.is_blank("source_blob")))
+
+            floor = self._peak(lambda: self._floor(dump_path))
+            now = self._peak(lambda: dump_scan.scan(dump_path,
+                                                    {"corpus.documents": visit}))
+            before = self._peak(
+                lambda: self._old_shape(dump_path,
+                                        lambda row: row["source_blob"] == ""))
+        self.assertEqual(seen, [("1997_sm280", False)])
+        # Measured on this machine, 50 MB in one field: floor 105.3 MB
+        # (2.01x the field -- the reader's decode buffer plus the line),
+        # scan 105.3 MB, old shape 157.4 MB (3.00x).
+        self.assertLessEqual(now, floor * 1.05,
+                             f"проход дороже самого чтения: пол {floor}, стало {now}")
+        self.assertGreater(before, now * 1.3,
+                           f"пик не упал: было {before}, стало {now}")
 
 
 if __name__ == "__main__":

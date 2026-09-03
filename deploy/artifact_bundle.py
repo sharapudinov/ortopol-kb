@@ -59,6 +59,11 @@ DEPLOY_FILES = [
     # corpus, which is the builder's job, not the recipient's.
     "profile_checks.py",
     "dump_scan.py",
+    # ... and the wire format that reader meets line by line: the NULL
+    # marker, the block terminator and one COPY line read by column
+    # without copying it. Split off for module size -- without it
+    # profile_checks.py does not import at all on the recipient's side.
+    "copy_row.py",
     # ... and the one check that reads no COPY row at all: the statements
     # BETWEEN the blocks, and whether each sequence the dump's own DDL
     # declares was repositioned after the rows that consumed it. Split off

@@ -23,7 +23,9 @@ can never be produced by data.
 Nothing is decoded beyond what the checks need (presence/absence, lengths),
 and no whole column value is retained: the full dump's documents block
 carries every source PDF as one hex field per row, hundreds of megabytes in
-total, and this must stay streaming.
+total, and this must stay streaming. Nor is any of it COPIED: a row reaches
+a visitor as a Row over the line the reader already holds (see that class
+for the measurement), never as a dict of freshly sliced fields.
 """
 from __future__ import annotations
 
@@ -33,14 +35,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
+from copy_row import COPY_TERMINATOR, Row, line_end
+
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 COPY_HEADER = re.compile(rf"^COPY ({_NAME})\.({_NAME}) \(([^)]*)\) FROM stdin;$")
-# The line that ends a COPY block. Spelled once here because the builder's
-# streaming counter (copy_rows.CopyBlockCounter) recognises the same block
-# structure in the bytes on their way into gzip, and the two readings of one
-# dump must not be two spellings of what a block is.
-COPY_TERMINATOR = "\\."
-NULL_FIELD = "\\N"
 
 
 @dataclass
@@ -160,9 +158,10 @@ class StatementReader:
 
 
 def _decompress_lines(dump_path: Path) -> Iterator[str]:
+    """The dump's lines, newline included -- see Row on why nothing here
+    strips it."""
     with gzip.open(dump_path, "rt", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            yield line.rstrip("\n")
+        yield from f
 
 
 def _statements(dump_path: Path) -> StatementReader:
@@ -225,17 +224,19 @@ def scan(
     needs them (profile_checks.py) is reading those lines anyway.
 
     row_visitors maps "<schema>.<table>" to a callable invoked with each row
-    as {column: raw COPY field}. Raw on purpose: the checks care about
+    as a Row -- read by column name, raw on purpose: the checks care about
     "\\N vs empty vs something", which is exactly what the wire format
-    distinguishes and what any un-escaping would blur. Rows of tables with
-    no visitor are counted but never materialised as dicts, so scanning the
-    full profile's blob-carrying documents block stays cheap.
+    distinguishes and what any un-escaping would blur. Nothing is copied out
+    of the line until a visitor asks for a particular field, and asking
+    whether a field is blank copies nothing at all (Row.is_blank), so
+    scanning the full profile's blob-carrying documents block stays cheap:
+    the reader holds the line, and no second copy of it.
     """
     visitors = row_visitors or {}
     scans: dict[str, TableScan] = {}
     statements = StatementReader()
     current: TableScan | None = None
-    visitor: Callable[[dict[str, str]], None] | None = None
+    visitor: Callable[[Row], None] | None = None
 
     for ordinal, line in enumerate(_decompress_lines(dump_path)):
         if current is None:
@@ -250,19 +251,27 @@ def scan(
             scans[key] = current
             visitor = visitors.get(key)
             continue
-        if line == COPY_TERMINATOR:
+        # A data line can never START with the terminator's backslash-dot:
+        # COPY's text format escapes a literal backslash as `\\`. So the
+        # cheap test decides it, and the rstrip that follows only ever runs
+        # on a two-character line.
+        if line.startswith(COPY_TERMINATOR) and line.rstrip("\n") == COPY_TERMINATOR:
             current.ended_at = ordinal
             current, visitor = None, None
             continue
-        fields = line.split("\t")
+        end = line_end(line)
         current.rows += 1
-        if len(fields) != len(current.columns):
+        # Counted, not split: the field count is a property of the tabs,
+        # and splitting to learn it would copy every field of a row whose
+        # blob field nobody is going to read.
+        fields = line.count("\t", 0, end) + 1
+        if fields != len(current.columns):
             raise ValueError(
                 f"{current.schema}.{current.table} row {current.rows}: "
-                f"{len(fields)} field(s) for {len(current.columns)} declared column(s)"
+                f"{fields} field(s) for {len(current.columns)} declared column(s)"
             )
         if visitor is not None:
-            visitor(dict(zip(current.columns, fields)))
+            visitor(Row(current.columns, line, end))
 
     if current is not None:
         raise ValueError(

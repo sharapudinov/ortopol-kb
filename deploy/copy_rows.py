@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from typing import IO, NamedTuple
 
+import copy_row
 import dump_scan
 from block_census import BlockCensus, FieldTally
 
@@ -123,7 +124,7 @@ class RowCounter:
 # the rest of the line is counted and dropped.
 LINE_PREFIX = 8192
 
-COPY_TERMINATOR = dump_scan.COPY_TERMINATOR.encode()
+COPY_TERMINATOR = copy_row.COPY_TERMINATOR.encode()
 
 
 class CopyBlockCounter:

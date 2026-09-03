@@ -45,7 +45,6 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 import corpus_columns
-import dump_scan
 from manifest_classes import classes, content_expectation, expected_ids
 from manifest_keys import Key
 
@@ -97,15 +96,17 @@ class CorpusFacts(NamedTuple):
     pages: PageTally
 
 
-def _carries_content(row: dict, columns: tuple[str, ...]) -> bool:
+def _carries_content(row, columns: tuple[str, ...]) -> bool:
     r"""Does this row carry a value in ANY column the map calls content?
 
     Empty and \N are both "no content": a metadata-only page ships with an
     empty body on purpose (corpus_columns.py says why), and an absent blob
-    is NULL.
+    is NULL. Asked through dump_scan.Row.is_blank, which answers from the
+    line's tab offsets: the question is presence, and reading the VALUE of
+    corpus.documents.source_blob to answer it copies a whole source PDF in
+    hex per row.
     """
-    return any(row.get(column, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, "")
-               for column in columns)
+    return any(not row.is_blank(column) for column in columns)
 
 
 def attach_visitors(row_visitors: dict) -> CorpusFacts:
@@ -124,15 +125,15 @@ def attach_visitors(row_visitors: dict) -> CorpusFacts:
     with_body: set[str] = set()
     pages_seen = PageTally()
 
-    def on_document(row: dict) -> None:
+    def on_document(row) -> None:
         documents.add(row[ID_COLUMN])
         if _carries_content(row, DOCUMENT_CONTENT):
             with_blob.add(row[ID_COLUMN])
 
-    def on_page(row: dict) -> None:
+    def on_page(row) -> None:
         pages_seen.rows += 1
         page_documents.add(row[DOCUMENT_ID_COLUMN])
-        if row.get(EMBEDDING_COLUMN, dump_scan.NULL_FIELD) in (dump_scan.NULL_FIELD, ""):
+        if row.is_blank(EMBEDDING_COLUMN):
             pages_seen.no_embedding += 1
         if _carries_content(row, PAGE_CONTENT):
             with_body.add(row[DOCUMENT_ID_COLUMN])

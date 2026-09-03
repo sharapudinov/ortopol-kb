@@ -33,13 +33,13 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-import dump_scan
 from citation_columns import (
     CENSUS_COLUMN,
     CITATION_COLUMN_CLASS,
     JOURNAL_KEY_COLUMNS,
     content_columns,
 )
+from copy_row import NULL_FIELD
 from manifest_keys import Key
 from manifest_contract import strips_content
 
@@ -123,18 +123,18 @@ def attach_visitors(row_visitors: dict, mode: str | None, *,
     from the hunt for content that same mode was allowed to ship. The hunt
     is skipped only under a mode DECLARED full-content.
 
-    Skipping is worth doing because a visitor is not free: dump_scan builds
-    a dict(zip(columns, fields)) per row ONLY for tables that have one, and
-    citation.crawl_step grows by ~100k rows per depth-2 crawl. Under a
-    full-content mode those tables get no visitor at all; a dump carrying no
-    citation table pays for the registration and finds nothing to visit.
+    Skipping is worth doing because a visitor is not free: it is a call and
+    a Row per row of a block that has one, and citation.crawl_step grows by
+    ~100k rows per depth-2 crawl. Under a full-content mode those tables get
+    no visitor at all; a dump carrying no citation table pays for the
+    registration and finds nothing to visit.
 
     work and cites keep their visitors either way: work_documents /
     work_ids / edge_endpoints feed the checks that hold the citation cut to
     the document cut, and those run under every shipping mode.
 
     The journal's KEY columns are the third such fact and the expensive one
-    -- ~100k rows per depth-2 crawl, a dict(zip(...)) each -- so they are
+    -- ~100k rows per depth-2 crawl, a visit each -- so they are
     collected exactly when their check can decide something: `cut_applies`
     is manifest_classes.cut_applies(), the one declaration of "this artifact
     classifies some document out". Where nothing is cut (the full profile by
@@ -162,13 +162,13 @@ def attach_visitors(row_visitors: dict, mode: str | None, *,
         """
         columns = content_columns(table.split(".", 1)[1])
 
-        def visit(row: dict) -> None:
+        def visit(row) -> None:
             for column in columns:
-                if row.get(column, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
+                if not row.is_blank(column):
                     leaked.add(f"{table}.{column}:{name_of(row)}")
         return visit
 
-    def no_content_hunt(_row: dict) -> None:
+    def no_content_hunt(_row) -> None:
         return None
 
     stripping = strips_content(mode)
@@ -181,34 +181,32 @@ def attach_visitors(row_visitors: dict, mode: str | None, *,
     leaked_journal = content_visitor(
         JOURNAL_TABLE, lambda row: row.get("id", "?")) if stripping else no_content_hunt
 
-    def on_work(row: dict) -> None:
+    def on_work(row) -> None:
         leaked_work(row)
         # Every work row is counted, under its kind or -- if the dump
         # carries no kind column at all -- under the wire format's own NULL,
         # which no manifest census can equal. A row silently left out would
         # make the census agree by shrinking (ARTIFACT_SIDE_FAILS_CLOSED).
-        kind = row.get(CENSUS_COLUMN, dump_scan.NULL_FIELD)
+        kind = row.get(CENSUS_COLUMN, NULL_FIELD)
         work_by_kind[kind] = work_by_kind.get(kind, 0) + 1
         if ID_COLUMN in row:
             work_ids.add(row[ID_COLUMN])
         if KEY_COLUMN in row:
             work_keys.add(row[KEY_COLUMN])
-        document_id = row.get(DOCUMENT_ID_COLUMN, dump_scan.NULL_FIELD)
-        if document_id not in (dump_scan.NULL_FIELD, ""):
-            work_documents.setdefault(document_id, row.get("key", "?"))
+        if not row.is_blank(DOCUMENT_ID_COLUMN):
+            work_documents.setdefault(row[DOCUMENT_ID_COLUMN], row.get("key", "?"))
 
-    def on_cites(row: dict) -> None:
+    def on_cites(row) -> None:
         leaked_cites(row)
         for column in (CITING_COLUMN, CITED_COLUMN):
             if column in row:
                 edge_endpoints.add(row[column])
 
-    def on_journal(row: dict) -> None:
+    def on_journal(row) -> None:
         leaked_journal(row)
         for column in JOURNAL_KEY_COLUMNS:
-            named = row.get(column, dump_scan.NULL_FIELD)
-            if named not in (dump_scan.NULL_FIELD, ""):
-                journal_keys.add(named)
+            if not row.is_blank(column):
+                journal_keys.add(row[column])
 
     row_visitors[WORK_TABLE] = on_work
     row_visitors[CITES_TABLE] = on_cites
