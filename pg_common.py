@@ -39,6 +39,26 @@ class PostgresUnavailable(RuntimeError):
     pass
 
 
+class EmbedderUnavailable(RuntimeError):
+    """No query vector, where a query vector is the only possible answer.
+
+    Sibling of PostgresUnavailable, and here for the same reason: the
+    service a caller could not reach is a fact the caller has to be able to
+    RETURN. pg_search.embed_query() answers None instead, deliberately -- a
+    page search falls back to full-text, which needs no model -- but a
+    ranking over vectors has no such fallback, and printing the outage
+    beside an empty list makes it indistinguishable from "nothing matched"
+    (kb/CLAUDE.md, ВЕРДИКТ БИБЛИОТЕКИ — ЗНАЧЕНИЕ, А НЕ ПЕЧАТЬ).
+
+    `what` names the query that could not run, so the one message shape is
+    written once and each caller still says which answer is missing.
+    """
+
+    def __init__(self, what: str) -> None:
+        super().__init__(f"{what}: эмбеддинги недоступны -- ollama не отвечает "
+                         "либо corpus.embedding_model пуста")
+
+
 # How a multi-row psql result is delimited, and the flags that produce it.
 # Here because it is the same kind of plumbing run_sql() is -- every reader
 # in this repository parses psql's output, and a title, a reason or a page

@@ -17,9 +17,9 @@ import pg_graph_candidates as pgcand
 import pg_graph_cocitation as pgcoci
 import pg_graph_common
 import pg_graph_cypher as pgc
-import pg_search
 from paths import default_corpus_dir
-from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv, run_sql
+from pg_common import (EmbedderUnavailable, PostgresUnavailable, check_postgres_available,
+                       load_pgenv, run_sql)
 
 # The fixtures below rank a node they inserted, so its vector is THE ONE the
 # ranking measures against: the corpus centroid the candidates query itself
@@ -225,14 +225,17 @@ class LiveConsumersTests(unittest.TestCase):
         self.assertEqual(by_key[f"{self.PREFIX}b"]["links"], 1)
         self.assertNotIn(f"{self.PREFIX}c", by_key, "--min-links не отфильтровал узел без связей")
 
-        rows = pgc.hybrid(self.env, "тестовый вопрос", top=400)
-        if not rows and pg_search.embed_query("тестовый вопрос", self.env) is None:
+        try:
+            rows = pgc.hybrid(self.env, "тестовый вопрос", top=400)
+        except EmbedderUnavailable as exc:
             # Skipped, not silently passed: `if rows:` around the assertion
             # made the whole check vacuous on any machine without ollama,
             # and a green suite that asserted nothing is worse than a
             # reported gap. The decoding these rows go through is covered
-            # offline in test_pg_graph_consumers.py.
-            self.skipTest("эмбеддинги недоступны: hybrid() нечем ранжировать")
+            # offline in test_pg_graph_consumers.py. The outage is caught
+            # rather than inferred from an empty answer -- that is the
+            # distinction hybrid() now returns as a value.
+            self.skipTest(str(exc))
         self.assertTrue(rows, "hybrid() не нашёл ни одного соседа по фикстуре")
         self.assertTrue(all(r["neighbor_key"] for r in rows))
 

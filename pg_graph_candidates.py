@@ -22,11 +22,9 @@ in pg_graph.py, which imports this module and is imported by nothing.
 """
 from __future__ import annotations
 
-import sys
-
 import pg_search
 from citation_vocab import WorkKind
-from pg_common import FIELD_SEP, ROW_ARGS, run_sql, split_records
+from pg_common import EmbedderUnavailable, FIELD_SEP, ROW_ARGS, run_sql, split_records
 
 
 _CENTROID_EXPR = (
@@ -178,12 +176,18 @@ def candidates(env, top: int = 20, query: str | None = None, min_links: int = 0)
     min_links cuts that top-K rather than the pool it is drawn from, so
     asking for links can return fewer than `top` rows -- see the shape note
     on {links_cut} above for the EXPLAIN measurement that decided it.
+
+    A `query` this instance cannot embed raises EmbedderUnavailable rather
+    than returning the empty list, which is also the legitimate "nothing
+    matched" answer: this module travels inside the artifact and is
+    imported as a library there, so its failure has to be a value the
+    caller can see. pg_graph.py is what turns it into a message and a
+    non-zero exit.
     """
     if query:
         vec = pg_search.embed_query(query, env)
         if vec is None:
-            print("эмбеддинги недоступны, ранжирование по вектору невозможно", file=sys.stderr)
-            return []
+            raise EmbedderUnavailable("ранжирование кандидатов по запросу")
         sql = build_candidates_sql(":'vec'::vector", min_links)
         variables = {"vec": vec, "top": str(int(top))}
     else:

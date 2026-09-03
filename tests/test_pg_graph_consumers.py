@@ -5,8 +5,9 @@ test_pg_graph_candidates.py and test_pg_graph_cypher.py pin the pure halves
 decoded -- and test_pg_graph_consumers_live.py answers the same questions
 against the real instance. Between the two lay the part that runs on every
 call and was covered by neither: the DECODING of what psql prints, and the
-two early exits that make an unanswerable question an empty answer instead
-of a traceback.
+two early exits that turn an unanswerable question into a refusal the
+caller can return (pg_common.EmbedderUnavailable) rather than into an empty
+answer or a traceback.
 
 The decoding is the fragile half by construction. Rows arrive as one string
 cut on FIELD_SEP and RECORD_SEP (pg_common), positionally, with a fixed
@@ -29,7 +30,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import pg_graph_candidates as pgcand
 import pg_graph_cypher as pgc
-from pg_common import FIELD_SEP, RECORD_SEP
+from pg_common import EmbedderUnavailable, FIELD_SEP, RECORD_SEP
 
 
 def _stdout(*records: tuple[str, ...]) -> str:
@@ -65,15 +66,20 @@ class CandidatesDecodingTests(unittest.TestCase):
         rows, _sql = self._candidates("")
         self.assertEqual(rows, [])
 
-    def test_a_question_nothing_can_embed_is_an_empty_answer_and_a_word(self):
+    def test_a_question_nothing_can_embed_is_a_refusal_not_an_empty_answer(self):
+        """[] is the legitimate "nothing matched" answer, so the outage
+        cannot also be []: this module is imported as a library inside the
+        artifact, where stderr reaches nobody who can act on it.
+        """
         said = io.StringIO()
         with mock.patch.object(pgcand.pg_search, "embed_query", return_value=None), \
              mock.patch.object(pgcand, "run_sql") as sql, \
-             redirect_stderr(said):
-            rows = pgcand.candidates(mock.sentinel.env, query="Чебышёв")
-        self.assertEqual(rows, [])
+             redirect_stderr(said), \
+             self.assertRaises(EmbedderUnavailable) as raised:
+            pgcand.candidates(mock.sentinel.env, query="Чебышёв")
+        self.assertIn("эмбеддинги недоступны", str(raised.exception))
         self.assertFalse(sql.called, "запрос ушёл в базу без вектора")
-        self.assertIn("эмбеддинги недоступны", said.getvalue())
+        self.assertEqual(said.getvalue(), "", "модуль печатает свой отказ сам")
 
 
 class CitersDecodingTests(unittest.TestCase):
@@ -146,17 +152,21 @@ class HybridDecodingTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertEqual(sql.call_count, 0)
 
-    def test_a_question_nothing_can_embed_is_an_empty_answer_and_a_word(self):
+    def test_a_question_nothing_can_embed_is_a_refusal_not_an_empty_answer(self):
+        """The twin of the candidates case: an empty answer is what "no
+        seed had a neighbour" looks like, so an outage must not produce it.
+        """
         said = io.StringIO()
         with mock.patch.object(pgc.pg_search, "embed_query", return_value=None), \
              mock.patch.object(pgc.pg_graph_common, "graph_sql") as sql, \
              mock.patch.object(pgc, "run_sql") as seed_sql, \
-             redirect_stderr(said):
-            rows = pgc.hybrid(mock.sentinel.env, "вопрос")
-        self.assertEqual(rows, [])
+             redirect_stderr(said), \
+             self.assertRaises(EmbedderUnavailable) as raised:
+            pgc.hybrid(mock.sentinel.env, "вопрос")
+        self.assertIn("hybrid", str(raised.exception))
         self.assertFalse(sql.called, "запрос ушёл в базу без вектора")
         self.assertFalse(seed_sql.called, "векторный скан ушёл в базу без вектора")
-        self.assertIn("hybrid недоступен", said.getvalue())
+        self.assertEqual(said.getvalue(), "", "модуль печатает свой отказ сам")
 
 
 if __name__ == "__main__":

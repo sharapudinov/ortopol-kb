@@ -27,7 +27,7 @@ import _pathfix  # noqa: F401
 import pg_graph
 import pg_graph_candidates as pgcand
 import pg_graph_cypher as pgc
-from pg_common import PostgresUnavailable
+from pg_common import EmbedderUnavailable, PostgresUnavailable
 
 ENV = {"PGUSER": "ortopol"}
 PGENV = ["--pgenv", "/tmp/does-not-matter/.pgenv"]
@@ -119,6 +119,53 @@ class DispatchTests(unittest.TestCase):
             code = pg_graph.main([*PGENV, "candidates"])
         self.assertEqual(code, 2)
         self.assertIn("--top должен быть положительным", err.getvalue())
+
+    def test_an_embedder_outage_is_its_own_code_and_says_why(self):
+        """The query modules raise instead of printing an empty table and
+        returning 0, so the CLI owes the outage a message and a code no
+        successful answer can have -- and one that is not 2, which means
+        "that argument cannot be honoured".
+        """
+        def handler(_args, _env):
+            raise EmbedderUnavailable("ранжирование кандидатов по запросу")
+
+        with mock.patch.object(pg_graph, "load_pgenv", return_value=ENV), \
+             mock.patch.dict(pg_graph.DISPATCH, {"candidates": handler}), \
+             redirect_stderr(io.StringIO()) as err, \
+             redirect_stdout(io.StringIO()) as out:
+            code = pg_graph.main([*PGENV, "candidates"])
+        self.assertEqual(code, pg_graph.EMBEDDER_DOWN)
+        self.assertNotEqual(pg_graph.EMBEDDER_DOWN, 0)
+        self.assertIn("эмбеддинги недоступны", err.getvalue())
+        self.assertEqual(out.getvalue(), "", "пустая таблица вместо отказа")
+
+    def test_the_real_candidates_handler_carries_the_outage_up(self):
+        """End to end through the module under test rather than a stub:
+        candidates() raises, cmd_candidates does not catch it, main() turns
+        it into the code. An empty table plus 0 is what this replaces.
+        """
+        with mock.patch.object(pg_graph, "load_pgenv", return_value=ENV), \
+             mock.patch.object(pgcand.pg_search, "embed_query", return_value=None), \
+             mock.patch.object(pgcand, "run_sql") as sql, \
+             redirect_stderr(io.StringIO()) as err, \
+             redirect_stdout(io.StringIO()) as out:
+            code = pg_graph.main([*PGENV, "candidates", "--query", "Чебышёв"])
+        self.assertEqual(code, pg_graph.EMBEDDER_DOWN)
+        self.assertFalse(sql.called, "запрос ушёл в базу без вектора")
+        self.assertIn("эмбеддинги недоступны", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
+
+    def test_the_real_hybrid_handler_carries_the_outage_up_too(self):
+        with mock.patch.object(pg_graph, "load_pgenv", return_value=ENV), \
+             mock.patch.object(pgc.pg_search, "embed_query", return_value=None), \
+             mock.patch.object(pgc, "run_sql") as sql, \
+             redirect_stderr(io.StringIO()) as err, \
+             redirect_stdout(io.StringIO()) as out:
+            code = pg_graph.main([*PGENV, "hybrid", "вопрос"])
+        self.assertEqual(code, pg_graph.EMBEDDER_DOWN)
+        self.assertFalse(sql.called, "векторный скан ушёл в базу без вектора")
+        self.assertIn("эмбеддинги недоступны", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
 
     def test_an_unknown_command_is_argparse_s_refusal(self):
         with redirect_stderr(io.StringIO()) as err:

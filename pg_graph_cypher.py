@@ -30,12 +30,10 @@ door re-exports nothing of what follows.
 """
 from __future__ import annotations
 
-import sys
-
 import pg_graph_common
 import pg_search
 from citation_vocab import Relation
-from pg_common import run_sql, scalar, sql_literal
+from pg_common import EmbedderUnavailable, run_sql, scalar, sql_literal
 from pg_common import FIELD_SEP, ROW_ARGS, split_records
 
 MIN_DEPTH, MAX_DEPTH = 1, 3
@@ -252,10 +250,16 @@ def build_hybrid_sql(seeds: list[tuple[str, str, str]]) -> str | None:
 
 
 def hybrid(env, question: str, top: int = 10) -> list[dict]:
+    """The graph around the question's nearest seeds.
+
+    An instance that cannot embed the question raises EmbedderUnavailable:
+    the empty list is the legitimate "no seed had a neighbour" answer, and
+    a library caller -- this module travels in the artifact -- cannot tell
+    that from an outage printed to stderr. pg_graph.py renders it.
+    """
     vec = pg_search.embed_query(question, env)
     if vec is None:
-        print("эмбеддинги недоступны, hybrid недоступен", file=sys.stderr)
-        return []
+        raise EmbedderUnavailable("hybrid")
     # Plain relational read, and therefore NOT on the AGE seam: a pgvector
     # scan over citation.work plus citation.cypher_literal(), which is an
     # IMMUTABLE SQL escaping function the schema defines and the extension

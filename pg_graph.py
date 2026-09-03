@@ -29,7 +29,7 @@ import pg_graph_candidates as pgcand
 import pg_graph_cocitation as pgcoci
 import pg_graph_common
 import pg_graph_cypher as pgc
-from pg_common import PostgresUnavailable, load_pgenv
+from pg_common import EmbedderUnavailable, PostgresUnavailable, load_pgenv
 
 try:
     # paths.py walks up looking for a theory/iis/ data tree and is
@@ -116,6 +116,10 @@ def cmd_hybrid(args, env) -> int:
     )
     return 0
 
+
+# Exit code for "the ranking could not be computed at all", kept apart
+# from argparse's 2 (a bad argument) and from 1 (a stale projection).
+EMBEDDER_DOWN = 3
 
 DISPATCH = {
     "citers": cmd_citers,
@@ -205,6 +209,16 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+        except EmbedderUnavailable as exc:
+            # The query modules return their answers and raise their
+            # failures; the printing and the exit code are this module's
+            # half, the same split `check()` above is written along. Its
+            # own code, because "the embedder is down" is not a bad
+            # argument (2) and must not be the empty table plus 0 that
+            # `candidates`/`hybrid` used to print -- an outage read as
+            # "nothing matched".
+            print(str(exc), file=sys.stderr)
+            return EMBEDDER_DOWN
 
     parser.error(f"unknown command: {args.command}")
     return 2
