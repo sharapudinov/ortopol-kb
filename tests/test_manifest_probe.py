@@ -15,6 +15,7 @@ from unittest import mock
 import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
+import legal_profile
 import manifest_citation
 import manifest_probe
 import manifest_rows
@@ -93,19 +94,22 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
             mock.patch.object(manifest_probe, "served_model_digest", return_value=digest),
             mock.patch.object(manifest_probe.legal_profile, "legal_summary",
                               return_value=dict(_LEGAL_SUMMARY)),
+            # The classification gate runs on both profiles now, so it is
+            # part of every prelude rather than of the public one alone.
+            mock.patch.object(manifest_probe.legal_profile, "require_classified"),
         )
 
     def test_embedding_service_unreachable_raises(self):
-        scalar_row_p, digest_p, legal_p = self._patch_prelude()
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude()
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
                 manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("unreachable", str(ctx.exception))
 
     def test_no_embedded_pages_raises(self):
-        scalar_row_p, digest_p, legal_p = self._patch_prelude()
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude()
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
@@ -114,8 +118,8 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
 
     def test_lexical_overlap_raises(self):
         nearest = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
-        scalar_row_p, digest_p, legal_p = self._patch_prelude()
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude()
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
              mock.patch.object(probe_overlap, "scalar", return_value="модуль"):
@@ -126,24 +130,24 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
 
     def test_missing_embedding_model_row_raises_informative_error(self):
         row = ["", "", "5", "12345", "a" * 64, "3"]  # NULL model/dims
-        scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
-        with scalar_row_p, digest_p, legal_p:
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude(row=row)
+        with scalar_row_p, digest_p, legal_p, classified_p:
             with self.assertRaises(RuntimeError) as ctx:
                 manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("embedding_model is empty", str(ctx.exception))
 
     def test_missing_blob_probe_document_raises_informative_error(self):
         row = ["bge-m3", "1024", "5", "", "", "3"]  # NULL blob columns
-        scalar_row_p, digest_p, legal_p = self._patch_prelude(row=row)
-        with scalar_row_p, digest_p, legal_p:
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude(row=row)
+        with scalar_row_p, digest_p, legal_p, classified_p:
             with self.assertRaises(RuntimeError) as ctx:
                 manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn(manifest_probe.BLOB_PROBE_DOC, str(ctx.exception))
 
     def test_happy_path_records_digest_in_manifest(self):
         nearest = {"document_id": "2015_demr1", "page_number": 69, "rank": 1, "distance": 0.4}
-        scalar_row_p, digest_p, legal_p = self._patch_prelude(digest=("sha256:deadbeef", 1157672605))
-        with scalar_row_p, digest_p, legal_p, \
+        scalar_row_p, digest_p, legal_p, classified_p = self._patch_prelude(digest=("sha256:deadbeef", 1157672605))
+        with scalar_row_p, digest_p, legal_p, classified_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.55), \
@@ -192,10 +196,11 @@ class ProfileAwarenessTests(unittest.TestCase):
         self.assertEqual(manifest["citation"]["mode"], "full-skeleton")
         self.assertEqual(manifest["measurements_run_count"], int(_GOOD_ROW[2]))
         self.assertEqual(manifest["blob_probe"]["document_id"], manifest_probe.BLOB_PROBE_DOC)
-        # No legal gate on the full profile: it never leaves the owner's
-        # machines, and refusing to back up an unclassified corpus would be
-        # the wrong incentive entirely.
-        classified_mock.assert_not_called()
+        # The legal gate applies here as well: the full profile decides
+        # nothing by the classification, but the checker bundled into the
+        # artifact is profile-blind and demands unclassified_documents == 0
+        # whichever profile produced the package.
+        classified_mock.assert_called_once()
         sql = row_mock.call_args[0][1]
         self.assertIn("AND TRUE", sql)
 
@@ -206,6 +211,23 @@ class ProfileAwarenessTests(unittest.TestCase):
         self.assertEqual(manifest["schemas"], ["corpus"])
         self.assertEqual(manifest["measurements_run_count"], 0)
         classified_mock.assert_called_once()
+
+    def test_an_unclassified_document_refuses_the_build_on_both_profiles(self):
+        """The refusal legal_profile.py's own docstring already promised.
+
+        Gated on the public path only, a full build over an unclassified
+        document reported success and then failed the certification its own
+        package carries (corpus_content_checks.check_classification_complete
+        has no profile branch), which is precisely the shape
+        classification_gate.py was added to close one level down.
+        """
+        for profile in ("full", "public"):
+            with self.subTest(profile=profile):
+                with mock.patch.object(manifest_probe.legal_profile, "require_classified",
+                                       side_effect=legal_profile.Unclassified("нет класса")):
+                    with self.assertRaises(legal_profile.Unclassified):
+                        manifest_probe.gather_manifest(
+                            {}, "http://x/api/embed", profile=profile, **_RESOLVED)
 
     def test_public_profile_probes_a_blob_it_actually_ships(self):
         manifest, _row_mock, _classified = self._gather("public")

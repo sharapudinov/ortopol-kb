@@ -113,15 +113,28 @@ def gather_manifest(
     if profile not in Profile.ALL:
         raise ValueError(f"unknown profile {profile!r} -- expected one of {Profile.ALL}")
     public = profile == Profile.PUBLIC
-    # The public build refuses to describe (let alone package) a corpus with
-    # an unclassified document -- the same gate public_dump.py applies before
-    # writing any data, checked here too so the build fails on the FIRST
-    # database read rather than after the manifest work. The citation-schema
-    # policy gate is the caller's: build_package.main() resolves the mode
-    # (citation_profile.resolve_citation_mode) before it gets here and hands
-    # the resolved literal to this function and to the dump alike.
-    if public:
-        legal_profile.require_classified(env)
+    # No build describes (let alone packages) a corpus with an unclassified
+    # document -- the same gate public_dump.py applies before writing any
+    # data, applied here too so a build fails on the FIRST database read
+    # rather than after the manifest work.
+    #
+    # BOTH profiles, for the reason classification_gate.py gives one level
+    # down: the full profile decides nothing by the classification, but the
+    # checker that travels INSIDE the artifact is profile-blind --
+    # corpus_content_checks.check_classification_complete demands
+    # legal.unclassified_documents == 0 whichever profile produced the
+    # package, and legal_summary() stamps that number into every manifest.
+    # Gated on the public path alone, a full build over an unclassified
+    # document reported success and then failed its own bundled
+    # certification, which is the failure MANIFEST_DESCRIBES_ARTIFACT names.
+    # The classification is the precondition the recipient enforces, not a
+    # decision about what travels.
+    #
+    # The citation-schema policy gate is the caller's: build_package.main()
+    # resolves the mode (citation_profile.resolve_citation_mode) before it
+    # gets here and hands the resolved literal to this function and to the
+    # dump alike.
+    legal_profile.require_classified(env)
     content_predicate = legal_profile.FULL_CONTENT_SQL if public else "TRUE"
     probe_doc = blob_probe_doc(profile)
     (
