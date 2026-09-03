@@ -11,8 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import dump_scan
-from copy_rows import DumpedRows
+from copy_rows import CopyBlockCounter, DumpedRows
 from dump_integrity import sha256_file
 from manifest_contract import Profile, schemas_for
 from pg_stream import CommandFailed, stream_stdout
@@ -161,21 +160,23 @@ def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> DumpedRows:
     dump_public() gives and for the same consumer: the manifest's counts,
     which the recipient's gate holds the shipped bytes to.
 
-    Those numbers are READ BACK OFF THE DUMP (dump_scan) rather than
-    counted against the live database afterwards. pg_dump owns the whole
+    Those numbers come OFF THE BYTES THIS CALL WROTE, not from the live
+    database afterwards: a count taken from a second connection describes
+    whatever the database held at that moment, and the crawl adds ~100k
+    journal rows per pass to the same instance. pg_dump owns the whole
     file, so there is no per-block seam to count at as the public profile
-    does -- but the polarity is the same one and it is the whole point: a
-    count taken from a second connection describes whatever the database
-    held at that moment, and the crawl adds ~100k journal rows per pass to
-    the same instance. It also answers the catalog's question rather than
-    the classification's for free: pg_dump writes a table nobody
-    classified, and reading the file finds it.
+    has -- but the block structure is IN the stream, so CopyBlockCounter
+    reads it there (copy_rows.py), between the child's pipe and gzip. It
+    also answers the catalog's question rather than the classification's
+    for free: pg_dump writes a table nobody classified, and counting the
+    stream finds it.
 
-    The dump embeds every source PDF/djvu blob in the corpus (hundreds
-    of MB to several GB compressed), so writing it out uncompressed first
-    and re-reading it to compress would roughly double both wall-clock and
-    peak disk usage for no benefit. Reading it back costs one more inflate;
-    a manifest that describes the package is what it buys.
+    One pass, and it has to stay one: the dump embeds every source PDF/djvu
+    blob in the corpus (hundreds of MB to several GB compressed), so both
+    an uncompressed intermediate file and a read-back of the finished one
+    cost a full inflate of that. The read-back (DumpedRows.from_contents
+    over dump_scan.scan) is still what a verifier asks the file with; it is
+    no longer what the build asks itself.
 
     The public profile's filtered equivalent lives in public_dump.py; both
     are dispatched from build_package.py by --profile, and both stream
@@ -183,8 +184,10 @@ def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> DumpedRows:
     drained concurrently).
     """
     schema_args = [f"--schema={name}" for name in schemas_for(Profile.FULL, citation_mode)]
+    blocks: dict[str, int] = {}
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
+            counter = CopyBlockCounter(dst)
             stream_stdout(
                 ["pg_dump", "--no-owner", "--no-privileges", "--no-tablespaces", *schema_args,
                  # Defensive, on top of --schema already being a whitelist:
@@ -194,12 +197,14 @@ def dump_schemas(env: dict, gz_path: Path, citation_mode: str) -> DumpedRows:
                  # pg_schema_citation.sql's header comment). ag_catalog is
                  # excluded for the same reason, belt-and-braces.
                  "--exclude-schema=citation_graph", "--exclude-schema=ag_catalog"],
-                env, dst,
+                env, counter,
             )
+            counter.finish()
+            blocks = counter.tables
     except CommandFailed as exc:
         gz_path.unlink(missing_ok=True)
         raise RuntimeError(str(exc)) from exc
-    return DumpedRows.from_contents(dump_scan.scan(gz_path))
+    return DumpedRows.from_blocks(blocks)
 
 
 def bundle_runtime_files(workdir: Path) -> dict[str, str]:

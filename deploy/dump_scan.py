@@ -35,6 +35,11 @@ from typing import Callable, Iterator
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 COPY_HEADER = re.compile(rf"^COPY ({_NAME})\.({_NAME}) \(([^)]*)\) FROM stdin;$")
+# The line that ends a COPY block. Spelled once here because the builder's
+# streaming counter (copy_rows.CopyBlockCounter) recognises the same block
+# structure in the bytes on their way into gzip, and the two readings of one
+# dump must not be two spellings of what a block is.
+COPY_TERMINATOR = "\\."
 NULL_FIELD = "\\N"
 
 
@@ -157,7 +162,7 @@ def scan(
             scans[key] = current
             visitor = visitors.get(key)
             continue
-        if line == "\\.":
+        if line == COPY_TERMINATOR:
             current, visitor = None, None
             continue
         fields = line.split("\t")
