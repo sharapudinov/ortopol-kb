@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from typing import IO, NamedTuple
 
-from citation_columns import CITATION_COLUMN_CLASS, blanked_cast
+from citation_columns import CITATION_COLUMN_CLASS, blanked_value
 from pg_common import scalar, scalar_row
 from schema_catalog import (
     classified_tables,
@@ -111,7 +111,7 @@ def _select_expression(table: str, column: str, mode: str) -> str:
     """One column's projection under `mode`.
 
     Every column is classified, in every mode -- citation_columns.
-    blanked_cast() raises on one that is not, so a column added to the
+    blanked_value() raises on one that is not, so a column added to the
     schema and forgotten here stops the build instead of shipping by
     default. The catalog is what says a column exists (schema_columns), the
     classification is what says whether it may leave; both are consulted
@@ -123,9 +123,9 @@ def _select_expression(table: str, column: str, mode: str) -> str:
     `== TOPOLOGY_ONLY` it was the other way round, and the declared
     authority was never consulted at all.
     """
-    cast = blanked_cast(table, column)
-    if cast and strips_content(mode):
-        return f"NULL::{cast} AS {column}"
+    withheld = blanked_value(table, column)
+    if withheld and strips_content(mode):
+        return f"{withheld} AS {column}"
     return f"{TABLE_ALIASES[table]}.{column}"
 
 

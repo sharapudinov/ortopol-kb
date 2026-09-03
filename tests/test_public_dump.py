@@ -28,6 +28,7 @@ import _pathfix_deploy  # noqa: F401
 from _dump_fixtures import CORPUS_COLUMNS, CORPUS_SERIALS
 
 import dump_scan
+import corpus_columns
 import public_dump
 import schema_catalog
 from legal_profile import Unclassified
@@ -173,8 +174,11 @@ class CopySelectTests(unittest.TestCase):
         sql = public_dump._copy_select(
             "documents", ["id", "legal_class", "public_distribution", "source_blob"],
         )
+        # ELSE NULL::bytea, not a bare END: what stands in for a withheld
+        # value is declared per column (corpus_columns.CONTENT_WITHHELD) and
+        # typed, so the COPY column list never leaves the type to be guessed.
         self.assertIn("CASE WHEN public_distribution IN ('full-text', 'internal') "
-                      "THEN d.source_blob END AS source_blob", sql)
+                      "THEN d.source_blob ELSE NULL::bytea END AS source_blob", sql)
         # The classification columns themselves always ship: the public
         # artifact is the one package whose whole point is carrying them.
         self.assertIn("d.legal_class", sql)
@@ -218,10 +222,39 @@ class CopySelectTests(unittest.TestCase):
     def test_a_table_with_an_alias_and_no_source_still_has_no_select(self):
         """The projection can be spelled for it, the rows cannot: an alias
         alone must not produce a statement.
+
+        Which of the three maps refuses first is not the point -- with an
+        alias in place it is the column classification (corpus_columns.py),
+        which no more knows this table than _SOURCE does. The point is that
+        no statement comes out.
         """
         with mock.patch.dict(public_dump.TABLE_ALIASES, {"findings": "f"}):
-            with self.assertRaises(KeyError):
+            with self.assertRaises((KeyError, corpus_columns.ColumnUnclassified)):
                 public_dump._copy_select("findings", ["id"])
+
+    def test_a_column_nobody_classified_stops_the_build(self):
+        """The fall-through this map replaced: a column added to
+        corpus.documents and named in no map used to SHIP, whatever it
+        carried -- the catalog reads the column list, so it reached the
+        projection on its own.
+        """
+        with self.assertRaises(corpus_columns.ColumnUnclassified) as raised:
+            public_dump._copy_select("documents", ["id", "brand_new"])
+        self.assertIn("corpus.documents.brand_new", str(raised.exception))
+
+    def test_every_classified_column_of_every_table_can_be_projected(self):
+        """The complement: nothing in the map is unprojectable, and every
+        content column has its replacement declared (a content column
+        without one raises just as loudly as an unclassified one).
+        """
+        for table, columns in corpus_columns.CORPUS_COLUMN_CLASS.items():
+            sql = public_dump._copy_select(table, list(columns))
+            for column, kind in columns.items():
+                with self.subTest(table=table, column=column):
+                    if kind == corpus_columns.CONTENT:
+                        self.assertIn(f"END AS {column}", sql)
+                    else:
+                        self.assertIn(f"{public_dump.TABLE_ALIASES[table]}.{column}", sql)
 
 
 class WriteCopyBlockTests(unittest.TestCase):

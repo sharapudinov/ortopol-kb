@@ -61,6 +61,14 @@ DEPLOY_FILES = [
     # Split off for module size, like the citation half below -- without it
     # profile_checks.py does not import at all on the recipient's side.
     "corpus_content_checks.py",
+    # ... and the topology/content classification of schema corpus that
+    # those checks read, for the same reason citation_columns.py travels
+    # below: the SAME map the builder's public_dump.py cut by. A second copy
+    # on this side could only agree with the producer by accident, which is
+    # exactly the case the check exists to catch.
+    "corpus_columns.py",
+    # ... and the engine both classifications are declared through.
+    "column_classes.py",
     # ... and the manifest-only legal vocabulary its checks reason over,
     # split off for module size: without it profile_checks.py does not
     # import at all on the recipient's side.

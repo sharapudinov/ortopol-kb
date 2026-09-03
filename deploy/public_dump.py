@@ -78,6 +78,7 @@ from deploy_pathfix import ensure_corpus_importable
 ensure_corpus_importable()
 
 import citation_dump  # noqa: E402
+import corpus_columns  # noqa: E402
 import schema_catalog  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
 from manifest_contract import Profile, base_schemas_for  # noqa: E402
@@ -131,11 +132,15 @@ _SOURCE = {
     "embedding_model": "FROM corpus.embedding_model m ORDER BY m.id",
 }
 
-# A table is classified only if BOTH maps know it: which alias its projection
-# uses and which rows it contributes. Either one missing is the same silence.
-CLASSIFIED = set(TABLE_ALIASES) & set(_SOURCE)
+# A table is classified only if ALL THREE maps know it: what of it may
+# leave (corpus_columns), which alias its projection uses, and which rows it
+# contributes. Any one missing is the same silence -- the discipline the
+# citation half already followed (citation_dump.CLASSIFIED), applied here
+# now that this schema has a column classification of its own.
+CLASSIFIED = set(corpus_columns.CORPUS_COLUMN_CLASS) & set(TABLE_ALIASES) & set(_SOURCE)
 
-_UNCLASSIFIED_HINT = ("дополните TABLE_ALIASES и _SOURCE "
+_UNCLASSIFIED_HINT = ("дополните CORPUS_COLUMN_CLASS "
+                      "(deploy/corpus_columns.py), TABLE_ALIASES и _SOURCE "
                       "(deploy/public_dump.py)")
 
 # Columns the dump leaves to the restore side, per table.
@@ -157,13 +162,21 @@ def corpus_tables(env: dict) -> list[str]:
 def _select_expression(table: str, column: str) -> str:
     """The expression written into the COPY select for one column: the
     column itself, except where the legal filter replaces its value.
+
+    WHICH columns those are is corpus_columns.py, the same map the
+    artifact-side checker holds the shipped bytes to -- not a pair of
+    hardcoded names here. Two hardcoded branches over a catalog-driven
+    column list ended in a fall-through, i.e. a denylist: a column added to
+    corpus.documents and forgotten SHIPPED, whatever it carried. Every
+    column is classified now, and an unclassified one raises
+    ColumnUnclassified and stops the build (UNCLASSIFIED_FAILS_BUILD).
     """
     alias = TABLE_ALIASES[table]
-    if table == "documents" and column == "source_blob":
-        return f"CASE WHEN {FULL_CONTENT_SQL} THEN {alias}.source_blob END AS source_blob"
-    if table == "pages" and column == "body":
-        return f"CASE WHEN {FULL_CONTENT_SQL} THEN {alias}.body ELSE '' END AS body"
-    return f"{alias}.{column}"
+    withheld = corpus_columns.withheld_value(table, column)
+    if withheld is None:
+        return f"{alias}.{column}"
+    return (f"CASE WHEN {FULL_CONTENT_SQL} THEN {alias}.{column} "
+            f"ELSE {withheld} END AS {column}")
 
 
 def _copy_select(table: str, columns: list[str]) -> str:

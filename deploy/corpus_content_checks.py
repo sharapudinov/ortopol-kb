@@ -16,9 +16,13 @@ Checks:
                                row and no page row -- an omission asserted
                                from the shipped bytes, not from the
                                packager's WHERE clause
-  metadata-only is stripped    no source_blob and no page body for ANY
-                               metadata-only document
-  full-text is intact          a source blob and a non-empty body for EVERY
+  metadata-only is stripped    no content column of corpus.documents and
+                               none of corpus.pages carries a value for ANY
+                               metadata-only document -- WHICH columns those
+                               are is corpus_columns.py, the map the
+                               packager cut by, imported rather than
+                               restated
+  full-text is intact          those same columns all carry one for EVERY
                                full-content document
   vectors survive both classes every page row carries an embedding
   no tsv anywhere              tsv is GENERATED from body; a dump that
@@ -31,13 +35,18 @@ answers.
 """
 from __future__ import annotations
 
+import corpus_columns
 import dump_scan
 from manifest_classes import classes, content_expectation, expected_ids
 from manifest_keys import Key
 
-# Column names the checks reason about, from corpus.documents/corpus.pages.
-BLOB_COLUMN = "source_blob"
-BODY_COLUMN = "body"
+# Which columns carry CONTENT is imported, never restated: corpus_columns.py
+# is the map the packager cuts by, and a second copy of the two names here
+# could only agree with it by accident -- on the one question this module
+# exists to answer. The names below are the other kind: how a row says which
+# document it is (id, document_id), the vector that ships in both classes,
+# and the generated column no COPY list may carry. Those are the dump's
+# SHAPE, not the classification.
 EMBEDDING_COLUMN = "embedding"
 DOCUMENT_ID_COLUMN = "document_id"
 ID_COLUMN = "id"
@@ -45,6 +54,19 @@ TSV_COLUMN = "tsv"
 
 DOCUMENTS_TABLE = "corpus.documents"
 PAGES_TABLE = "corpus.pages"
+DOCUMENT_CONTENT = corpus_columns.content_columns("documents")
+PAGE_CONTENT = corpus_columns.content_columns("pages")
+
+
+def _carries_content(row: dict, columns: tuple[str, ...]) -> bool:
+    r"""Does this row carry a value in ANY column the map calls content?
+
+    Empty and \N are both "no content": a metadata-only page ships with an
+    empty body on purpose (corpus_columns.py says why), and an absent blob
+    is NULL.
+    """
+    return any(row.get(column, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, "")
+               for column in columns)
 
 
 def attach_visitors(row_visitors: dict) -> dict:
@@ -65,7 +87,7 @@ def attach_visitors(row_visitors: dict) -> dict:
 
     def on_document(row: dict) -> None:
         documents.add(row[ID_COLUMN])
-        if row.get(BLOB_COLUMN, dump_scan.NULL_FIELD) not in (dump_scan.NULL_FIELD, ""):
+        if _carries_content(row, DOCUMENT_CONTENT):
             with_blob.add(row[ID_COLUMN])
 
     def on_page(row: dict) -> None:
@@ -73,7 +95,7 @@ def attach_visitors(row_visitors: dict) -> dict:
         page_documents.add(row[DOCUMENT_ID_COLUMN])
         if row.get(EMBEDDING_COLUMN, dump_scan.NULL_FIELD) in (dump_scan.NULL_FIELD, ""):
             pages_seen["no_embedding"] += 1
-        if row.get(BODY_COLUMN, "") not in ("", dump_scan.NULL_FIELD):
+        if _carries_content(row, PAGE_CONTENT):
             with_body.add(row[DOCUMENT_ID_COLUMN])
 
     row_visitors[DOCUMENTS_TABLE] = on_document
