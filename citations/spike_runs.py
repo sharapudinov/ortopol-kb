@@ -218,7 +218,7 @@ def record_hub_report(cache, data_root: Path, writer, hub_cap: int) -> HubRecord
     Отказ вместо записи, как в record_calibration: пустой вход — это не
     «замерили ноль», а «мерить было нечего». batch_counts() отдаёт пустой
     список на пустом или чужом кэше, а режим ходит в кэш по умолчанию
-    (paths.default_cache_dir()) — так что прогон, писавший страницы в
+    (paths.cache_dir("openalex")) — так что прогон, писавший страницы в
     scratch, легко читается отсюда пустым.
 
     Кэш приходит объектом (citations/http_cache.py), а не путём: сайдкары,

@@ -289,11 +289,12 @@ class DryRunLeavesTheDataTreeAloneTests(unittest.TestCase):
             (seed_metadata, "stored_zbmath_abstracts", {}),
             (seed_metadata, "stored_mathnet_titles", {}),
             (seed_metadata, "corpus_seed_documents", []),
-            (pg_load_citations, "default_zbmath_cache_dir", cache / "zbmath"),
-            (pg_load_citations, "default_mathnet_cache_dir", cache / "mathnet"),
-            (pg_load_citations, "default_embedding_cache_dir", cache / "embeddings"),
         ):
             stack.enter_context(mock.patch.object(module, name, return_value=value))
+        # The three channels main() resolves itself; the response cache
+        # arrives on the command line below.
+        stack.enter_context(mock.patch.object(
+            pg_load_citations, "cache_dir", side_effect=lambda name: cache / name))
         stack.enter_context(mock.patch.object(
             pg_load_citations, "Snowball",
             return_value=mock.Mock(seed_keys=[], run=mock.Mock(return_value={}))))

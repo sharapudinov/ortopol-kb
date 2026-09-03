@@ -44,14 +44,7 @@ from citation_vocab import CrawlAction
 from citations.dry_store import DryRunWriter
 from citations.store import PostgresWriter
 from citations.vector_cache import VectorMemo
-from paths import (
-    data_root,
-    default_cache_dir,
-    default_corpus_dir,
-    default_embedding_cache_dir,
-    default_mathnet_cache_dir,
-    default_zbmath_cache_dir,
-)
+from paths import cache_dir, data_root, default_corpus_dir
 from pg_common import PostgresUnavailable, load_pgenv
 from pg_search import resolve_model
 from pg_graph_common import citation_schema_exists, init_schema
@@ -178,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true",
                         help="не раскрывать узлы, скачанные свежее --fresh-days")
     parser.add_argument("--fresh-days", type=int, default=7)
-    parser.add_argument("--cache-dir", default=str(default_cache_dir()),
+    parser.add_argument("--cache-dir", default=str(cache_dir("openalex")),
                         help="кэш ответов OpenAlex; по умолчанию corpus/cache/openalex "
                              "в дереве данных — стёртый кэш стоит суток квоты")
     parser.add_argument("--quota-floor", type=int, default=30)
@@ -253,15 +246,22 @@ def main(argv: list[str] | None = None) -> int:
     # construction the two writers above get, and for the same reason:
     # --dry-run's promise about the tree must not depend on a keyword nobody
     # forgot (DRY_RUN_WRITES_NOTHING). WHICH object each gets is one rule
-    # (tree_read_only), not one formula per site. The response cache is the
-    # one the hub measurement reads too, built for it in its own branch
-    # above; the fourth memoises the VECTORS --calibrate buys and, writing
-    # no work row, loses.
+    # (tree_read_only), not one formula per site. paths.cache_dir() knows
+    # only where a channel goes; why each is data the tree KEEPS is here,
+    # beside the channel it is about. openalex: a wiped cache costs a day of
+    # quota, and it is the one the hub measurement reads too (built for it in
+    # its own branch above). mathnet: the site times out after a few dozen
+    # rapid requests and its titles are the identity anchor the twin rule
+    # depends on. embeddings: the memo holds the VECTORS --calibrate buys
+    # and, writing no citation.work row, would otherwise lose -- the
+    # prescribed calibrate-then-crawl pair paying ollama twice. zbmath: the
+    # API answers 429 under load and the fallback runs one sequential
+    # request per matched seed before anything else happens.
     client = build_client(args, cache_for(cache_path, read_only=tree_read_only(args)))
-    zbmath_cache = cache_for(default_zbmath_cache_dir(), read_only=tree_read_only(args))
-    mathnet_cache = cache_for(default_mathnet_cache_dir(), read_only=tree_read_only(args))
+    zbmath_cache = cache_for(cache_dir("zbmath"), read_only=tree_read_only(args))
+    mathnet_cache = cache_for(cache_dir("mathnet"), read_only=tree_read_only(args))
     memo = VectorMemo(
-        cache_for(default_embedding_cache_dir(), read_only=tree_read_only(args)), model)
+        cache_for(cache_dir("embeddings"), read_only=tree_read_only(args)), model)
     skip = fresh_keys(env, args.fresh_days) if args.resume else frozenset()
     if skip:
         print(f"--resume: {len(skip)} узлов свежее {args.fresh_days} дней не раскрываются")

@@ -82,46 +82,22 @@ def try_default_corpus_dir() -> Path | None:
         return None
 
 
-def default_cache_dir() -> Path:
-    """Where the OpenAlex crawl caches raw responses.
+def cache_dir(name: str) -> Path:
+    """Where the named cache channel lives in the data tree.
 
-    Inside the data tree, not the checkout: these are third-party JSON bodies
-    and CODE_ONLY keeps every byte of them out of git. Not scratch either --
-    a wiped cache costs a day of OpenAlex quota to refill (measured: one
-    depth-2 attempt spent ~260 of a 1000-request window, which then took 23 h
-    to reset), so the cache is data the tree keeps, not a temp file.
+    Inside the data tree, not the checkout: cached bodies are third-party
+    JSON and HTML, and CODE_ONLY keeps every byte of them out of git. Not
+    scratch either -- a wiped cache costs a day of OpenAlex quota to refill
+    (measured: one depth-2 attempt spent ~260 of a 1000-request window,
+    which then took 23 h to reset), and the other channels are bought just
+    as dearly. These are data the tree keeps.
+
+    One accessor with the channel as an argument, because that is all this
+    module knows: where a cache goes. WHY each channel is worth keeping
+    differs per channel and is prose belonging beside the code that builds
+    it -- pg_load_citations.main() builds every one of them, each through
+    the one read-only rule, so a new channel cannot arrive without meeting
+    that rule. Four functions here whose bodies differed only in the last
+    segment put four rationales in the module that shares none of them.
     """
-    return data_root() / "corpus" / "cache" / "openalex"
-
-
-def default_mathnet_cache_dir() -> Path:
-    """Math-Net pages, cached for the same reason as the OpenAlex responses.
-
-    The site starts timing out after a few dozen rapid requests, and the
-    titles it serves are the identity anchor the twin rule depends on -- a
-    re-seed must not have to earn them again.
-    """
-    return data_root() / "corpus" / "cache" / "mathnet"
-
-
-def default_embedding_cache_dir() -> Path:
-    """Candidate vectors, cached for the reason the response bodies are.
-
-    An embedding is not an HTTP response, but it is bought the same way: the
-    calibration run and the crawl that follows meet the same depth-1
-    candidates by design, and a calibration writes no citation.work row for
-    the store read to find later. Data the tree keeps, not scratch --
-    thousands of bge-m3 inferences per level otherwise paid twice.
-    """
-    return data_root() / "corpus" / "cache" / "embeddings"
-
-
-def default_zbmath_cache_dir() -> Path:
-    """zbMATH documents, keyed by the zbMATH id, for the same reason again.
-
-    The abstracts the seeds fall back on are static between runs, the API
-    already answers 429 under load, and the fallback sits on the startup
-    path of every non-offline invocation -- one sequential request per
-    matched seed, tens of seconds, before anything else happens.
-    """
-    return data_root() / "corpus" / "cache" / "zbmath"
+    return data_root() / "corpus" / "cache" / name
