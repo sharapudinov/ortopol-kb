@@ -12,13 +12,8 @@ import subprocess
 from pathlib import Path
 
 from citation_columns import CENSUS_COLUMN, CENSUS_TABLE
-from copy_rows import (
-    CITATION_SCHEMA,
-    BlockCensus,
-    CopyBlockCounter,
-    DumpedRows,
-    FieldTally,
-)
+from block_census import BlockCensus, FieldTally
+from copy_rows import CITATION_SCHEMA, CopyBlockCounter, DumpedRows
 from dump_integrity import sha256_file
 from manifest_contract import Profile, schemas_for
 from pg_stream import CommandFailed, stream_stdout

@@ -20,9 +20,8 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import artifact_bundle
-import copy_rows
 import dump_scan
-from copy_rows import CopyBlockCounter, DumpedRows
+from copy_rows import DumpedRows
 from manifest_contract import CitationMode, Profile, schemas_for
 from paths import default_corpus_dir
 from pg_common import PostgresUnavailable, check_postgres_available, load_pgenv
@@ -144,39 +143,9 @@ class DumpSchemasTests(unittest.TestCase):
             read_back = DumpedRows.from_contents(dump_scan.scan(gz_path))
         self.assertEqual(streamed, read_back)
 
-    def test_a_row_split_across_two_writes_is_still_one_row(self):
-        """shutil.copyfileobj hands the counter fixed-size chunks, so a
-        block header, a terminator and any row can arrive in halves -- and
-        the full profile's documents block is one hex field per row, lines
-        far longer than any chunk. Counted per chunk instead of per line,
-        every one of those would be several rows or none.
-        """
-        counter = CopyBlockCounter(io.BytesIO())
-        for piece in (b"COPY corpus.doc", b"uments (id) FROM stdin;\n1997",
-                      b"_sm280\n2009_isu34\n\\", b".\n"):
-            counter.write(piece)
-        counter.finish()
-        self.assertEqual(counter.tables, {"corpus.documents": 2})
-
-    def test_a_line_longer_than_the_kept_prefix_is_one_row_not_a_buffer(self):
-        """A source PDF as hex is one line of hundreds of megabytes. The
-        counter keeps at most LINE_PREFIX of it -- enough to recognise a
-        header or a terminator, and nothing like enough to rebuild the dump
-        in memory.
-        """
-        blob = b"a" * (copy_rows.LINE_PREFIX * 3)
-        counter = CopyBlockCounter(io.BytesIO())
-        counter.write(b"COPY corpus.documents (id, source_blob) FROM stdin;\n")
-        counter.write(b"1997_sm280\t" + blob + b"\n\\.\n")
-        counter.finish()
-        self.assertEqual(counter.tables, {"corpus.documents": 1})
-        self.assertLessEqual(len(counter._prefix), copy_rows.LINE_PREFIX)
-
-    def test_a_trailing_line_with_no_newline_is_still_counted(self):
-        counter = CopyBlockCounter(io.BytesIO())
-        counter.write(b"COPY citation.work (id) FROM stdin;\n1\n2")
-        counter.finish()
-        self.assertEqual(counter.tables, {"citation.work": 2})
+    # The counters themselves -- block recognition, the kept prefix, the
+    # census -- are tests/test_copy_rows.py: this module is about what
+    # dump_schemas() assembles, not about the seam it streams through.
 
     def test_no_count_is_asked_of_the_live_database_at_all(self):
         """The read that used to follow pg_dump is gone, not merely

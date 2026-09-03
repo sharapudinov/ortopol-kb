@@ -49,7 +49,8 @@ from citation_columns import (
     CITATION_COLUMN_CLASS,
     blanked_value,
 )
-from copy_rows import FieldTally, RowCounter
+from block_census import FieldTally
+from copy_rows import RowCounter
 from schema_catalog import (
     classified_tables,
     columns_of,

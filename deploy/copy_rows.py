@@ -29,12 +29,17 @@ second reading of anything. Read back off the finished file instead
 full inflate of a dump that carries every source PDF as hex; that reading
 stays, as the independent one verification asks for, and is no longer on
 the build's path.
+
+The one number here that is not a row count -- the census of one column of
+one named block -- is block_census.py: both counters take a tally, neither
+owns one, and which block it belongs to is the schema's own knowledge.
 """
 from __future__ import annotations
 
 from typing import IO, NamedTuple
 
 import dump_scan
+from block_census import BlockCensus, FieldTally
 
 CORPUS_SCHEMA = "corpus"
 CITATION_SCHEMA = "citation"
@@ -45,39 +50,6 @@ CITATION_SCHEMA = "citation"
 # whose name has to be the same on both sides of the artifact boundary
 # (deploy/citation_columns.CENSUS_TABLE / CENSUS_COLUMN, the module that
 # travels). Callers hand the qualified block name in with the tally.
-
-
-class FieldTally:
-    """{value: rows} for ONE column of ONE COPY block, off the same bytes
-    the dump is written from.
-
-    COPY's text format escapes every tab inside a value (\\t), so splitting
-    a row on tabs is exact rather than a heuristic -- the same property the
-    row counter and dump_scan.py both rest on. The column's POSITION comes
-    from the block's own header, never from a hand-kept order: a column
-    added to the table shifts every index after it.
-    """
-
-    def __init__(self, column: str):
-        self.column = column
-        self.counts: dict[str, int] = {}
-        self.index: int | None = None
-
-    def start(self, columns: list[str]) -> None:
-        """Binds the tally to a block's column list. A block that does not
-        carry the column tallies nothing rather than tallying the wrong
-        field -- and a census that stayed empty is one no manifest census
-        can equal, which is the direction this has to fail in.
-        """
-        self.index = columns.index(self.column) if self.column in columns else None
-
-    def line(self, line: bytes) -> None:
-        if self.index is None:
-            return
-        fields = line.split(b"\t")
-        if self.index < len(fields):
-            value = fields[self.index].decode("utf-8", "replace")
-            self.counts[value] = self.counts.get(value, 0) + 1
 
 
 class RowCounter:
@@ -91,13 +63,21 @@ class RowCounter:
     depth-2 crawl through this wrapper, and counting newlines in a chunk is
     the whole cost. With one, the chunk is walked line by line and a partial
     line is carried to the next write.
+
+    A row longer than one write() is rebuilt from a LIST of its chunks,
+    joined once when the newline arrives. `bytes` concatenation allocates a
+    fresh object every time, so `partial += chunk` down a row spanning N
+    chunks copies the growing buffer N times -- quadratic in the row's
+    length, on the seam every byte of the dump passes through. A
+    citation.work row carries `evidence` (a source record per re-sighting)
+    and its 1024-float vector as text, so the length is bounded by nothing.
     """
 
-    def __init__(self, dst: IO[bytes], tally: "FieldTally | None" = None):
+    def __init__(self, dst: IO[bytes], tally: FieldTally | None = None):
         self.dst = dst
         self.rows = 0
         self.tally = tally
-        self._partial = b""
+        self._partial: list[bytes] = []
 
     def write(self, data: bytes) -> int:
         self.rows += data.count(b"\n")
@@ -106,14 +86,30 @@ class RowCounter:
         return self.dst.write(data)
 
     def _tally(self, data: bytes) -> None:
+        """Hands every completed line to the tally -- unless the block has
+        no such column at all.
+
+        A tally whose column the block's header did not carry answers
+        nothing (FieldTally.line returns at once), so keeping its rows would
+        be a buffer nobody reads: a block of hundreds-of-megabytes rows is
+        exactly the one a census does not apply to, and rebuilding its lines
+        is the whole cost this wrapper is meant not to pay.
+        """
+        if self.tally.index is None:
+            return
         start = 0
         while True:
             cut = data.find(b"\n", start)
             if cut < 0:
-                self._partial += data[start:]
+                if start < len(data):
+                    self._partial.append(data[start:])
                 return
-            self.tally.line(self._partial + data[start:cut])
-            self._partial = b""
+            line = data[start:cut]
+            if self._partial:
+                self._partial.append(line)
+                line = b"".join(self._partial)
+                self._partial = []
+            self.tally.line(line)
             start = cut + 1
 
 
@@ -123,25 +119,11 @@ class RowCounter:
 # comes anywhere near this. What does is the data: the full profile's
 # documents block carries every source PDF as one hex field on one line,
 # hundreds of megabytes of it, and a counter that accumulated each line to
-# decide what it was would rebuild the whole dump in memory (and copy the
-# growing buffer once per 64KB chunk). Past the cap the rest of the line is
-# counted and dropped.
+# decide what it was would rebuild the whole dump in memory. Past the cap
+# the rest of the line is counted and dropped.
 LINE_PREFIX = 8192
 
 COPY_TERMINATOR = dump_scan.COPY_TERMINATOR.encode()
-
-
-class BlockCensus(NamedTuple):
-    """WHICH block is tallied and WHAT tallies it, as one argument.
-
-    Two parameters would let a caller supply half an answer: a tally with no
-    block name counts nothing, a block name with no tally tallies nowhere,
-    and both are an empty census stamped into the manifest as fact. `table`
-    is qualified the way a COPY header spells it ("<schema>.<table>").
-    """
-
-    table: str
-    tally: FieldTally
 
 
 class CopyBlockCounter:
@@ -164,12 +146,13 @@ class CopyBlockCounter:
     closes a last line the child left without a newline.
     """
 
-    def __init__(self, dst: IO[bytes], census: "BlockCensus | None" = None):
+    def __init__(self, dst: IO[bytes], census: BlockCensus | None = None):
         self.dst = dst
         self.tables: dict[str, int] = {}
         self.census = census
         self._counting = False
-        self._prefix = b""
+        self._prefix: list[bytes] = []
+        self._kept = 0
         self._current: str | None = None
 
     def write(self, data: bytes) -> int:
@@ -202,13 +185,25 @@ class CopyBlockCounter:
         abstract runs past LINE_PREFIX would lose the tab the census field
         is counted from -- a tally silently short by however many rows had
         long abstracts, stamped into the manifest as fact.
+
+        The pieces are KEPT as a list and joined once per line: an
+        uncapped `bytes +=` per 64KiB chunk recopies the whole line every
+        time, which is quadratic in the length of exactly the rows the cap
+        is lifted for.
         """
-        room = LINE_PREFIX - len(self._prefix)
-        if self._counting or room > 0:
-            self._prefix += piece if self._counting else piece[:room]
+        if not piece:
+            return
+        if not self._counting:
+            room = LINE_PREFIX - self._kept
+            if room <= 0:
+                return
+            piece = piece[:room]
+        self._prefix.append(piece)
+        self._kept += len(piece)
 
     def _line(self) -> None:
-        line, self._prefix = self._prefix, b""
+        line = b"".join(self._prefix)
+        self._prefix, self._kept = [], 0
         if self._current is None:
             match = dump_scan.COPY_HEADER.match(line.decode("utf-8", "replace"))
             if match:

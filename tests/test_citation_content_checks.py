@@ -17,6 +17,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import artifact_bundle
+import block_census
 import citation_columns
 import citation_content_checks
 import citation_dump
@@ -343,8 +344,8 @@ class CensusColumnIsDeclaredOnceTests(unittest.TestCase):
         """
         counter = copy_rows.CopyBlockCounter(
             io.BytesIO(),
-            copy_rows.BlockCensus(f"{copy_rows.CITATION_SCHEMA}.{CENSUS_TABLE}",
-                                  copy_rows.FieldTally(CENSUS_COLUMN)))
+            block_census.BlockCensus(f"{copy_rows.CITATION_SCHEMA}.{CENSUS_TABLE}",
+                                     block_census.FieldTally(CENSUS_COLUMN)))
         counter.write(f"COPY citation.{CENSUS_TABLE} (id, {CENSUS_COLUMN}) "
                       "FROM stdin;\n1\tour-document\n\\.\n".encode())
         counter.finish()
