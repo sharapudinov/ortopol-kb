@@ -36,8 +36,7 @@ from typing import NamedTuple, Protocol, runtime_checkable
 
 from pg_common import vector_literal
 from pg_copy import copy_csv_rows
-from pg_graph_common import check as graph_check
-from pg_graph_common import kind_counts
+from pg_graph_common import GRAPH_NAME, kind_counts, projection_diff, projection_faults
 from pg_graph_common import project as project_graph
 
 from .store_sql import (
@@ -250,10 +249,27 @@ class PostgresWriter:
         Both halves belong here rather than in the caller: the AGE graph is
         a projection of citation.work/cites (GRAPH_IS_PROJECTION), so the
         obligation to rebuild it is the obligation of having written them.
+
+        The verdict is projection_faults() over projection_diff(), the
+        value-returning pair pg_graph_common.py documents as the answer --
+        not check(), which is that module's CLI shape: it prints its own
+        "OK: |V|=..." / "MISMATCH: ..." and returns an exit code. Through
+        check(), one projection produced two overlapping report lines (the
+        caller prints `report` on top), and any embedder of Snowball without
+        a command line got library writes to stdout it never asked for.
         """
         vertices, edges = project_graph(self.env)
-        return ProjectionOutcome(f"проекция графа: V={vertices} E={edges}",
-                                 graph_check(self.env))
+        written = f"проекция графа: V={vertices} E={edges}"
+        seen = projection_diff(self.env)
+        if seen is None:
+            return ProjectionOutcome(
+                f"{written}; графа {GRAPH_NAME} нет в ag_catalog.ag_graph — "
+                "проекция не строилась", 1)
+        faults = projection_faults(seen)
+        if not faults:
+            return ProjectionOutcome(f"{written}, сверка: |V|={seen.vertex_n} "
+                                     f"|E|={seen.edge_n}", 0)
+        return ProjectionOutcome(f"{written}; MISMATCH: " + "; ".join(faults), 1)
 
     def census(self) -> str:
         """The kind breakdown of the graph, read back out of the table this

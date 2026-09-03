@@ -10,6 +10,8 @@ works() came to add the accumulated total on every call.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import pathlib
 import unittest
@@ -81,7 +83,9 @@ class WriterConformanceTests(unittest.TestCase):
 
         with mock.patch.object(store, "copy_csv_rows", side_effect=accept_everything), \
              mock.patch.object(store, "project_graph", return_value=(3, 2)) as projected, \
-             mock.patch.object(store, "graph_check", return_value=0), \
+             mock.patch.object(store, "projection_diff",
+                               return_value=mock.Mock(vertex_n=3, edge_n=2)), \
+             mock.patch.object(store, "projection_faults", return_value=[]), \
              mock.patch.object(store, "kind_counts", return_value={"indexed": 3}):
             live = self._drive(PostgresWriter({}))
         projected.assert_called_once()
@@ -281,22 +285,58 @@ class ProjectionIsAWriteThroughTheSeamTests(unittest.TestCase):
             with self.subTest(method=name):
                 self.assertIn(name, Writer.__annotations__ | vars(Writer))
 
-    def test_the_live_writer_projects_and_returns_the_checks_verdict(self):
+    def test_the_live_writer_projects_and_returns_the_verdict_as_a_value(self):
+        """The faults are folded into the outcome, so the caller that
+        prints `report` prints the whole answer once."""
         with mock.patch.object(store, "project_graph", return_value=(441, 2427)) as project, \
-             mock.patch.object(store, "graph_check", return_value=1) as check:
+             mock.patch.object(store, "projection_diff", return_value="reading"), \
+             mock.patch.object(store, "projection_faults",
+                               return_value=["work=441 vertices=440"]) as faults:
             outcome = PostgresWriter({"PGHOST": "x"}).project()
         project.assert_called_once_with({"PGHOST": "x"})
-        check.assert_called_once_with({"PGHOST": "x"})
+        faults.assert_called_once_with("reading")
         self.assertEqual(outcome.code, 1)
         self.assertIn("V=441", outcome.report)
         self.assertIn("E=2427", outcome.report)
+        self.assertIn("work=441 vertices=440", outcome.report)
+
+    def test_a_faithful_projection_is_code_zero_and_one_report_line(self):
+        reading = mock.Mock(vertex_n=441, edge_n=2427)
+        with mock.patch.object(store, "project_graph", return_value=(441, 2427)), \
+             mock.patch.object(store, "projection_diff", return_value=reading), \
+             mock.patch.object(store, "projection_faults", return_value=[]):
+            outcome = PostgresWriter({}).project()
+        self.assertEqual(outcome.code, 0)
+        self.assertEqual(outcome.report.count("\n"), 0)
+
+    def test_a_graph_that_was_never_projected_is_a_fault_not_a_crash(self):
+        with mock.patch.object(store, "project_graph", return_value=(0, 0)), \
+             mock.patch.object(store, "projection_diff", return_value=None):
+            outcome = PostgresWriter({}).project()
+        self.assertEqual(outcome.code, 1)
+        self.assertIn("не строилась", outcome.report)
+
+    def test_the_library_writes_nothing_to_stdout_or_stderr(self):
+        """check() is pg_graph_common's CLI shape -- it prints its own
+        verdict and returns an exit code. Called from here, one projection
+        produced two overlapping report lines, and any embedder of the
+        crawl without a command line got library output it never asked for.
+        """
+        out, err = io.StringIO(), io.StringIO()
+        reading = mock.Mock(vertex_n=441, edge_n=2427)
+        with mock.patch.object(store, "project_graph", return_value=(441, 2427)), \
+             mock.patch.object(store, "projection_diff", return_value=reading), \
+             mock.patch.object(store, "projection_faults", return_value=["mismatch"]), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            PostgresWriter({}).project()
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
 
     def test_the_dry_writer_projects_nothing_and_says_so(self):
         with mock.patch.object(store, "project_graph") as project, \
-             mock.patch.object(store, "graph_check") as check:
+             mock.patch.object(store, "projection_diff") as diff:
             outcome = DryRunWriter().project()
         project.assert_not_called()
-        check.assert_not_called()
+        diff.assert_not_called()
         self.assertEqual(outcome.code, 0)
         self.assertIn("--dry-run", outcome.report)
 
