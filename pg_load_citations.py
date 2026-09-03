@@ -274,7 +274,8 @@ def main(argv: list[str] | None = None) -> int:
         abstracts = zbmath_abstracts(env, documents, matches, cache=zbmath_cache,
                                      writer=writer, crawl_id=crawl_id)
         snowball.seed(documents, matches, abstracts,
-                      mathnet_names(env, cache=mathnet_cache))
+                      mathnet_names(env, cache=mathnet_cache,
+                                    writer=writer, crawl_id=crawl_id))
         print(f"семян: {len(snowball.seed_keys)}; "
               f"без матча: {len(documents) - len(matches)} (журнал seed-missing)")
         if args.calibrate:

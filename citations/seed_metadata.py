@@ -86,7 +86,7 @@ def zbmath_abstracts(env, documents, matches, *, cache, writer, crawl_id,
     return out
 
 
-def mathnet_names(env, *, cache,
+def mathnet_names(env, *, cache, writer, crawl_id,
                   log=print) -> dict[str, tuple[list[str], list[int]]]:
     """document_id -> (titles, years) off Math-Net, both languages at once.
 
@@ -109,11 +109,22 @@ def mathnet_names(env, *, cache,
     under --dry-run it persists no miss, so a dry run re-fetched every
     uncached page from scratch, every time.
 
-    `cache` has no default for the reason zbmath_abstracts() gives.
+    A page that did not arrive goes into the journal as action='error'
+    (citations/journal.mathnet_error), exactly as a failed zbMATH fetch
+    does. A document Math-Net does not carry has no id to ask for and
+    leaves no row -- that is the same "the source simply does not have it"
+    the zbMATH half draws, and the same reason it draws it. Without the
+    row, the one gap that matters -- the identity anchor the twin rule
+    matches on -- survived only as this process's stdout, and the caller
+    the module advertises has no command line to print to.
+
+    `cache`, `writer` and `crawl_id` have no defaults for the reason
+    zbmath_abstracts() gives, and writer.journal() is called
+    unconditionally: an empty batch is a no-op at both writers.
     """
     client = MathnetClient(cache=cache)
     stored = stored_mathnet_titles(env)
-    names = {}
+    names, errors = {}, []
     for document_id, url in corpus_seed_documents(env):
         if document_id in stored:
             names[document_id] = stored[document_id]
@@ -124,6 +135,10 @@ def mathnet_names(env, *, cache,
         titles, years = client.titles(identifier)
         if titles:
             names[document_id] = (titles, years)
+        elif identifier in client.problems:
+            errors.append(journal.mathnet_error(
+                crawl_id, document_id, identifier, client.problems[identifier]))
+    writer.journal(errors)
     log(f"Math-Net: названий добыто для {len(names)} документов "
         f"за {client.n_requests} запросов (из кэша: {client.n_cache_hits}, "
         f"уже в базе: {len(stored)})")

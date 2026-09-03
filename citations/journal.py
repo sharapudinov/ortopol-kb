@@ -101,6 +101,24 @@ def zbmath_error(crawl_id, document_id, zbmath_id, reason) -> dict:
                  candidate_key=zbmath_id, reason=f"zbmath: {reason}")
 
 
+def mathnet_error(crawl_id, document_id, mathnet_id, reason) -> dict:
+    """Math-Net did not give up this seed's names.
+
+    The twin sibling of zbmath_error, and the same distinction: a document
+    Math-Net does not carry at all has no id to ask for and leaves no row
+    (mathnet.mathnet_id returns None -- absence is a fact about the
+    document), while a page that did not arrive, or arrived without the
+    citation line its titles live in, is a gap in the IDENTITY ANCHOR. That
+    anchor is what the twin rule matches on, and a silent gap in it weakens
+    the twin index invisibly -- which has already happened once, on the very
+    pair the rule exists for. Printed and nowhere else, that fact survives
+    as one process's stdout; the journal is where a decision leaving no
+    other row belongs.
+    """
+    return _step(crawl_id, 0, CrawlAction.ERROR, frontier_key=document_id,
+                 candidate_key=mathnet_id, reason=f"mathnet: {reason}")
+
+
 def keep(crawl_id, depth, candidate_key, node_key, score, tau, relation,
          frontier_key=None) -> dict:
     """`node_key` is the registry node the candidate was merged into -- two

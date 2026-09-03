@@ -81,6 +81,13 @@ class MathnetClient:
             timeout=90, encoding="windows-1251", cache=cache)
         self.pause = pause
         self.failures: list[str] = []
+        # The same gaps, keyed by the id they are about. .failures is a list
+        # of sentences for a human to read; a caller that has to JOURNAL the
+        # gap needs the page it belongs to, and re-deriving that by parsing
+        # the sentence back apart is the prose-parsing this repository bans
+        # outright one layer down (JOURNAL_FACTS_ARE_COLUMNS). One writer
+        # (_note) fills both, so they cannot say different things.
+        self.problems: dict[str, str] = {}
 
     @property
     def n_requests(self) -> int:
@@ -111,26 +118,35 @@ class MathnetClient:
         """
         return f"{identifier}.no-citation.json"
 
+    NO_CITATION = "страница без цитат в <title>"
+
+    def _note(self, identifier: str, what: str) -> None:
+        """Records one gap in both channels: the sentence for the log, and
+        the (id -> what) pair for a caller that journals it."""
+        self.failures.append(f"{identifier}: {what}")
+        self.problems[identifier] = what
+
     def titles(self, identifier: str) -> tuple[list[str], list[int]]:
-        """([titles], [years]); ([], []) with the id recorded in .failures."""
+        """([titles], [years]); ([], []) with the id recorded in .failures
+        and in .problems."""
         page = self._cached(identifier)
         negative = self._no_citation_line(identifier)
         hit = self._session.cached(page, floor=self.PAGE_FLOOR)
         if hit is not None:
             return parse_titles(hit)
         if self._session.cached(negative) is not None:
-            self.failures.append(f"{identifier}: страница без цитат в <title>")
+            self._note(identifier, self.NO_CITATION)
             return [], []
         answer = self._session.fetch(BASE + identifier)
         if answer.problem():
             # Never cached: a blank stored here would turn one timeout (or
             # one 503) into a permanent verdict about this document.
-            self.failures.append(f"{identifier}: {answer.problem()}")
+            self._note(identifier, answer.problem())
             return [], []
         titles, years = parse_titles(answer.body)
         self._session.store(page, answer.body)
         if not titles:
             self._session.store(negative, '{"titles": []}')
-            self.failures.append(f"{identifier}: страница без цитат в <title>")
+            self._note(identifier, self.NO_CITATION)
             return [], []
         return titles, years

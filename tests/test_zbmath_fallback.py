@@ -198,24 +198,28 @@ class ZbmathFailureVsAbsenceTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
+class RecordingWriter:
+    """A store.Writer's journal seam and nothing else: what was written,
+    and in how many batches. Both seeding steps write through it."""
+
+    def __init__(self):
+        self.steps = []
+        self.calls = []
+
+    def journal(self, steps):
+        batch = list(steps)
+        self.calls.append(batch)
+        self.steps += batch
+        return len(batch)
+
+
 class ZbmathAbstractsJournalTests(unittest.TestCase):
     """A failed fetch is journalled as action='error', so "no abstract" in
     the graph can always be told apart from "we never got an answer".
     """
 
-    class _Writer:
-        def __init__(self):
-            self.steps = []
-            self.calls = []
-
-        def journal(self, steps):
-            batch = list(steps)
-            self.calls.append(batch)
-            self.steps += batch
-            return len(batch)
-
     def _run(self, document_side_effect, stored=None):
-        writer = self._Writer()
+        writer = RecordingWriter()
         client = mock.Mock(n_requests=1, n_cache_hits=0, failures=[],
                            document=mock.Mock(side_effect=document_side_effect))
         with mock.patch.object(seed_metadata, "seed_matches",
@@ -271,11 +275,29 @@ class ZbmathAbstractsJournalTests(unittest.TestCase):
         vanish (or journal rows detached from their crawl).
         """
         for omit in ("writer", "crawl_id"):
-            keywords = {"cache": None, "writer": self._Writer(), "crawl_id": "t",
+            keywords = {"cache": None, "writer": RecordingWriter(), "crawl_id": "t",
                         "log": lambda *_: None}
             del keywords[omit]
             with self.subTest(omitted=omit), self.assertRaises(TypeError):
                 seed_metadata.zbmath_abstracts({}, [], {}, **keywords)
+
+
+def run_mathnet_names(stored=None, titles=(["Title"], [1989]), problems=None,
+                      documents=(("1997_sm280", "https://www.mathnet.ru/rus/sm280"),)):
+    """One mathnet_names() call against a stubbed client and database:
+    (names, client, writer)."""
+    writer = RecordingWriter()
+    client = mock.Mock(n_requests=1, n_cache_hits=0, failures=[],
+                       problems=dict(problems or {}),
+                       titles=mock.Mock(return_value=titles))
+    with mock.patch.object(seed_metadata, "corpus_seed_documents",
+                           return_value=list(documents)), \
+         mock.patch.object(seed_metadata, "stored_mathnet_titles",
+                           return_value=stored or {}), \
+         mock.patch.object(seed_metadata, "MathnetClient", return_value=client):
+        out = seed_metadata.mathnet_names(
+            {}, cache=None, writer=writer, crawl_id="t", log=lambda *_: None)
+    return out, client, writer
 
 
 class MathnetNamesTests(unittest.TestCase):
@@ -289,25 +311,13 @@ class MathnetNamesTests(unittest.TestCase):
     --dry-run the cache persists nothing, so nothing was ever a hit twice.
     """
 
-    def _run(self, stored=None, titles=(["Title"], [1989])):
-        client = mock.Mock(n_requests=1, n_cache_hits=0, failures=[],
-                           titles=mock.Mock(return_value=titles))
-        with mock.patch.object(
-                seed_metadata, "corpus_seed_documents",
-                return_value=[("1997_sm280", "https://www.mathnet.ru/rus/sm280")]), \
-             mock.patch.object(seed_metadata, "stored_mathnet_titles",
-                               return_value=stored or {}), \
-             mock.patch.object(seed_metadata, "MathnetClient", return_value=client):
-            out = seed_metadata.mathnet_names({}, cache=None, log=lambda *_: None)
-        return out, client
-
     def test_titles_already_in_the_graph_cost_no_request(self):
-        out, client = self._run(stored={"1997_sm280": (["Уже в базе"], [1989])})
+        out, client, _writer = run_mathnet_names(stored={"1997_sm280": (["Уже в базе"], [1989])})
         self.assertEqual(out, {"1997_sm280": (["Уже в базе"], [1989])})
         client.titles.assert_not_called()
 
     def test_a_seed_without_stored_titles_is_still_fetched(self):
-        out, client = self._run()
+        out, client, _writer = run_mathnet_names()
         client.titles.assert_called_once_with("sm280")
         self.assertEqual(out, {"1997_sm280": (["Title"], [1989])})
 
@@ -316,6 +326,60 @@ class MathnetNamesTests(unittest.TestCase):
         with mock.patch.object(inputs, "scalar", return_value=answer):
             stored = inputs.stored_mathnet_titles({})
         self.assertEqual(stored, {"1997_sm280": (["Рус", "Eng"], [1989, 1991])})
+
+
+class MathnetNamesJournalTests(unittest.TestCase):
+    """The same seam the zbMATH half has, on the gap that matters more.
+
+    Math-Net's titles ARE the identity anchor the twin rule matches on, and
+    a silent hole in it weakens the twin index invisibly -- which already
+    happened once, on the very pair the rule exists for. Printed and
+    nowhere else, that fact was one process's stdout, and the caller this
+    module advertises has no command line at all.
+    """
+
+    def test_a_page_that_did_not_arrive_is_journalled_against_its_document(self):
+        _out, _client, writer = run_mathnet_names(
+            titles=([], []), problems={"sm280": "HTTP 503"})
+        self.assertEqual([s["action"] for s in writer.steps], ["error"])
+        row = writer.steps[0]
+        self.assertEqual(row["frontier_key"], "1997_sm280")
+        self.assertEqual(row["candidate_key"], "sm280")
+        self.assertIn("503", row["reason"])
+        self.assertIn("mathnet", row["reason"])
+
+    def test_a_document_math_net_does_not_carry_leaves_no_row(self):
+        """No id to ask for is a fact about the document, not a failure
+        here -- the same line the zbMATH half draws between "the source does
+        not have it" and "we never found out".
+        """
+        _out, client, writer = run_mathnet_names(
+            documents=(("2016_vmj598", "https://example.org/vmj598.pdf"),))
+        client.titles.assert_not_called()
+        self.assertEqual(writer.steps, [])
+
+    def test_a_page_that_answered_writes_no_error_row(self):
+        _out, _client, writer = run_mathnet_names()
+        self.assertEqual(writer.steps, [])
+
+    def test_the_journal_is_written_through_the_seam_either_way(self):
+        """No branch on the writer: an empty batch is a no-op at both
+        writers, and `if errors and writer is not None` is exactly the
+        shape that silently discarded the zbMATH rows.
+        """
+        _out, _client, quiet = run_mathnet_names()
+        self.assertEqual(quiet.calls, [[]])
+        _out, _client, loud = run_mathnet_names(titles=([], []), problems={"sm280": "timeout"})
+        self.assertEqual(len(loud.calls), 1)
+        self.assertEqual([s["action"] for s in loud.calls[0]], ["error"])
+
+    def test_neither_the_writer_nor_the_run_may_be_forgotten(self):
+        for omit in ("writer", "crawl_id"):
+            keywords = {"cache": None, "writer": RecordingWriter(), "crawl_id": "t",
+                        "log": lambda *_: None}
+            del keywords[omit]
+            with self.subTest(omitted=omit), self.assertRaises(TypeError):
+                seed_metadata.mathnet_names({}, **keywords)
 
 
 if __name__ == "__main__":

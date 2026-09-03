@@ -299,6 +299,27 @@ class MathnetClientTests(unittest.TestCase):
         self.assertEqual(len(client.failures), 1)
         self.assertIn("без цитат", client.failures[0])
 
+    def test_every_gap_is_named_against_the_id_it_is_about(self):
+        """.failures is a sentence for a human; the caller that journals the
+        gap needs the page it belongs to, and taking that back out of the
+        sentence would be prose-parsing (JOURNAL_FACTS_ARE_COLUMNS). One
+        writer fills both, so a gap cannot reach one channel and not the
+        other.
+        """
+        client = self._client(_Sequence([TimeoutError("read timed out"),
+                                         _Response(b"<html><body>gone</body></html>")]))
+        self.assertEqual(client.titles("mzm8442"), ([], []))
+        self.assertEqual(client.titles("sm280"), ([], []))
+        self.assertEqual(sorted(client.problems), ["mzm8442", "sm280"])
+        self.assertIn("TimeoutError", client.problems["mzm8442"])
+        self.assertIn("без цитат", client.problems["sm280"])
+        self.assertEqual(len(client.failures), len(client.problems))
+
+    def test_a_page_that_answered_leaves_no_problem_recorded(self):
+        client = self._client(_Sequence([_Response(PAGE.encode("windows-1251"))]))
+        self.assertNotEqual(client.titles("mzm8442"), ([], []))
+        self.assertEqual(client.problems, {})
+
     def test_a_titleless_page_is_cached_as_the_negative_answer_it_is(self):
         """The request SUCCEEDED -- the page simply carries no citation line.
 
