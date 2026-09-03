@@ -21,6 +21,7 @@ from _dump_fixtures import CORPUS_COLUMNS, CORPUS_SERIALS, DUMPED_CITATION_TABLE
 
 import citation_columns
 import citation_dump
+import corpus_cut
 import citation_profile
 import dump_scan
 import public_dump
@@ -50,11 +51,11 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         self.carried = None
         gz_path = Path(tmp) / "01_dump.sql.gz"
         with mock.patch.object(public_dump, "require_classified"), \
-             mock.patch.object(public_dump, "corpus_tables",
+             mock.patch.object(corpus_cut, "corpus_tables",
                                 return_value=list(CORPUS_COLUMNS)), \
-             mock.patch.object(public_dump.schema_catalog, "schema_columns",
+             mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                 return_value=dict(CORPUS_COLUMNS)), \
-             mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+             mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                 return_value=CORPUS_SERIALS), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=self._fake_stream), \
              mock.patch.object(citation_dump, "citation_tables",
@@ -157,11 +158,11 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "corpus_tables",
+                 mock.patch.object(corpus_cut, "corpus_tables",
                                     return_value=list(CORPUS_COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                     return_value=dict(CORPUS_COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value=CORPUS_SERIALS), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capturing_stream), \
                  mock.patch.object(citation_dump, "citation_tables",
@@ -205,11 +206,11 @@ class CitationDumpIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified"), \
-                 mock.patch.object(public_dump, "corpus_tables",
+                 mock.patch.object(corpus_cut, "corpus_tables",
                                     return_value=list(CORPUS_COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                     return_value=dict(CORPUS_COLUMNS)), \
-                 mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+                 mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value=CORPUS_SERIALS), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=capture), \
                  mock.patch.object(citation_dump, "citation_tables",
@@ -250,11 +251,11 @@ class RefusalLeavesNoFileTests(unittest.TestCase):
             dst.write(b"row\n")
 
         with mock.patch.object(public_dump, "require_classified"), \
-             mock.patch.object(public_dump, "corpus_tables",
+             mock.patch.object(corpus_cut, "corpus_tables",
                                return_value=list(CORPUS_COLUMNS)), \
-             mock.patch.object(public_dump.schema_catalog, "schema_columns",
+             mock.patch.object(corpus_cut.schema_catalog, "schema_columns",
                                return_value=dict(CORPUS_COLUMNS)), \
-             mock.patch.object(public_dump.schema_catalog, "schema_serial_columns",
+             mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                return_value=CORPUS_SERIALS), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=record), \
              mock.patch.object(citation_dump, "schema_serial_columns", return_value={}), \

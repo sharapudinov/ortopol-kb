@@ -60,13 +60,9 @@ ensure_corpus_importable()
 import citation_dump  # noqa: E402
 import schema_catalog  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
+from copy_plan import CopyBlock  # noqa: E402
 from copy_rows import DumpedRows, RowCounter  # noqa: E402
-from corpus_cut import (  # noqa: E402
-    EXCLUDED_COLUMNS,
-    SCHEMA,
-    copy_select,
-    corpus_tables,
-)
+from corpus_cut import SCHEMA, plan_corpus  # noqa: E402
 from manifest_contract import Profile, base_schemas_for  # noqa: E402
 from legal_profile import require_classified  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
@@ -83,8 +79,7 @@ from pg_stream import CommandFailed, stream_stdout  # noqa: E402
 PUBLIC_SCHEMAS = base_schemas_for(Profile.PUBLIC)
 
 
-def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
-                     serials=()) -> int:
+def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock) -> int:
     """Writes one `COPY corpus.<table> (cols) FROM stdin;` block, streaming
     the server-side COPY TO STDOUT output between the header and the `\\.`
     terminator -- the same shape pg_dump emits, so the result is an ordinary
@@ -92,22 +87,27 @@ def write_copy_block(env: dict, dst: IO[bytes], table: str, columns: list[str],
     went past (copy_rows.RowCounter): the manifest is stamped from what was
     written, never from a second reading of the live database.
 
-    `serials` are the table's sequence-owning columns, and each gets the
-    setval() the citation half has always written (schema_catalog.
+    Takes the resolved block rather than a table name, exactly as the
+    citation half does (citation_dump.write_copy_block): every question
+    whose answer could be a refusal was corpus_cut.plan_corpus()'s, asked
+    before `dst` existed.
+
+    `block.serials` are the table's sequence-owning columns, and each gets
+    the setval() the citation half has always written (schema_catalog.
     setval_sql). Asked of the catalog rather than reasoned about per table:
     a sequence left at 1 restores without complaint and hands the
     recipient's first insert an id already taken, which is a failure at
     their end rather than at ours.
     """
-    header = f"COPY corpus.{table} ({', '.join(columns)}) FROM stdin;\n"
-    dst.write(header.encode())
+    dst.write(f"COPY corpus.{block.table} ({', '.join(block.columns)}) "
+              "FROM stdin;\n".encode())
     argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
-            "-c", copy_select(table, columns)]
+            "-c", block.statement]
     counter = RowCounter(dst)
     stream_stdout(argv, env, counter)
     dst.write(b"\\.\n")
-    for column in serials:
-        dst.write(schema_catalog.setval_sql(SCHEMA, table, column))
+    for column in block.serials:
+        dst.write(schema_catalog.setval_sql(SCHEMA, block.table, column))
     dst.write(b"\n")
     return counter.rows
 
@@ -168,32 +168,24 @@ def dump_public(env: dict, gz_path: Path, *, citation_mode: str) -> DumpedRows:
     mode would be a cut nobody chose, and CitationMode.NONE happens to be
     the cut that ships nothing.
     """
+    # BOTH schemas are resolved here, BEFORE the file is opened. Their
+    # refusals -- TableUnclassified, ColumnUnclassified -- are neither
+    # CommandFailed, so asked from inside the gzip context they go past the
+    # handler below and leave a truncated dump on disk: for the citation
+    # half, after the whole corpus DDL and every corpus COPY block; for the
+    # corpus half, after the preamble and the DDL. The promise in this
+    # docstring is that nothing is written at all, and a refusal keeps that
+    # promise only while it is still cheap.
     require_classified(env)
-    tables = corpus_tables(env)
-    # Both catalog questions are asked once for the whole schema, as the
-    # citation half asks them: one read answers for every table, and a
-    # per-table read costs a psql process each time round the loop.
-    columns = schema_catalog.schema_columns(env, SCHEMA)
-    serials = schema_catalog.schema_serial_columns(env, SCHEMA)
-    # The citation half is resolved here too, BEFORE the file is opened.
-    # Its refusals -- TableUnclassified, ColumnUnclassified -- are neither
-    # CommandFailed, so asked from inside the gzip context they went past
-    # the handler below and left a truncated dump on disk, after the whole
-    # corpus DDL and every corpus COPY block had already been written. The
-    # promise in this docstring is that nothing is written at all, and a
-    # refusal keeps that promise only while it is still cheap.
+    corpus_plan = plan_corpus(env)
     citation_plan = citation_dump.plan_citation(env, citation_mode)
     try:
         with gzip.open(gz_path, "wb", compresslevel=DUMP_COMPRESSLEVEL) as dst:
             dst.write(PREAMBLE.encode())
             _dump_ddl(env, dst)
             dst.write(b"\n")
-            corpus_rows = {
-                table: write_copy_block(env, dst, table, schema_catalog.columns_of(
-                    columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ())),
-                    serials=serials.get(table, ()))
-                for table in tables
-            }
+            corpus_rows = {block.table: write_copy_block(env, dst, block)
+                           for block in corpus_plan}
             dst.write(b"\n")
             citation = citation_dump.dump_citation(env, dst, citation_plan)
     except CommandFailed as exc:

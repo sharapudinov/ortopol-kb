@@ -50,6 +50,7 @@ from citation_columns import (
     blanked_value,
 )
 from block_census import FieldTally
+from copy_plan import CopyBlock
 from copy_rows import RowCounter
 from schema_catalog import (
     classified_tables,
@@ -157,16 +158,6 @@ def copy_select(table: str, columns: list[str], mode: str) -> str:
     return f"COPY ({prefix}SELECT {projection}\n{_source_clause(table)}) TO STDOUT"
 
 
-class CopyBlock(NamedTuple):
-    """One table's COPY block, fully resolved: no classification question is
-    left to ask while the file is open."""
-
-    table: str
-    columns: list[str]
-    serials: tuple[str, ...]
-    statement: str
-
-
 class CitationPlan(NamedTuple):
     """What this schema contributes to a dump, decided before it is opened.
 
@@ -195,10 +186,11 @@ def plan_citation(env: dict, mode: str) -> CitationPlan:
     """
     if not ships_citation(mode):
         return CitationPlan(False, ())
+    tables = citation_tables(env)
     columns = schema_columns(env, SCHEMA)
     serials = schema_serial_columns(env, SCHEMA)
     blocks = []
-    for table in citation_tables(env):
+    for table in tables:
         table_columns = columns_of(columns, table, SCHEMA)
         blocks.append(CopyBlock(table, table_columns, tuple(serials.get(table, ())),
                                 copy_select(table, table_columns, mode)))

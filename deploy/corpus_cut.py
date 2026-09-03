@@ -44,6 +44,7 @@ ensure_corpus_importable()
 
 import corpus_columns  # noqa: E402
 import schema_catalog  # noqa: E402
+from copy_plan import CopyBlock  # noqa: E402
 from legal_profile import FULL_CONTENT_SQL, SHIPPED_SQL  # noqa: E402
 
 SCHEMA = "corpus"
@@ -133,3 +134,34 @@ def select_expression(table: str, column: str) -> str:
 def copy_select(table: str, columns: list[str]) -> str:
     projection = ",\n       ".join(select_expression(table, c) for c in columns)
     return f"COPY (SELECT {projection}\n{_SOURCE[table]}) TO STDOUT"
+
+
+def plan_corpus(env: dict) -> tuple[CopyBlock, ...]:
+    """Every catalog and classification question this schema's blocks ask,
+    answered before the caller opens its output.
+
+    The citation half's plan_citation() with the same reason and the same
+    shape (copy_plan.CopyBlock): an unclassified table raises
+    TableUnclassified and an unclassified column ColumnUnclassified, neither
+    of them a CommandFailed, so asked from inside the open gzip they fly
+    past the handler that unlinks the partial file. This schema is written
+    FIRST, so what such a refusal leaves behind is the preamble, the whole
+    DDL and however many COPY blocks came before it -- a truncated dump on
+    disk under a docstring promising nothing was written at all.
+
+    The table list is asked FIRST because it is the answer that can be the
+    refusal; the two column reads are for the whole schema at once, since
+    one read answers for every table where a per-table read costs a psql
+    process each time round the loop.
+    """
+    tables = corpus_tables(env)
+    columns = schema_catalog.schema_columns(env, SCHEMA)
+    serials = schema_catalog.schema_serial_columns(env, SCHEMA)
+    blocks = []
+    for table in tables:
+        table_columns = schema_catalog.columns_of(
+            columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ()))
+        blocks.append(CopyBlock(table, table_columns,
+                                tuple(serials.get(table, ())),
+                                copy_select(table, table_columns)))
+    return tuple(blocks)
