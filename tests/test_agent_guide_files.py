@@ -27,6 +27,7 @@ import _pathfix_deploy  # noqa: F401
 import artifact_bundle
 
 GUIDE = artifact_bundle.DEPLOY_DIR / "AGENT_GUIDE.md"
+BUILDER = artifact_bundle.DEPLOY_DIR / "build_package.py"
 # Every `...py` the guide spells in code formatting, and the parenthesis the
 # guide's opening paragraph puts the parent-repository names in.
 MENTION = re.compile(r"`([A-Za-z0-9_/.-]+\.py)`")
@@ -60,6 +61,15 @@ class GuideNamesOnlyBundledScriptsTests(unittest.TestCase):
         would report a clean guide forever."""
         self.assertIn("corpus_completeness.py", MENTION.findall(guide_text()))
         self.assertNotIn("corpus_completeness.py", self._bundled())
+
+    def test_the_builders_own_help_does_not_enumerate_it_either(self):
+        """Same defect one file over: build_package.py's docstring is what
+        `--help` prints, and it listed fifteen of the forty-eight files.
+        A prose list of the bundle is stale the moment the bundle grows.
+        """
+        docstring = BUILDER.read_text(encoding="utf-8").split('"""')[1]
+        named = set(MENTION.findall(docstring)) & self._bundled()
+        self.assertLess(len(named), 5, sorted(named))
 
     def test_the_guide_does_not_re_enumerate_the_bundle(self):
         """One list of one fact. The package's own is manifest.json's

@@ -30,20 +30,13 @@ Contents:
                        manifest_probe.gather_manifest.
   - docker-compose.yml, init/, ollama-entrypoint.sh, .pgenv.example,
     AGENT_GUIDE.md      the whole runtime this package's own docs describe.
-  - smoke_test.py and the deploy modules it imports (smoke_stack.py,
-    smoke_checks.py, vector_probe_check.py, blob_integrity_checks.py,
-    bundled_files_check.py, manifest_contract.py, compose_lifecycle.py,
-    dump_integrity.py, deploy_pathfix.py, ollama_registry.py,
-    drift_probe.py, profile_checks.py, dump_scan.py,
-    pg_rank_probe.py -- deploy-only despite living beside
-    pg_search/pg_common, see that module's own docstring), plus
-    corpus_lib/{pg_common,pg_search}.py -- copies of the deploy scripts and
-    the two genuinely shared repository-root modules they import, so
-    `python3 smoke_test.py` run from inside the extracted directory works
-    with zero repository access -- see artifact_bundle.py's DEPLOY_FILES/
-    CORPUS_LIB_FILES for the definitive, machine-checked list
-    (test_artifact_bundle.py's import-closure test fails if this comment
-    or that list ever drifts from what smoke_test.py actually imports).
+  - smoke_test.py, every deploy module it imports, and copies of the
+    repository-root modules those import (under corpus_lib/), so `python3
+    smoke_test.py` run from inside the extracted directory works with zero
+    repository access. WHICH files those are is artifact_bundle.py's
+    DEPLOY_FILES / CORPUS_LIB_FILES, and the manifest's files{} in the
+    artifact itself -- not a list here: a second enumeration in prose goes
+    stale silently, and this one had, by twenty names.
 
 Never writes inside this repository: even the public artifact carries whole
 texts and source files of third-party publications (the ones cleared for it),
