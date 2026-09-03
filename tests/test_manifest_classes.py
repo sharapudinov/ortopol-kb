@@ -20,7 +20,8 @@ import _pathfix_deploy  # noqa: F401
 
 import profile_checks
 from _artifact_fixtures import ArtifactBuilder
-from manifest_classes import check_legal_vocabulary_is_known, check_profile_is_known
+from manifest_classes import (check_legal_vocabulary_is_known, check_profile_is_known,
+                              content_expectation, cut_applies, expected_ids)
 from manifest_contract import Distribution, Profile
 from manifest_keys import Key
 
@@ -135,6 +136,84 @@ class TheGateStopsThePassTests(unittest.TestCase):
     def test_an_unknown_profile_is_still_refused_first(self):
         ok, _detail = check_profile_is_known({Key.PROFILE: "publicish"})
         self.assertFalse(ok)
+
+
+class SetArithmeticTests(unittest.TestCase):
+    """expected_ids/cut_applies/content_expectation on synthetic manifests.
+
+    The whole legal certification rests on these three: which ids must be
+    in the dump, which must be nowhere in it, which must carry content and
+    which must not. Reached only through artifact fixtures they were tested
+    at the granularity of a green column -- a boundary answered wrongly
+    here (an id claimed by two classes, a class named full-content but not
+    shipped) is a shrunken expectation, and a shrunken expectation is what
+    an [OK] about nothing looks like.
+    """
+
+    def _legal(self, by_distribution, shipped, full_content, profile=Profile.PUBLIC):
+        return {
+            Key.PROFILE: profile,
+            Key.LEGAL: {
+                Key.DOCUMENTS_BY_DISTRIBUTION: by_distribution,
+                Key.SHIPPED_DISTRIBUTIONS: shipped,
+                Key.FULL_CONTENT_DISTRIBUTIONS: full_content,
+            },
+        }
+
+    BY_DISTRIBUTION = {
+        Distribution.FULL_TEXT: ["a"],
+        Distribution.METADATA_ONLY: ["b"],
+        Distribution.EXCLUDED: ["c"],
+    }
+
+    def _public(self, by_distribution=None):
+        return self._legal(by_distribution or self.BY_DISTRIBUTION,
+                           list(Distribution.SHIPPED), list(Distribution.FULL_CONTENT))
+
+    def test_public_expects_the_shipped_classes_and_forbids_the_rest(self):
+        self.assertEqual(expected_ids(self._public()), ({"a", "b"}, {"c"}))
+
+    def test_full_expects_every_id_and_forbids_none(self):
+        manifest = self._public()
+        manifest[Key.PROFILE] = Profile.FULL
+        self.assertEqual(expected_ids(manifest), ({"a", "b", "c"}, set()))
+
+    def test_an_id_listed_under_two_classes_is_one_id(self):
+        """`everything` is a set: a document named by both a shipped and an
+        excluded class is expected AND absent by list arithmetic, and the
+        absent set is what "excluded left no trace" is checked against.
+        """
+        both = {Distribution.FULL_TEXT: ["a"], Distribution.EXCLUDED: ["a"]}
+        expected, absent = expected_ids(self._public(both))
+        self.assertEqual(expected, {"a"})
+        self.assertEqual(absent, set())
+
+    def test_cut_applies_only_where_something_is_actually_cut(self):
+        self.assertTrue(cut_applies(self._public()))
+        nothing_cut = {Distribution.FULL_TEXT: ["a"], Distribution.METADATA_ONLY: ["b"]}
+        self.assertFalse(cut_applies(self._public(nothing_cut)))
+
+    def test_cut_never_applies_to_the_full_profile(self):
+        manifest = self._public()
+        manifest[Key.PROFILE] = Profile.FULL
+        self.assertFalse(cut_applies(manifest))
+
+    def test_public_content_expectation_splits_the_shipped_ids(self):
+        self.assertEqual(content_expectation(self._public()), ({"a"}, {"b"}))
+
+    def test_a_full_content_class_that_does_not_ship_expects_nothing(self):
+        """full_content is intersected with what is present, so a class
+        named full-content but absent from shipped_distributions cannot
+        demand content for a document the artifact does not carry at all.
+        """
+        manifest = self._legal(self.BY_DISTRIBUTION, [Distribution.METADATA_ONLY],
+                               [Distribution.FULL_TEXT])
+        self.assertEqual(content_expectation(manifest), (set(), {"b"}))
+
+    def test_the_full_profile_strips_nothing(self):
+        manifest = self._public()
+        manifest[Key.PROFILE] = Profile.FULL
+        self.assertEqual(content_expectation(manifest), ({"a", "b", "c"}, set()))
 
 
 if __name__ == "__main__":

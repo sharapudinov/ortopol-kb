@@ -238,6 +238,15 @@ class FrontierMathTests(unittest.TestCase):
         values = [0.1 * i for i in range(37)]
         self.assertEqual(sum(c for _l, _h, c in scoring.histogram(values, bins=7)), 37)
 
+    def test_an_empty_sample_reports_nothing_rather_than_raising(self):
+        """min()/max() and the nearest-rank index have no answer over no
+        scores, and the caller is a report: a calibration run whose bucket
+        is empty prints "no scores", it does not abort the run that
+        produced the finding.
+        """
+        self.assertEqual(scoring.quantiles([]), {})
+        self.assertEqual(scoring.histogram([]), [])
+
     def test_candidate_text_survives_a_missing_abstract(self):
         self.assertEqual(frontier.candidate_text("T", None), "T")
         self.assertEqual(frontier.candidate_text(None, None), "")

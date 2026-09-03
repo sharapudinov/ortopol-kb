@@ -233,6 +233,18 @@ class CorpusTwinTests(unittest.TestCase):
     def test_a_different_year_is_not_our_work(self):
         self.assertIsNone(self.find(self.EN, 2005))
 
+    def test_the_year_just_outside_the_span_is_not_our_work(self):
+        """The excluded side of the +-span boundary, asserted on the
+        predicate itself: it decides whether a candidate is promoted to
+        our-document, which rewrites what the corpus claims about itself,
+        and only the included side (diff=1) and a far-outside one were
+        covered.
+        """
+        self.assertTrue(twins.year_matches(2020, [2019]))
+        self.assertFalse(twins.year_matches(2021, [2019]))
+        self.assertTrue(twins.year_matches(2021, [2019], span=2))
+        self.assertFalse(twins.year_matches(2022, [2019], span=2))
+
     def test_punctuation_and_case_do_not_matter(self):
         noisy = "SOBOLEV–ORTHOGONAL Systems of Functions, and Some of Their Applications!"
         self.assertEqual(self.find(noisy, 2019),
