@@ -85,7 +85,9 @@ class ScoringFields(NamedTuple):
     (thousands per level, nine in ten dropped) that was built for every
     candidate and then built AGAIN by registry.add() for the ones kept.
     Scoring needs the title and the abstract; the key names the row it
-    belongs to.
+    belongs to. What the filter DOES still need off every candidate is the
+    id set that answers "is this one new", so that one travels forward to
+    add() (candidates.score) rather than being derived again there.
 
     The abstract stays INVERTED here and is restored on read. OpenAlex
     ships it as {word: [positions]}, and turning that back into text is a
@@ -160,7 +162,7 @@ class Node:
             grouped["years"] = sorted(self.years)
         return grouped
 
-    def absorb(self, record: dict) -> None:
+    def absorb(self, record: dict, *, ids: set[str] | None = None) -> None:
         # The ids are extracted below; what is KEPT is the record without
         # referenced_works, because self.records becomes
         # citation.work.evidence (store.PostgresWriter.evidence_of) and that
@@ -172,7 +174,7 @@ class Node:
         # caller's own record still feeds edges.among_known.
         self.referenced_works |= {short_id(r) for r in (record.get("referenced_works") or [])}
         self.records.append({k: v for k, v in record.items() if k != "referenced_works"})
-        self.aliases |= record_ids(record)
+        self.aliases |= record_ids(record) if ids is None else ids
         self.title = self.title or record_title(record)
         if not self.abstract:
             recovered = restore_abstract(record.get("abstract_inverted_index"))
@@ -205,7 +207,19 @@ class WorkRegistry:
 
     def find(self, record: dict) -> str | None:
         """Key of the node this record belongs to, if any id already known."""
-        for identifier in record_ids(record):
+        return self.find_ids(record_ids(record))
+
+    def find_ids(self, ids: set[str]) -> str | None:
+        """find() over an id set already derived.
+
+        The index lookup alone, because that is the half that CHANGES: a
+        record's ids are a pure function of the record, while the node they
+        land on is not -- a twin union earlier in the same level can move it.
+        So a caller that resolved a candidate before scoring it hands the set
+        back (add(ids=...)) and asks the question again, rather than paying
+        for the derivation twice to get an answer that may have changed.
+        """
+        for identifier in ids:
             key = self._by_id.get(identifier)
             if key:
                 return key
@@ -220,20 +234,27 @@ class WorkRegistry:
         document_id: str | None = None,
         relation: str | None = None,
         discovered_from: str | None = None,
+        ids: set[str] | None = None,
     ) -> tuple[Node, bool]:
         """(node, is_new). An existing node absorbs the record instead of
         being duplicated, and never loses `our-document` to a later
-        `external-skeleton` sighting of the same work."""
-        existing_key = self.find(record)
+        `external-skeleton` sighting of the same work.
+
+        `ids` is record_ids(record) when the caller already has it (the tau
+        filter derives one per candidate before anything is kept); omitted,
+        it is derived here.
+        """
+        ids = record_ids(record) if ids is None else ids
+        existing_key = self.find_ids(ids)
         if existing_key is not None:
             node = self.nodes[existing_key]
-            node.absorb(record)
+            node.absorb(record, ids=ids)
             if kind == WorkKind.OUR_DOCUMENT:
                 node.kind, node.document_id = kind, document_id or node.document_id
             self._reindex(node)
             return node, False
 
-        key = short_id(record.get("id")) or next(iter(sorted(record_ids(record))), None)
+        key = short_id(record.get("id")) or next(iter(sorted(ids)), None)
         if not key:
             raise ValueError(f"запись без единого идентификатора: {str(record)[:200]}")
         node = Node(
@@ -244,7 +265,7 @@ class WorkRegistry:
             relation=relation,
             discovered_from=discovered_from,
         )
-        node.absorb(record)
+        node.absorb(record, ids=ids)
         self.nodes[key] = node
         self._reindex(node)
         return node, True

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from .gathering import principal_hit
 from .openalex_records import short_id
-from .registry import scoring_fields
+from .registry import record_ids, scoring_fields
 from .scoring import NO_TEXT_SCORE, cosine_unit, keeps
 
 
@@ -58,26 +58,37 @@ def score(registry, measure, candidates) -> list[dict]:
     `hits` travels through unchanged -- the whole set of frontier nodes the
     candidate was reached from -- and `discovered_from` is the one name the
     single-valued places need (gathering.principal_hit).
+
+    The resolution asking "is this one new" travels out with the candidate:
+    `record_ids` is a pure function of the record and every kept candidate
+    is resolved again by registry.add(), so deriving it here and handing it
+    back is one derivation per candidate instead of three. The ANSWER is not
+    carried -- only the ids -- because a twin union earlier in the same level
+    can move a candidate onto an existing node between this filter and the
+    write. Same cost as the one ScoringFields exists to avoid, one layer up.
     """
     fresh, seen = [], set()
     for record, relation, hits in candidates:
         identity = short_id(record.get("id"))
-        if identity in seen or registry.find(record) is not None:
+        if identity in seen:
+            continue
+        ids = record_ids(record)
+        if registry.find_ids(ids) is not None:
             continue
         seen.add(identity)
-        fresh.append((record, relation, hits))
+        fresh.append((record, relation, hits, identity, ids))
 
-    holders = [scoring_fields(record) for record, _relation, _hits in fresh]
+    holders = [scoring_fields(item[0]) for item in fresh]
     scored = measure([holder for holder in holders if holder.title])
 
     out = []
-    for record, relation, hits in fresh:
-        key = short_id(record.get("id"))
+    for record, relation, hits, key, ids in fresh:
         value, vector = scored.get(key, (NO_TEXT_SCORE, None))
         out.append({
             "record": record, "relation": relation, "hits": hits,
             "discovered_from": principal_hit(hits),
-            "candidate_key": key, "score": value, "vector": vector,
+            "candidate_key": key, "record_ids": ids,
+            "score": value, "vector": vector,
             "title": record.get("title") or record.get("display_name"),
             "year": record.get("publication_year"),
         })

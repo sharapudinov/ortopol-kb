@@ -22,6 +22,8 @@ from citation_vocab import Relation
 from citations import seeding
 from citations.crawl import Snowball
 from citations.frontier import EMBED_BATCH
+from citations import candidates as candidates_mod
+from citations import registry as registry_mod
 from citations.registry import Node, WorkRegistry
 from citations.dry_store import DryRunWriter
 
@@ -395,6 +397,26 @@ class ScoringMemoryTests(unittest.TestCase):
         self.assertEqual(len(kept), 10)
         self.assertEqual(absorbed.call_count, 10,
                          "запись поглощена не только за прошедших τ")
+
+    def test_a_candidates_identifier_set_is_derived_once(self):
+        """The same cost one layer up from absorb(): every candidate's
+        namespaced id set (a DOI normalised, short_id per identifier) was
+        built by score()'s registry.find(), again by add()'s own find(), and
+        a third time by absorb(). It is a pure function of the record, so
+        the resolution score() already computed travels with the candidate
+        and add() re-runs only the INDEX lookup, which is the part that
+        changes between the two (a twin union happens on add()).
+        """
+        snowball, _embedder = self._seeded(n_keep=10, n_drop=90)
+        derived = mock.Mock(side_effect=registry_mod.record_ids)
+        # Counted at BOTH binding sites: the derivation is one function, and
+        # which module happens to name it is not what is being measured.
+        with mock.patch.object(registry_mod, "record_ids", derived), \
+             mock.patch.object(candidates_mod, "record_ids", derived):
+            kept = snowball.expand(["W_SEED"], 1)
+        self.assertEqual(len(kept), 10)
+        self.assertEqual(derived.call_count, 100,
+                         "набор идентификаторов кандидата выведен не один раз")
     """seeding.py takes a registry, a client and callables -- never a
     Snowball -- so the seed set can be established and asserted here with
     neither a crawl object nor a writer in sight.

@@ -204,7 +204,8 @@ class Snowball:
                 continue
             node, is_new = self.registry.add(
                 item["record"], kind=WorkKind.EXTERNAL_SKELETON, depth=depth,
-                relation=item["relation"], discovered_from=item["discovered_from"])
+                relation=item["relation"], discovered_from=item["discovered_from"],
+                ids=item["record_ids"])
             # Two kept candidates can be one work: score() cannot know that,
             # because the twin union only happens on add(). The second record
             # merges into the node the first created, so the node is written
