@@ -12,7 +12,7 @@ staged UPDATE), этот — реестр самих целей и учёт ос
 """
 from __future__ import annotations
 
-from pg_common import scalar
+from pg_common import scalar, sql_literal
 from pg_embedding_text import WORKS_TEXT_SQL
 
 
@@ -47,6 +47,28 @@ TARGETS = {
         "btrim(coalesce(title,'')) <> ''",
     ),
 }
+
+
+def table_present(env: dict[str, str], table: str) -> bool:
+    """Есть ли таблица цели в ЭТОЙ базе.
+
+    Реестр общекорпусный, а цель может принадлежать схеме, которой у базы
+    нет: `works` живёт в citation, и эту схему применяет отдельная точка
+    входа (`pg_graph.py init`), то есть база без неё — законное состояние,
+    а не поломка. Без вопроса первым же был count(*) по несуществующей
+    таблице: отказ psql, обёрнутый в голый RuntimeError, посреди прогона,
+    который каждая процедура пополнения базы называет обязательным шагом.
+
+    Вопрос ПОцелевой и механический (to_regclass таблицы, которую цель
+    объявила), а не «есть ли схема citation»: следующая цель из чужой
+    схемы получает ту же защиту, ничего о ней не написав.
+    """
+    return scalar(env, f"select to_regclass({sql_literal(table)}) is not null;") == "t"
+
+
+def absent_targets(env: dict[str, str], which) -> list[str]:
+    """Те из `which`, чьей таблицы в базе нет — в порядке спроса."""
+    return [name for name in which if not table_present(env, TARGETS[name][0])]
 
 
 def pending(env: dict[str, str], table: str, content_pred: str = "true") -> int:

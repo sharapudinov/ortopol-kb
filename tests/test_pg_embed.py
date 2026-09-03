@@ -33,13 +33,23 @@ class FakeDatabase:
     query said would let a lost cursor pass unnoticed.
     """
 
-    def __init__(self, total: int):
+    def __init__(self, total: int, installed: bool = True):
         self.pending = list(range(1, total + 1))
         self.selects: list[str] = []
         self.counts: list[str] = []
+        self.probes: list[str] = []
         self.copies: list[list] = []
+        self.installed = installed
 
     def scalar(self, env, sql, **kwargs):
+        """Two reads answer here, and only one of them is a count: the
+        existence gate asks to_regclass before the target is touched at
+        all, and counting that as a count would hide the aggregate scans
+        this fixture exists to measure.
+        """
+        if "to_regclass" in sql:
+            self.probes.append(sql)
+            return "t" if self.installed else "f"
         self.counts.append(sql)
         return f"{len(self.pending)}"
 
@@ -207,6 +217,7 @@ class OnePostgresPathTests(unittest.TestCase):
     def test_the_cli_resolves_a_pgenv_the_way_the_others_do(self):
         with mock.patch.object(pg_embed, "load_pgenv",
                                 return_value={"PGDATABASE": "x"}) as load_mock, \
+             mock.patch.object(pg_embed, "absent_targets", return_value=[]), \
              mock.patch.object(pg_embed, "resolve_target", return_value=("bge-m3", 4)), \
              mock.patch.object(pg_embed, "embed_target", return_value=0), \
              mock.patch.object(pg_embed, "missing_semantic_key", return_value=[]), \
@@ -225,6 +236,57 @@ class OnePostgresPathTests(unittest.TestCase):
              mock.patch("builtins.print"):
             self.assertEqual(pg_embed.main(["nonesuch"]), 2)
         load_mock.assert_not_called()
+
+
+class AbsentSchemaIsSkippedTests(unittest.TestCase):
+    """A target whose table is not in this database is not this run's work.
+
+    The registry is corpus-wide and `python3 pg_embed.py` with no arguments
+    is a documented step of every extension procedure, while `works` lives
+    in schema citation -- which a database can legitimately not carry (the
+    schema is applied by `pg_graph.py init`). Unguarded, the pending count
+    turned a missing schema into a psql failure and a bare RuntimeError out
+    of the middle of the run. The gate is per target and generic
+    (to_regclass of the target's own table), not a predicate about one
+    schema: the next target added to the registry gets it for free.
+    """
+
+    ENV = {"PGDATABASE": "ortopol"}
+
+    def _run(self, argv, installed):
+        database = FakeDatabase(0, installed=installed)
+        printed: list[str] = []
+        with mock.patch.object(pg_embed_targets, "scalar", side_effect=database.scalar), \
+             mock.patch.object(pg_embed, "load_pgenv", return_value=self.ENV), \
+             mock.patch.object(pg_embed, "resolve_target", return_value=("bge-m3", 4)), \
+             mock.patch("builtins.print",
+                        side_effect=lambda *a, **kw: printed.append(" ".join(map(str, a)))):
+            code = pg_embed.main(argv)
+        return code, database, printed
+
+    def test_the_default_run_skips_it_by_name_instead_of_failing(self):
+        code, database, printed = self._run([], installed=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(database.counts, [], "цель без схемы всё-таки посчитана")
+        for name, (table, _text, _pred) in pg_embed_targets.TARGETS.items():
+            with self.subTest(target=name):
+                self.assertIn(f"{table}: схема не установлена, цель пропущена", printed)
+
+    def test_every_target_is_gated_before_it_is_counted(self):
+        code, database, _printed = self._run([], installed=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(database.probes), len(pg_embed_targets.TARGETS))
+        for table, _text, _pred in pg_embed_targets.TARGETS.values():
+            self.assertTrue(any(table in sql for sql in database.probes), database.probes)
+
+    def test_a_target_named_on_the_command_line_is_a_refusal_not_a_skip(self):
+        """`pg_embed.py works` asks for that target and nothing else --
+        silently doing nothing would report success for work never done.
+        """
+        with mock.patch("sys.stderr"):
+            code, database, _printed = self._run(["works"], installed=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(database.counts, [])
 
 
 class FetchPageTests(unittest.TestCase):

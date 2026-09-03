@@ -50,7 +50,7 @@ from pg_common import (
 )
 from pg_copy import copy_csv_rows
 from pg_embedding_text import MAX_CHARS
-from pg_embed_targets import TARGETS, missing_semantic_key, pending
+from pg_embed_targets import TARGETS, absent_targets, missing_semantic_key, pending
 from pg_search import EMBED_BATCH, embed_batch, resolve_model
 
 # Объявляются, только если corpus.embedding_model пуста — см. resolve_target().
@@ -228,6 +228,20 @@ def main(argv=None) -> int:
     except PostgresUnavailable as exc:
         print(f"Postgres недоступен: {exc}", file=sys.stderr)
         return 1
+    # Цель, чьей таблицы в базе нет, — не работа этого прогона: реестр
+    # общекорпусный, а `works` живёт в схеме citation, которую применяет
+    # отдельная точка входа. Названная ЯВНО — наоборот, отказ: молчаливое
+    # «сделано» отчиталось бы успехом о работе, которой не было.
+    absent = absent_targets(env, which)
+    if absent and args.targets:
+        print(f"{TARGETS[absent[0]][0]}: схема не установлена, а цель названа явно — "
+              "примените схему (python3 pg_graph.py init) или уберите цель из списка",
+              file=sys.stderr)
+        return 1
+    for name in absent:
+        print(f"{TARGETS[name][0]}: схема не установлена, цель пропущена")
+    which = [name for name in which if name not in absent]
+
     # Один раз на прогон: таблица несёт ровно одну строку (CHECK (id = 1)),
     # и модель не может смениться посреди обсчёта.
     model, dims = resolve_target(env)
