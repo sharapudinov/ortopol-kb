@@ -83,6 +83,23 @@ def writers_for(args, env):
             DryRunMeasurementsWriter() if args.dry_run else MeasurementsWriter(env))
 
 
+def tree_read_only(args) -> bool:
+    """Правило «режим -> дерево read-only», объявленное ОДИН раз.
+
+    Четвёртый канал записи — кэши в дереве данных, и у него ровно та же
+    болезнь, от которой writers_for() лечит первые два: предикат, написанный
+    по месту у каждого из пяти вызовов cache_for(), — это пять формул, а
+    разошлись уже три (`--dry-run` против `--dry-run OR --calibrate`).
+    Здесь он один, и новый кэш получает его вызовом, а не переписыванием.
+
+    Правило НЕ то же, что у графового писателя, и это разница по существу:
+    --calibrate не пишет ни строки в citation.*, но ответы и векторы,
+    купленные им у сети и у ollama, обязан сохранить — предписанная пара
+    «калибровка -> обход» иначе платит за них дважды.
+    """
+    return args.dry_run
+
+
 def do_merge_twins(env, crawl_id: str, writer) -> int:
     """Склейка двойников: писатель приходит объектом, как во все остальные
     режимы, и всё сказанное после спрашивается у НЕГО, а не у флага.
@@ -212,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                   "и пустой каталог это не «ноль батчей», а «нечего мерить»; укажите "
                   "--cache-dir того прогона, цену которого меряем", file=sys.stderr)
             return 1
-        return do_hub_report(cache_for(cache_path, read_only=args.dry_run),
+        return do_hub_report(cache_for(cache_path, read_only=tree_read_only(args)),
                              data_root(), measurements, args.hub_cap)
     # Склейке двойников кэш ответов не нужен вовсе, поэтому она и не создаёт
     # его каталог: объект строит тот режим, который из него читает.
@@ -235,14 +252,16 @@ def main(argv: list[str] | None = None) -> int:
     # function and handed to its reader as an object -- the same
     # construction the two writers above get, and for the same reason:
     # --dry-run's promise about the tree must not depend on a keyword nobody
-    # forgot (DRY_RUN_WRITES_NOTHING). The response cache is the one the hub
-    # measurement reads too, built for it in its own branch above; the
-    # fourth memoises the VECTORS --calibrate buys and, writing no work row,
-    # loses.
-    client = build_client(args, cache_for(cache_path, read_only=args.dry_run))
-    zbmath_cache = cache_for(default_zbmath_cache_dir(), read_only=args.dry_run)
-    mathnet_cache = cache_for(default_mathnet_cache_dir(), read_only=args.dry_run)
-    memo = VectorMemo(cache_for(default_embedding_cache_dir(), read_only=args.dry_run), model)
+    # forgot (DRY_RUN_WRITES_NOTHING). WHICH object each gets is one rule
+    # (tree_read_only), not one formula per site. The response cache is the
+    # one the hub measurement reads too, built for it in its own branch
+    # above; the fourth memoises the VECTORS --calibrate buys and, writing
+    # no work row, loses.
+    client = build_client(args, cache_for(cache_path, read_only=tree_read_only(args)))
+    zbmath_cache = cache_for(default_zbmath_cache_dir(), read_only=tree_read_only(args))
+    mathnet_cache = cache_for(default_mathnet_cache_dir(), read_only=tree_read_only(args))
+    memo = VectorMemo(
+        cache_for(default_embedding_cache_dir(), read_only=tree_read_only(args)), model)
     skip = fresh_keys(env, args.fresh_days) if args.resume else frozenset()
     if skip:
         print(f"--resume: {len(skip)} узлов свежее {args.fresh_days} дней не раскрываются")
