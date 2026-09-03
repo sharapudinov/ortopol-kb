@@ -29,7 +29,8 @@ import pg_search  # noqa: E402
 from manifest_keys import MANIFEST_SCHEMA_VERSION, Key  # noqa: E402
 from manifest_contract import Profile, schemas_for, ships_citation  # noqa: E402
 from ollama_registry import served_model_digest  # noqa: E402
-from pg_common import FIELD_SEP, scalar, scalar_row  # noqa: E402
+from pg_common import scalar_row  # noqa: E402
+from probe_overlap import stemmed_token_overlap  # noqa: E402
 from probe_query import VECTOR_PROBE_QUERY  # noqa: E402
 
 FULLTEXT_PROBE_QUERY = "повторные средние"
@@ -63,11 +64,10 @@ def _citation_block(env: dict, mode: str, public: bool, policy_source: str) -> d
     was -- the owner's row, or the command line's --policy-override.
     """
     # table_rows is declared here and FILLED by build_package.main() from
-    # what the dump actually wrote: this function runs before the dump
-    # exists, and a count of the live schema would describe a package
-    # nobody has produced yet. Empty here means the key exists in every
-    # manifest this packager writes -- the recipient's gate refuses an
-    # empty one under a shipping mode rather than reading it as silence.
+    # what the dump wrote: this runs before the dump exists, and a live
+    # count would describe a package nobody has produced yet. The key is in
+    # every manifest either way -- the recipient's gate refuses an empty one
+    # under a shipping mode rather than reading it as silence.
     block = {Key.CITATION_MODE: mode, Key.CITATION_POLICY_SOURCE: policy_source,
              Key.WORK_COUNT: 0, Key.CITES_COUNT: 0, Key.WORK_BY_KIND: {},
              Key.TABLE_ROWS: {}}
@@ -119,37 +119,6 @@ SELECT
     (SELECT count(*) FROM corpus.pages p JOIN corpus.documents d ON d.id = p.document_id
       WHERE p.tsv @@ phraseto_tsquery('russian', :'q') AND {content});
 """
-
-
-# Lexemes, not surface forms: the fulltext side this probe must stay
-# independent of stems both query and page body through the SAME 'russian'
-# snowball configuration (phraseto_tsquery('russian', ...), see pg_search.py's
-# TS_CONFIG), under which e.g. "полином"/"полинома"/"полиномов" are one
-# lexeme. A Python regex over lowercased surface forms would show zero
-# overlap for exactly that case while tsquery would still match -- comparing
-# stemmed lexemes computed by Postgres itself, in one round trip, is the
-# only way this guard sees what phraseto_tsquery sees. chr(31) (ASCII unit
-# separator) joins the result: real Russian lexemes never contain it, unlike
-# a comma.
-_TOKEN_OVERLAP_SQL = f"""
-SELECT coalesce(string_agg(DISTINCT lexeme, chr({ord(FIELD_SEP)})), '')
-FROM (
-    SELECT lexeme FROM unnest(to_tsvector('russian', :'q'))
-    INTERSECT
-    SELECT lexeme FROM unnest(to_tsvector('russian', coalesce(
-        (SELECT body FROM corpus.pages WHERE document_id = :'doc' AND page_number = :page),
-        ''
-    )))
-) overlap;
-"""
-
-
-def _stemmed_token_overlap(env: dict, query: str, document_id: str, page_number: int) -> list[str]:
-    raw = scalar(
-        env, _TOKEN_OVERLAP_SQL,
-        variables={"q": query, "doc": document_id, "page": str(int(page_number))},
-    )
-    return sorted(raw.split(FIELD_SEP)) if raw else []
 
 
 def gather_manifest(
@@ -242,7 +211,7 @@ def gather_manifest(
     # guard below reads the live body -- the strictest of the two cases,
     # since a metadata-only page ships with an empty body and could not
     # overlap anything.
-    overlap = _stemmed_token_overlap(
+    overlap = stemmed_token_overlap(
         env, VECTOR_PROBE_QUERY, nearest["document_id"], nearest["page_number"]
     )
     if overlap:

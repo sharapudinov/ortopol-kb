@@ -12,11 +12,12 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 
 import manifest_probe
+import probe_overlap
 
 
 class StemmedTokenOverlapTests(unittest.TestCase):
-    """_stemmed_token_overlap() delegates the actual stemming/intersection
-    to a single SQL round trip (see _TOKEN_OVERLAP_SQL) -- scalar() is
+    """probe_overlap.stemmed_token_overlap() delegates the actual stemming
+    and intersection to one SQL round trip (TOKEN_OVERLAP_SQL) -- scalar() is
     stubbed here to return the FIELD_SEP-joined lexeme string Postgres would
     produce, so only the Python-side split/sort is under test; the SQL
     itself is exercised for real by GatherManifestErrorPathsTests below via
@@ -25,18 +26,18 @@ class StemmedTokenOverlapTests(unittest.TestCase):
     """
 
     def test_empty_result_means_no_overlap(self):
-        with mock.patch.object(manifest_probe, "scalar", return_value=""):
-            overlap = manifest_probe._stemmed_token_overlap({}, "q", "doc1", 5)
+        with mock.patch.object(probe_overlap, "scalar", return_value=""):
+            overlap = probe_overlap.stemmed_token_overlap({}, "q", "doc1", 5)
         self.assertEqual(overlap, [])
 
     def test_splits_and_sorts_multiple_lexemes(self):
-        with mock.patch.object(manifest_probe, "scalar", return_value="полином\x1fвеличин"):
-            overlap = manifest_probe._stemmed_token_overlap({}, "q", "doc1", 5)
+        with mock.patch.object(probe_overlap, "scalar", return_value="полином\x1fвеличин"):
+            overlap = probe_overlap.stemmed_token_overlap({}, "q", "doc1", 5)
         self.assertEqual(overlap, ["величин", "полином"])
 
     def test_variables_carry_query_document_and_page(self):
-        with mock.patch.object(manifest_probe, "scalar", return_value="") as scalar_mock:
-            manifest_probe._stemmed_token_overlap({}, "запрос", "2015_demr1", 69)
+        with mock.patch.object(probe_overlap, "scalar", return_value="") as scalar_mock:
+            probe_overlap.stemmed_token_overlap({}, "запрос", "2015_demr1", 69)
         _, kwargs = scalar_mock.call_args
         self.assertEqual(kwargs["variables"], {"q": "запрос", "doc": "2015_demr1", "page": "69"})
 
@@ -124,7 +125,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
         with scalar_row_p, digest_p, legal_p, \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
-             mock.patch.object(manifest_probe, "scalar", return_value="модуль"):
+             mock.patch.object(probe_overlap, "scalar", return_value="модуль"):
             with self.assertRaises(RuntimeError) as ctx:
                 manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertIn("token", str(ctx.exception))
@@ -153,7 +154,7 @@ class GatherManifestErrorPathsTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=nearest), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.55), \
-             mock.patch.object(manifest_probe, "scalar", return_value=""):
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
             manifest = manifest_probe.gather_manifest({}, "http://x/api/embed", **_RESOLVED)
         self.assertEqual(manifest["embedding_model"]["digest"], "sha256:deadbeef")
         self.assertEqual(manifest["embedding_model"]["size_bytes"], 1157672605)
@@ -186,7 +187,7 @@ class ProfileAwarenessTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
-             mock.patch.object(manifest_probe, "scalar", return_value=""):
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
             manifest = manifest_probe.gather_manifest(
                 {}, "http://x/api/embed", profile=profile, citation_mode=citation_mode,
                 policy_source=policy_source)
@@ -259,7 +260,7 @@ class ProfileAwarenessTests(unittest.TestCase):
              mock.patch.object(manifest_probe.legal_profile, "require_classified"), \
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=excluded), \
-             mock.patch.object(manifest_probe, "scalar", return_value=""):
+             mock.patch.object(probe_overlap, "scalar", return_value=""):
             with self.assertRaises(RuntimeError) as ctx:
                 manifest_probe.gather_manifest({}, "http://x/api/embed", profile="public",
                                                **_RESOLVED)
@@ -300,7 +301,7 @@ class CitationManifestTests(unittest.TestCase):
              mock.patch.object(manifest_probe.pg_search, "embed_query", return_value="[0.1]"), \
              mock.patch.object(manifest_probe.pg_rank_probe, "nearest_page", return_value=self.NEAREST), \
              mock.patch.object(manifest_probe.pg_rank_probe, "runner_up_distance", return_value=0.5), \
-             mock.patch.object(manifest_probe, "scalar", return_value=""), \
+             mock.patch.object(probe_overlap, "scalar", return_value=""), \
              mock.patch.object(manifest_probe.citation_profile, "citation_counts",
                                 return_value=(438, 2425,
                                               {"external-skeleton": 382, "our-document": 56})) as counts_mock:

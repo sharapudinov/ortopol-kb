@@ -17,7 +17,7 @@ from __future__ import annotations
 # wording -- not merely zero shared surface forms, and not excusing the
 # domain noun either: earlier wordings that kept "полином"/"величина"/
 # "оценить" etc. kept landing on pages that use the exact same word, which
-# the stemmed check (manifest_probe._stemmed_token_overlap) correctly
+# the stemmed check (probe_overlap.stemmed_token_overlap) correctly
 # rejected. This wording was accepted only after gather_manifest ran clean
 # against the live corpus (verified: phraseto_tsquery also finds "no
 # matches" for it). Nearest page can legitimately drift as the corpus/model
