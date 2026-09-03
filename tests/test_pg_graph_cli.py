@@ -16,14 +16,17 @@ codes, not what the database would have said.
 from __future__ import annotations
 
 import io
+import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
 
 import pg_graph
+import pg_graph_candidates as pgcand
+import pg_graph_cypher as pgc
 from pg_common import PostgresUnavailable
 
 ENV = {"PGUSER": "ortopol"}
@@ -127,6 +130,112 @@ class DispatchTests(unittest.TestCase):
     def test_no_command_at_all_is_refused_too(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             pg_graph.main(PGENV)
+
+
+class RealHandlerTests(unittest.TestCase):
+    """The handlers themselves, driven through main() with only the QUERIES
+    stubbed.
+
+    DispatchTests above replaces the handlers, so what it pins is the table;
+    the bodies -- _print_table, the two export/show branches and the cell
+    formatting -- ran nowhere. They are the half of this CLI that has no
+    other home: pg_graph_candidates.py and pg_graph_cypher.py are tested
+    against their SQL and their decoding, and neither knows that a NULL year
+    prints as an empty cell or that --show-sql must not reach the database.
+    """
+
+    CITERS = [{"key": "W1", "year": 1997, "kind": "our-document", "title": "Приближение"},
+              {"key": "W2", "year": None, "kind": "external-skeleton", "title": "Sobolev"}]
+    CANDIDATES = [{"score": 0.61234, "links": 3, "key": "W3", "year": 2009, "title": "Хан"},
+                  {"score": 0.5, "links": 0, "key": "W4", "year": None, "title": ""}]
+    PAIRS = [{"a_key": "W1", "a_title": "A", "b_key": "W2", "b_title": "B", "count": 7}]
+    HYBRID = [{"key": "W1", "year": None, "title": "Приближение", "score": 0.7,
+               "direction": "cites", "neighbor_key": "W9", "neighbor_title": "Сосед"}]
+
+    QUERY_MODULES = {"cypher": "pgc", "candidates": "pgcand", "cocitation": "pgcoci"}
+
+    def _run(self, argv, **stubs):
+        """main() with the real handlers and only the query functions
+        replaced -- the whole point being that _print_table and the two
+        branches around it actually run.
+        """
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(pg_graph, "load_pgenv", return_value=ENV))
+            for group, functions in stubs.items():
+                module = getattr(pg_graph, self.QUERY_MODULES[group])
+                for name, answer in functions.items():
+                    stack.enter_context(mock.patch.object(module, name, answer))
+            out = stack.enter_context(redirect_stdout(io.StringIO()))
+            code = pg_graph.main([*PGENV, *argv])
+        return code, out.getvalue()
+
+    def test_a_missing_year_is_an_empty_cell_not_the_word_none(self):
+        code, printed = self._run(
+            ["citers", "1997_sm280"],
+            cypher={"citers": lambda *a, **k: self.CITERS})
+        self.assertEqual(code, 0)
+        self.assertEqual(printed.splitlines(), [
+            "id | год | kind | title",
+            "W1 | 1997 | our-document | Приближение",
+            "W2 |  | external-skeleton | Sobolev",
+        ])
+
+    def test_an_empty_answer_says_so_instead_of_printing_a_bare_header(self):
+        _code, printed = self._run(["citers", "1997_sm280"],
+                                   cypher={"citers": lambda *a, **k: []})
+        self.assertIn("нет строк", printed)
+        self.assertNotIn("kind", printed)
+
+    def test_a_candidate_score_is_printed_to_three_decimals(self):
+        _code, printed = self._run(
+            ["candidates", "--top", "5"],
+            candidates={"candidates": lambda *a, **k: self.CANDIDATES})
+        self.assertEqual(printed.splitlines(), [
+            "score | links | key | год | title",
+            "0.612 | 3 | W3 | 2009 | Хан",
+            "0.500 | 0 | W4 |  | ",
+        ])
+
+    def test_a_row_with_no_score_never_reaches_that_formatter(self):
+        """`f"{score:.3f}"` is unguarded here because the ranking drops a
+        row it could not score at all (pg_graph_candidates.rank_candidates):
+        no target embedding, no comparison, no place in a ranked table.
+        """
+        unscored = [{"score": None, "links": 5, "key": "W5", "year": None, "title": "x"}]
+        self.assertEqual(pgcand.rank_candidates(unscored + self.CANDIDATES), self.CANDIDATES)
+
+    def test_cocitation_prints_the_pairs_by_default(self):
+        _code, printed = self._run(
+            ["cocitation", "--min-count", "3"],
+            cocitation={"cocitation": lambda *a, **k: self.PAIRS})
+        self.assertEqual(printed.splitlines(), ["a | b | count", "W1 | W2 | 7"])
+
+    def test_the_export_branch_writes_both_files_and_prints_neither_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "vos"
+            _code, printed = self._run(
+                ["cocitation", "--export-vosviewer", str(out_dir)],
+                cocitation={"cocitation": lambda *a, **k: self.PAIRS})
+            self.assertTrue((out_dir / "VOSviewer_map.txt").is_file())
+            self.assertTrue((out_dir / "VOSviewer_network.txt").is_file())
+        self.assertIn("2 узлов", printed)
+        self.assertIn("1 связей", printed)
+        self.assertNotIn("a | b | count", printed)
+
+    def test_show_sql_prints_the_template_and_asks_no_database(self):
+        with mock.patch.object(pg_graph.pgc, "hybrid") as hybrid:
+            code, printed = self._run(["hybrid", "вопрос", "--show-sql"])
+        hybrid.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertEqual(printed.strip(), pgc.hybrid_sql_template().strip())
+
+    def test_hybrid_prints_a_row_per_neighbour(self):
+        _code, printed = self._run(["hybrid", "вопрос"],
+                                   cypher={"hybrid": lambda *a, **k: self.HYBRID})
+        self.assertEqual(printed.splitlines(), [
+            "seed | год | title | score | направление | сосед | заголовок соседа",
+            "W1 |  | Приближение | 0.700 | cites | W9 | Сосед",
+        ])
 
 
 class PgenvTests(unittest.TestCase):

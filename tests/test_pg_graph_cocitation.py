@@ -14,6 +14,7 @@ from unittest import mock
 
 import _pathfix  # noqa: F401
 import pg_graph_cocitation as pgcoci
+from pg_common import FIELD_SEP, RECORD_SEP
 
 
 class CocitationSqlTests(unittest.TestCase):
@@ -48,6 +49,61 @@ class CocitationSqlTests(unittest.TestCase):
             pgcoci.cocitation({})
         self.assertEqual(seen["max_out_degree"], str(pgcoci.MAX_OUT_DEGREE))
         self.assertEqual(seen["limit"], str(pgcoci.COCITATION_LIMIT))
+
+
+class RowDecodingTests(unittest.TestCase):
+    """The other half of the query: turning psql's output back into pairs.
+
+    The SQL tests above read the statement, and the only test that called
+    cocitation() stubbed run_sql to return an empty stdout -- so `rec.split(
+    FIELD_SEP, 4)` and `int(n)` never ran once. The output is fed here the
+    way psql -R -F actually emits it: records separated by RECORD_SEP,
+    fields by FIELD_SEP, and a trailing record separator on the last row.
+    """
+
+    ROWS = (
+        ("W1", "Приближение функций", "W2", "Ортогональные многочлены", "7"),
+        ("W3", "", "W4", "Sobolev orthogonality", "2"),
+    )
+
+    def _decode(self, stdout: str) -> list[dict]:
+        with mock.patch.object(pgcoci, "run_sql", return_value=mock.Mock(stdout=stdout)):
+            return pgcoci.cocitation({})
+
+    def _psql_output(self, rows) -> str:
+        return "".join(FIELD_SEP.join(row) + RECORD_SEP for row in rows)
+
+    def test_each_record_becomes_one_pair_with_its_count_as_a_number(self):
+        pairs = self._decode(self._psql_output(self.ROWS))
+        self.assertEqual(pairs, [
+            {"a_key": "W1", "a_title": "Приближение функций",
+             "b_key": "W2", "b_title": "Ортогональные многочлены", "count": 7},
+            {"a_key": "W3", "a_title": "", "b_key": "W4",
+             "b_title": "Sobolev orthogonality", "count": 2},
+        ])
+        self.assertIsInstance(pairs[0]["count"], int)
+
+    def test_a_title_carrying_the_field_separators_own_shape_survives(self):
+        """The split is bounded at four, so only the first four separators
+        are field boundaries -- a title is the LAST text field of the pair
+        and the count is what the bound protects.
+        """
+        rows = [("W1", "A", "W2", "B: 1, 2, 3", "11")]
+        self.assertEqual(self._decode(self._psql_output(rows))[0]["count"], 11)
+
+    def test_no_rows_is_no_pairs_rather_than_one_empty_one(self):
+        for stdout in ("", "\n", RECORD_SEP):
+            with self.subTest(stdout=repr(stdout)):
+                self.assertEqual(self._decode(stdout), [])
+
+    def test_the_decoded_pairs_are_what_the_export_is_written_from(self):
+        """The map and the printed table can never describe different sets,
+        which is only true while the export reads these very dicts.
+        """
+        pairs = self._decode(self._psql_output(self.ROWS))
+        map_lines, network_lines = pgcoci.build_vosviewer_export(pairs)
+        self.assertEqual(len(map_lines), 1 + 4)
+        self.assertEqual(network_lines, ["1\t2\t7", "3\t4\t2"])
 
 
 class VosviewerExportTests(unittest.TestCase):
