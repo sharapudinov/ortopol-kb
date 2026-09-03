@@ -20,6 +20,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 from _dump_fixtures import CORPUS_COLUMNS, CORPUS_SERIALS
 
+import copy_writer
 import corpus_columns
 import corpus_cut
 import public_dump
@@ -155,6 +156,8 @@ class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
                  mock.patch.object(corpus_cut, "copy_select", side_effect=watched_select), \
                  mock.patch.object(gzip, "open", side_effect=watched_open), \
                  mock.patch.object(public_dump, "stream_stdout",
+                                    side_effect=lambda argv, env, dst: dst.write(b"-- DDL\n")), \
+                 mock.patch.object(copy_writer, "stream_stdout",
                                     side_effect=lambda argv, env, dst: dst.write(b"row\n")):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
         self.assertEqual(seen[-1], "gzip.open", seen)
@@ -164,7 +167,7 @@ class CorpusTablesComeFromTheCatalogTests(unittest.TestCase):
         # tsv and source_path are GENERATED: including them would make the
         # dump either unrestorable or (worse) carry text that no longer
         # matches body.
-        self.assertIn("a.attgenerated = ''", public_dump.schema_catalog._COLUMNS_SQL)
+        self.assertIn("a.attgenerated = ''", corpus_cut.schema_catalog._COLUMNS_SQL)
 
     def test_the_module_no_longer_reads_the_catalog_itself(self):
         """One implementation of "what does this schema hold", asked with a

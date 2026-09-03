@@ -666,7 +666,14 @@ python3 deploy/profile_checks.py --artifact-dir <распакованный>   #
   `gzip.open`, и это правило схемы, а не одной схемы: план возвращают ОБЕ
   половины (`corpus_cut.plan_corpus()` и `citation_dump.plan_citation()`),
   форма плана одна на двоих (`deploy/copy_plan.CopyBlock`), а
-  `write_copy_block()` принимает готовый блок, не имя таблицы. Обе эти
+  `write_copy_block()` принимает готовый блок, не имя таблицы, и он ОДИН
+  на обе схемы (`deploy/copy_writer.py`; схему несёт сам блок). Два
+  близнеца, отличавшиеся ровно литералом `corpus.`/`citation.` в
+  заголовке, — последний шов дампа, не параметризованный схемой, при том
+  что каталог, классификация колонок, copy_rows и table_rows_check
+  параметризованы именно поэтому. Держит тест
+  (tests/test_copy_writer.py: во всём deploy/ ровно одно определение
+  write_copy_block). Обе эти
   ошибки — не CommandFailed, поэтому изнутри открытого файла они пролетают
   мимо `except`, который делает unlink, и оставляют обрезанный
   `01_dump.sql.gz` — при docstring'е «refuses to write anything at all».

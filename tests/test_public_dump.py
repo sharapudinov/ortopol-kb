@@ -27,6 +27,7 @@ import _pathfix  # noqa: F401
 import _pathfix_deploy  # noqa: F401
 from _dump_fixtures import CORPUS_COLUMNS, CORPUS_SERIALS
 
+import copy_writer
 import dump_scan
 import corpus_cut
 import public_dump
@@ -84,8 +85,9 @@ class BaseSchemasAreAskedForByNameTests(unittest.TestCase):
 
 def _block(table: str, columns: list[str], serials=()) -> CopyBlock:
     """The resolved block dump_public() hands the writer: everything that
-    could have refused, already answered (deploy/copy_plan.py)."""
-    return CopyBlock(table, columns, tuple(serials),
+    could have refused, already answered (deploy/copy_plan.py), and the
+    schema it belongs to -- which is what lets one writer serve both."""
+    return CopyBlock(corpus_cut.SCHEMA, table, columns, tuple(serials),
                      corpus_cut.copy_select(table, columns))
 
 
@@ -95,8 +97,8 @@ class WriteCopyBlockTests(unittest.TestCase):
             dst.write(b"2009_isu34\t\\N\n")
 
         buffer = io.BytesIO()
-        with mock.patch.object(public_dump, "stream_stdout", side_effect=fake_stream):
-            public_dump.write_copy_block({}, buffer, _block(
+        with mock.patch.object(copy_writer, "stream_stdout", side_effect=fake_stream):
+            copy_writer.write_copy_block({}, buffer, _block(
                 "documents", ["id", "source_blob"]))
         self.assertEqual(
             buffer.getvalue().decode(),
@@ -104,8 +106,8 @@ class WriteCopyBlockTests(unittest.TestCase):
         )
 
     def test_the_server_side_copy_is_what_streams(self):
-        with mock.patch.object(public_dump, "stream_stdout") as stream_mock:
-            public_dump.write_copy_block({}, io.BytesIO(), _block("pages", ["document_id"]))
+        with mock.patch.object(copy_writer, "stream_stdout") as stream_mock:
+            copy_writer.write_copy_block({}, io.BytesIO(), _block("pages", ["document_id"]))
         (argv, _env, _dst), _kwargs = stream_mock.call_args
         self.assertEqual(argv[0], "psql")
         self.assertIn("COPY (SELECT", argv[-1])
@@ -125,9 +127,9 @@ class SerialColumnsAreRepositionedTests(unittest.TestCase):
 
     def _block(self, table, columns, serials):
         buffer = io.BytesIO()
-        with mock.patch.object(public_dump, "stream_stdout",
+        with mock.patch.object(copy_writer, "stream_stdout",
                                 side_effect=lambda argv, env, dst: dst.write(b"row\n")):
-            public_dump.write_copy_block({}, buffer, _block(table, columns, serials))
+            copy_writer.write_copy_block({}, buffer, _block(table, columns, serials))
         return buffer.getvalue().decode()
 
     def test_a_serial_column_is_reset_after_the_copy_terminator(self):
@@ -184,8 +186,10 @@ class SerialColumnsAreRepositionedTests(unittest.TestCase):
                                     return_value=CORPUS_SERIALS), \
                  mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value=CORPUS_SERIALS) as serials_mock, \
+                 mock.patch.object(copy_writer, "stream_stdout",
+                                    side_effect=lambda argv, env, dst: dst.write(b"row\n")), \
                  mock.patch.object(public_dump, "stream_stdout",
-                                    side_effect=lambda argv, env, dst: dst.write(b"row\n")):
+                                    side_effect=lambda argv, env, dst: dst.write(b"-- DDL\n")):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
             serials_mock.assert_called_once_with({}, "corpus")
             self.assertEqual(dump_scan.sequence_resets(gz_path), {"corpus.pages.id"})
@@ -203,8 +207,10 @@ class SerialColumnsAreRepositionedTests(unittest.TestCase):
                                     return_value=columns), \
                  mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value={"documents": ["id"], "pages": ["id"]}), \
+                 mock.patch.object(copy_writer, "stream_stdout",
+                                    side_effect=lambda argv, env, dst: dst.write(b"row\n")), \
                  mock.patch.object(public_dump, "stream_stdout",
-                                    side_effect=lambda argv, env, dst: dst.write(b"row\n")):
+                                    side_effect=lambda argv, env, dst: dst.write(b"-- DDL\n")):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
             self.assertEqual(dump_scan.sequence_resets(gz_path),
                              {"corpus.documents.id", "corpus.pages.id"})
@@ -229,6 +235,7 @@ class DumpPublicTests(unittest.TestCase):
                                 return_value=dict(DumpPublicTests.COLUMNS)), \
              mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                 return_value=CORPUS_SERIALS), \
+             mock.patch.object(copy_writer, "stream_stdout", side_effect=fake_stream), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=fake_stream):
             public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
         return gz_path, classified_mock
@@ -238,11 +245,13 @@ class DumpPublicTests(unittest.TestCase):
             gz_path = Path(tmp) / "01_dump.sql.gz"
             with mock.patch.object(public_dump, "require_classified",
                                     side_effect=Unclassified("2026_x")), \
-                 mock.patch.object(public_dump, "stream_stdout") as stream_mock:
+                 mock.patch.object(copy_writer, "stream_stdout") as stream_mock, \
+                 mock.patch.object(public_dump, "stream_stdout") as ddl_mock:
                 with self.assertRaises(Unclassified):
                     public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)
             self.assertFalse(gz_path.exists())
             stream_mock.assert_not_called()
+            ddl_mock.assert_not_called()
 
     def test_writes_ddl_then_documents_then_pages(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -278,6 +287,7 @@ class DumpPublicTests(unittest.TestCase):
                                     return_value=dict(DumpPublicTests.COLUMNS)), \
                  mock.patch.object(corpus_cut.schema_catalog, "schema_serial_columns",
                                     return_value=CORPUS_SERIALS), \
+                 mock.patch.object(copy_writer, "stream_stdout", side_effect=boom), \
                  mock.patch.object(public_dump, "stream_stdout", side_effect=boom):
                 with self.assertRaises(RuntimeError) as ctx:
                     public_dump.dump_public({}, gz_path, citation_mode=CitationMode.NONE)

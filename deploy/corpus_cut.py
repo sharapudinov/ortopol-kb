@@ -53,10 +53,9 @@ SCHEMA = "corpus"
 # document_id + page_number). Omitting it from the COPY lets the sequence
 # assign ids on restore, in the deterministic order of the ORDER BY below.
 # The sequence is then repositioned explicitly like every other one in the
-# dump (public_dump.write_copy_block's serials), so nothing about the
-# restore rests on
-# this exclusion: a corpus table whose id DOES travel gets the same
-# treatment, which is what the exclusion used to be standing in for.
+# dump (copy_writer.write_copy_block's serials), so nothing about the
+# restore rests on this exclusion: a corpus table whose id DOES travel gets
+# the same treatment, which is what the exclusion used to be standing in for.
 PAGES_EXCLUDED = ("id",)
 
 # One alias per dumped table, so select_expression() never has to guess.
@@ -161,7 +160,7 @@ def plan_corpus(env: dict) -> tuple[CopyBlock, ...]:
     for table in tables:
         table_columns = schema_catalog.columns_of(
             columns, table, SCHEMA, exclude=EXCLUDED_COLUMNS.get(table, ()))
-        blocks.append(CopyBlock(table, table_columns,
+        blocks.append(CopyBlock(SCHEMA, table, table_columns,
                                 tuple(serials.get(table, ())),
                                 copy_select(table, table_columns)))
     return tuple(blocks)

@@ -19,6 +19,7 @@ import _pathfix_deploy  # noqa: F401
 
 import citation_columns
 import citation_dump
+import copy_writer
 import schema_catalog
 from manifest_contract import CitationMode, Profile, schemas_for
 from paths import default_corpus_dir
@@ -136,36 +137,6 @@ class SetvalTests(unittest.TestCase):
         self.assertIn("coalesce(top.value, 1)", sql)
 
 
-class WriteCopyBlockTests(unittest.TestCase):
-    def test_serial_table_writes_setval_after_the_terminator(self):
-        buffer = io.BytesIO()
-
-        def fake_stream(argv, env, dst):
-            dst.write(b"1\tk1\n")
-
-        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
-            citation_dump.write_copy_block({}, buffer, citation_dump.CopyBlock(
-                "work", ["id", "key"], ("id",),
-                citation_dump.copy_select("work", ["id", "key"],
-                                          CitationMode.FULL_SKELETON)))
-        text = buffer.getvalue().decode()
-        self.assertIn("COPY citation.work (id, key) FROM stdin;\n1\tk1\n\\.\n", text)
-        self.assertIn("setval(pg_get_serial_sequence", text)
-
-    def test_non_serial_table_writes_no_setval(self):
-        buffer = io.BytesIO()
-
-        def fake_stream(argv, env, dst):
-            dst.write(b"1\t2\tmanual\n")
-
-        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
-            columns = ["citing", "cited", "source"]
-            citation_dump.write_copy_block({}, buffer, citation_dump.CopyBlock(
-                "cites", columns, (),
-                citation_dump.copy_select("cites", columns, CitationMode.FULL_SKELETON)))
-        self.assertNotIn("setval", buffer.getvalue().decode())
-
-
 class DumpCitationTests(unittest.TestCase):
     COLUMNS = {
         "work": ["id", "key", "title", "abstract", "evidence"],
@@ -190,10 +161,12 @@ class DumpCitationTests(unittest.TestCase):
 
     def test_none_mode_writes_nothing(self):
         buffer = io.BytesIO()
-        with mock.patch.object(citation_dump, "stream_stdout") as stream_mock:
+        with mock.patch.object(citation_dump, "stream_stdout") as stream_mock, \
+             mock.patch.object(copy_writer, "stream_stdout") as block_mock:
             citation_dump.dump_citation({}, buffer,
                                         citation_dump.plan_citation({}, CitationMode.NONE))
         stream_mock.assert_not_called()
+        block_mock.assert_not_called()
         self.assertEqual(buffer.getvalue(), b"")
 
     def test_a_non_shipping_mode_asks_the_catalog_nothing_at_all(self):
@@ -242,6 +215,8 @@ class DumpCitationTests(unittest.TestCase):
                      mock.patch.object(citation_dump, "schema_serial_columns",
                                         return_value={}), \
                      mock.patch.object(citation_dump, "stream_stdout",
+                                        side_effect=self._fake_stream), \
+                     mock.patch.object(copy_writer, "stream_stdout",
                                         side_effect=self._fake_stream):
                     citation_dump.dump_citation({}, buffer,
                                                 citation_dump.plan_citation({}, mode))
@@ -253,10 +228,12 @@ class DumpCitationTests(unittest.TestCase):
         and must still ship no byte.
         """
         buffer = io.BytesIO()
-        with mock.patch.object(citation_dump, "stream_stdout") as stream_mock:
+        with mock.patch.object(citation_dump, "stream_stdout") as stream_mock, \
+             mock.patch.object(copy_writer, "stream_stdout") as block_mock:
             citation_dump.dump_citation({}, buffer,
                                         citation_dump.plan_citation({}, "graph-only"))
         stream_mock.assert_not_called()
+        block_mock.assert_not_called()
         self.assertEqual(buffer.getvalue(), b"")
 
     def _dump(self, buffer):
@@ -267,7 +244,8 @@ class DumpCitationTests(unittest.TestCase):
                                 return_value=dict(self.COLUMNS)) as columns_mock, \
              mock.patch.object(citation_dump, "schema_serial_columns",
                                 return_value={"work": ["id"]}) as serials_mock, \
-             mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
+             mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream), \
+             mock.patch.object(copy_writer, "stream_stdout", side_effect=self._fake_stream):
             citation_dump.dump_citation(
                 {}, buffer, citation_dump.plan_citation({}, CitationMode.FULL_SKELETON))
         return columns_mock, serials_mock
@@ -315,6 +293,9 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
     contain. Nothing held the two readings together, and the crawl writes
     ~100k journal rows per pass to the same instance. Counting what streams
     past makes the equality structural (MANIFEST_DESCRIBES_ARTIFACT).
+
+    What one block reports is test_copy_writer.py's (one writer, both
+    schemas); this is what dump_citation() makes of the blocks together.
     """
 
     COLUMNS = {"work": ["id", "key", "kind"], "crawl_step": ["id", "crawl_id"]}
@@ -326,23 +307,6 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
              mock.patch.object(citation_dump, "schema_serial_columns", return_value={}):
             return citation_dump.plan_citation({}, mode)
 
-    def test_a_block_reports_the_rows_it_streamed(self):
-        buffer = io.BytesIO()
-        with mock.patch.object(citation_dump, "stream_stdout",
-                               side_effect=lambda argv, env, dst: dst.write(b"a\nb\nc\n")):
-            rows = citation_dump.write_copy_block({}, buffer, citation_dump.CopyBlock(
-                "work", ["id", "key"], (), "COPY ..."))
-        self.assertEqual(rows, 3)
-        self.assertIn("COPY citation.work (id, key) FROM stdin;\na\nb\nc\n\\.\n",
-                      buffer.getvalue().decode())
-
-    def test_an_empty_block_reports_zero(self):
-        with mock.patch.object(citation_dump, "stream_stdout",
-                               side_effect=lambda argv, env, dst: None):
-            rows = citation_dump.write_copy_block({}, io.BytesIO(), citation_dump.CopyBlock(
-                "work", ["id"], (), "COPY ..."))
-        self.assertEqual(rows, 0)
-
     def _written(self, work: bytes, journal: bytes = b"9\tc\n"):
         rows = {"work": work, "crawl_step": journal}
 
@@ -353,7 +317,8 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
             table = "crawl_step" if "FROM citation.crawl_step" in argv[-1] else "work"
             dst.write(rows[table])
 
-        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
+        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream), \
+             mock.patch.object(copy_writer, "stream_stdout", side_effect=fake_stream):
             return citation_dump.dump_citation({}, io.BytesIO(), self._plan())
 
     def test_the_dump_answers_with_every_block_s_own_count(self):
@@ -380,7 +345,8 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
             for chunk in (b"1\tk\tour-doc", b"ument\n2\tk\tour-document\n"):
                 dst.write(chunk)
 
-        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream):
+        with mock.patch.object(citation_dump, "stream_stdout", side_effect=fake_stream), \
+             mock.patch.object(copy_writer, "stream_stdout", side_effect=fake_stream):
             written = citation_dump.dump_citation(
                 {}, io.BytesIO(), self._plan(tables=("work",)))
         self.assertEqual(written.work_by_kind, {"our-document": 2})
@@ -392,6 +358,8 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
         """
         with mock.patch.object(citation_dump, "stream_stdout",
                                side_effect=lambda argv, env, dst: dst.write(b"1\tk\n")), \
+             mock.patch.object(copy_writer, "stream_stdout",
+                               side_effect=lambda argv, env, dst: dst.write(b"1\tk\n")), \
              mock.patch.object(citation_dump, "schema_columns",
                                return_value={"work": ["id", "key"]}), \
              mock.patch.object(citation_dump, "citation_tables", return_value=["work"]), \
@@ -401,11 +369,13 @@ class RowCountsComeFromTheBlockTests(unittest.TestCase):
         self.assertEqual((written.tables, written.work_by_kind), ({"work": 1}, {}))
 
     def test_a_plan_that_ships_nothing_counts_nothing(self):
-        with mock.patch.object(citation_dump, "stream_stdout") as never:
+        with mock.patch.object(citation_dump, "stream_stdout") as never, \
+             mock.patch.object(copy_writer, "stream_stdout") as never_block:
             written = citation_dump.dump_citation(
                 {}, io.BytesIO(), citation_dump.CitationPlan(False, ()))
         self.assertEqual((written.tables, written.work_by_kind), ({}, {}))
         never.assert_not_called()
+        never_block.assert_not_called()
 
     def test_the_module_asks_the_database_for_no_count_at_all(self):
         """The count query is gone, not merely unused: a second reading of

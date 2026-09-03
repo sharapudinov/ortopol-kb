@@ -21,6 +21,7 @@ from _dump_fixtures import CORPUS_COLUMNS, CORPUS_SERIALS, DUMPED_CITATION_TABLE
 
 import citation_columns
 import citation_dump
+import copy_writer
 import corpus_cut
 import citation_profile
 import dump_scan
@@ -64,7 +65,8 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                 return_value=dict(self.CITATION_COLUMNS)), \
              mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-             mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream):
+             mock.patch.object(citation_dump, "stream_stdout", side_effect=self._fake_stream), \
+             mock.patch.object(copy_writer, "stream_stdout", side_effect=self._fake_stream):
             self.carried = public_dump.dump_public(
                 {}, gz_path, citation_mode=citation_mode)
         return gz_path
@@ -171,7 +173,8 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-                 mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream):
+                 mock.patch.object(citation_dump, "stream_stdout", side_effect=capturing_stream), \
+                 mock.patch.object(copy_writer, "stream_stdout", side_effect=capturing_stream):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.TOPOLOGY_ONLY)
         work_select = next(s for s in seen_selects if "citation.work" in s)
         cites_select = next(s for s in seen_selects if "citation.cites" in s)
@@ -219,7 +222,8 @@ class CitationDumpIntegrationTests(unittest.TestCase):
                                     return_value=dict(self.CITATION_COLUMNS)), \
                  mock.patch.object(citation_dump, "schema_serial_columns",
                                     return_value={}), \
-                 mock.patch.object(citation_dump, "stream_stdout", side_effect=capture):
+                 mock.patch.object(citation_dump, "stream_stdout", side_effect=capture), \
+                 mock.patch.object(copy_writer, "stream_stdout", side_effect=capture):
                 public_dump.dump_public({}, gz_path, citation_mode=CitationMode.FULL_SKELETON)
         pg_dump_argvs = [argv for argv in seen_argv if argv[0] == "pg_dump"]
         self.assertEqual(len(pg_dump_argvs), 2)  # corpus DDL, citation DDL
@@ -259,7 +263,8 @@ class RefusalLeavesNoFileTests(unittest.TestCase):
                                return_value=CORPUS_SERIALS), \
              mock.patch.object(public_dump, "stream_stdout", side_effect=record), \
              mock.patch.object(citation_dump, "schema_serial_columns", return_value={}), \
-             mock.patch.object(citation_dump, "stream_stdout", side_effect=record):
+             mock.patch.object(citation_dump, "stream_stdout", side_effect=record), \
+             mock.patch.object(copy_writer, "stream_stdout", side_effect=record):
             with contextlib.ExitStack() as stack:
                 for target, patch in patches.items():
                     stack.enter_context(mock.patch.object(citation_dump, target, **patch))

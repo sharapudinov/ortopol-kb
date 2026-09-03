@@ -51,7 +51,7 @@ from citation_columns import (
 )
 from block_census import FieldTally
 from copy_plan import CopyBlock
-from copy_rows import RowCounter
+from copy_writer import write_copy_block
 from schema_catalog import (
     classified_tables,
     columns_of,
@@ -60,7 +60,6 @@ from schema_catalog import (
     restore_order,
     schema_columns,
     schema_serial_columns,
-    setval_sql,
 )
 from citation_profile import crawl_step_cut_ctes, shipped_crawl_step_sql, shipped_work_sql
 from manifest_contract import ships_citation, strips_content
@@ -192,34 +191,10 @@ def plan_citation(env: dict, mode: str) -> CitationPlan:
     blocks = []
     for table in tables:
         table_columns = columns_of(columns, table, SCHEMA)
-        blocks.append(CopyBlock(table, table_columns, tuple(serials.get(table, ())),
+        blocks.append(CopyBlock(SCHEMA, table, table_columns,
+                                tuple(serials.get(table, ())),
                                 copy_select(table, table_columns, mode)))
     return CitationPlan(True, tuple(blocks))
-
-
-def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock,
-                     tally: FieldTally | None = None) -> int:
-    """Writes one block and returns how many rows it wrote.
-
-    Counted at the seam the rows pass through (copy_rows.RowCounter), not
-    asked of the database beside it: the manifest's numbers and the file's
-    COPY blocks have to be one fact, and two reads of a live instance are
-    two (see copy_rows.py). `tally` is the same seam asked for one column's
-    census instead of a total, and it is bound to THIS block's column list.
-    """
-    dst.write(f"COPY citation.{block.table} ({', '.join(block.columns)}) "
-              "FROM stdin;\n".encode())
-    argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
-            "-c", block.statement]
-    if tally is not None:
-        tally.start(block.columns)
-    counter = RowCounter(dst, tally)
-    stream_stdout(argv, env, counter)
-    dst.write(b"\\.\n")
-    for column in block.serials:
-        dst.write(setval_sql(SCHEMA, block.table, column))
-    dst.write(b"\n")
-    return counter.rows
 
 
 def dump_ddl(env: dict, dst: IO[bytes]) -> None:

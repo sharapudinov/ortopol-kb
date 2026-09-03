@@ -58,11 +58,10 @@ from deploy_pathfix import ensure_corpus_importable
 ensure_corpus_importable()
 
 import citation_dump  # noqa: E402
-import schema_catalog  # noqa: E402
 from artifact_bundle import DUMP_COMPRESSLEVEL  # noqa: E402
-from copy_plan import CopyBlock  # noqa: E402
-from copy_rows import DumpedRows, RowCounter  # noqa: E402
-from corpus_cut import SCHEMA, plan_corpus  # noqa: E402
+from copy_rows import DumpedRows  # noqa: E402
+from copy_writer import write_copy_block  # noqa: E402
+from corpus_cut import plan_corpus  # noqa: E402
 from manifest_contract import Profile, base_schemas_for  # noqa: E402
 from legal_profile import require_classified  # noqa: E402
 from pg_stream import CommandFailed, stream_stdout  # noqa: E402
@@ -77,39 +76,6 @@ from pg_stream import CommandFailed, stream_stdout  # noqa: E402
 # file, which aborts the restore and which no manifest check catches
 # (profile_checks compares schema NAMES, not statements).
 PUBLIC_SCHEMAS = base_schemas_for(Profile.PUBLIC)
-
-
-def write_copy_block(env: dict, dst: IO[bytes], block: CopyBlock) -> int:
-    """Writes one `COPY corpus.<table> (cols) FROM stdin;` block, streaming
-    the server-side COPY TO STDOUT output between the header and the `\\.`
-    terminator -- the same shape pg_dump emits, so the result is an ordinary
-    psql-restorable dump with no special-case loader. Returns how many rows
-    went past (copy_rows.RowCounter): the manifest is stamped from what was
-    written, never from a second reading of the live database.
-
-    Takes the resolved block rather than a table name, exactly as the
-    citation half does (citation_dump.write_copy_block): every question
-    whose answer could be a refusal was corpus_cut.plan_corpus()'s, asked
-    before `dst` existed.
-
-    `block.serials` are the table's sequence-owning columns, and each gets
-    the setval() the citation half has always written (schema_catalog.
-    setval_sql). Asked of the catalog rather than reasoned about per table:
-    a sequence left at 1 restores without complaint and hands the
-    recipient's first insert an id already taken, which is a failure at
-    their end rather than at ours.
-    """
-    dst.write(f"COPY corpus.{block.table} ({', '.join(block.columns)}) "
-              "FROM stdin;\n".encode())
-    argv = ["psql", "-v", "ON_ERROR_STOP=1", "--quiet", "--no-psqlrc",
-            "-c", block.statement]
-    counter = RowCounter(dst)
-    stream_stdout(argv, env, counter)
-    dst.write(b"\\.\n")
-    for column in block.serials:
-        dst.write(schema_catalog.setval_sql(SCHEMA, block.table, column))
-    dst.write(b"\n")
-    return counter.rows
 
 
 def _dump_ddl(env: dict, dst: IO[bytes]) -> None:
