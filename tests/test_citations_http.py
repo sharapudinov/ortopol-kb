@@ -25,13 +25,14 @@ from _http_fixtures import Response as _Response, Sequence as _Sequence
 
 from citations import frontier, http_cache, openalex_client
 from citations.mathnet import MathnetClient, parse_titles
-from citations.openalex_client import (
-    OpenAlexClient,
+from citations.openalex_client import OpenAlexClient
+from citations.openalex_records import (
+    SIDECAR_SUFFIX,
+    direction_of,
     note_direction,
     page_index,
     sidecar_name,
 )
-from citations.openalex_records import SIDECAR_SUFFIX, direction_of
 
 PAGE = ('<html><head><title>И. И. Шарапудинов, “Русское название”, Матем. сб., '
         '180:9 (1989), 1–10; I. I. Sharapudinov, “English title”, '

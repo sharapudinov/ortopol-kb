@@ -28,7 +28,7 @@ from __future__ import annotations
 from . import journal
 from citation_vocab import WorkKind
 from .scoring import centroid, cosine_unit
-from .openalex_client import short_id
+from .openalex_records import short_id
 
 
 def _fetch_seeds(registry, client, crawl_id, documents, matches) -> tuple[dict[str, str], list[dict]]:

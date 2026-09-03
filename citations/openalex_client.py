@@ -38,14 +38,7 @@ import urllib.request
 from collections.abc import Iterator
 
 from .http_session import HttpSession, Retry
-from .openalex_records import (  # noqa: F401  (re-exported: one import site per name)
-    SIDECAR_SUFFIX,
-    note_direction,
-    page_index,
-    restore_abstract,
-    short_id,
-    sidecar_name,
-)
+from .openalex_records import page_index, short_id, sidecar_name
 
 API = "https://api.openalex.org"
 MAILTO = "tooba.mexico@gmail.com"

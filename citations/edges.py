@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from citation_vocab import Relation
 from .gathering import principal_hit
-from .openalex_client import short_id
+from .openalex_records import short_id
 
 
 def among_known(registry, frontier_keys, candidates,

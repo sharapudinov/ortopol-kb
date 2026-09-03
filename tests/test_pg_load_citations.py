@@ -22,13 +22,8 @@ from _citation_fixtures import (
     work,
 )
 from citations import frontier, inputs, openalex_client, registry, scoring
-from citations.openalex_client import (
-    OpenAlexClient,
-    QuotaExhausted,
-    batched,
-    restore_abstract,
-    short_id,
-)
+from citations.openalex_client import OpenAlexClient, QuotaExhausted, batched
+from citations.openalex_records import restore_abstract, short_id
 import pg_copy
 from pg_common import FIELD_SEP, RECORD_SEP, sql_literal
 

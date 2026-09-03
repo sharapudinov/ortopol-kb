@@ -10,7 +10,7 @@
 дописывает к страницам сайдкары, то есть ПИШЕТ в дерево данных, и под
 --dry-run эту запись снимает ReadOnlyCache — тем же способом, что
 DryRunWriter снимает запись в citation.*. Сайдкар у страницы один и тот же
-(openalex_client.sidecar_name), поэтому и писатель у него один: клиент и
+(openalex_records.sidecar_name), поэтому и писатель у него один: клиент и
 этот проход зовут cache.write(), а не write_text() мимо шва.
 
 Сети не требует: батчи уже скачаны, и повторный проход по кэшу
@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 
 from citation_vocab import Relation
-from . import openalex_client
+from . import openalex_records
 
 # Сколько байт головы страницы читается. meta идёт ПЕРВЫМ объектом тела и
 # весит сотни байт, а всё, что нужно замеру, лежит в нём — значит целиком
@@ -33,7 +33,7 @@ HEAD_BYTES = 65536
 def meta_in_head(head: str) -> dict | None:
     """Объект meta, вырезанный из головы страницы скобочным курсором.
 
-    Всё, что нужно замеру, лежит в meta (openalex_client.page_index), а тело
+    Всё, что нужно замеру, лежит в meta (openalex_records.page_index), а тело
     страницы батча «вниз» — десятки мегабайт, которые json.loads разворачивает
     в полный граф объектов ради двух чисел. Курсор считает скобки, пропуская
     строки и экранирование, поэтому вырезанный кусок — валидный JSON.
@@ -104,7 +104,7 @@ class HubCacheReader:
         читателя, из сайдкара, иначе разбором головы.
 
         Сайдкар пишет сам клиент рядом со страницей
-        (openalex_client.page_index), но кэш долговечен и не стирается: 259
+        (openalex_records.page_index), но кэш долговечен и не стирается: 259
         страниц лежат с тех пор, когда сайдкаров не было. Для них — один
         проход по ГОЛОВЕ (meta идёт первым объектом тела) и запись
         сайдкара, чтобы следующий прогон читал килобайты.
@@ -114,7 +114,7 @@ class HubCacheReader:
         return self._notes[name]
 
     def _read_note(self, name: str) -> dict | None:
-        sidecar = openalex_client.sidecar_name(name)
+        sidecar = openalex_records.sidecar_name(name)
         stored = self.cache.read(sidecar)
         if stored is not None:
             try:
@@ -143,7 +143,7 @@ class HubCacheReader:
 
     @staticmethod
     def _note_from(meta) -> dict | None:
-        return None if meta is None else openalex_client.page_index({"meta": meta})
+        return None if meta is None else openalex_records.page_index({"meta": meta})
 
     def _whole_meta(self, name: str):
         body = self.cache.read(name)
@@ -157,17 +157,17 @@ class HubCacheReader:
     def batch_counts(self) -> list[int]:
         """meta.count каждого батча «вверх» — по одному числу на батч.
 
-        Направление берётся из поля страницы (openalex_client.note_direction,
+        Направление берётся из поля страницы (openalex_records.note_direction,
         выведено из `filter=`), а не из английской фразы x_query.oql: oql —
         текст ЧУЖОЙ витрины, и его переформулировка обнулила бы весь замер
         молча, отчитавшись «нечего мерить» о полном кэше.
         """
         seen: dict[str, int] = {}
         for name in sorted(self.cache.names()):
-            if not name.endswith(".json") or name.endswith(openalex_client.SIDECAR_SUFFIX):
+            if not name.endswith(".json") or name.endswith(openalex_records.SIDECAR_SUFFIX):
                 continue
             note = self.batch_note(name)
-            if note is None or openalex_client.note_direction(note) != Relation.CITES:
+            if note is None or openalex_records.note_direction(note) != Relation.CITES:
                 continue
             seen.setdefault(note.get("filter") or "", note.get("count") or 0)
         return sorted(seen.values(), reverse=True)

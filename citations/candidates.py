@@ -16,7 +16,7 @@ after it has passed tau.
 from __future__ import annotations
 
 from .gathering import principal_hit
-from .openalex_client import short_id
+from .openalex_records import short_id
 from .registry import scoring_fields
 from .scoring import NO_TEXT_SCORE, cosine_unit, keeps
 

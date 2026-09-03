@@ -20,7 +20,7 @@ from pathlib import Path
 from unittest import mock
 
 import _pathfix  # noqa: F401
-from citations import hub_cache, http_cache, openalex_client
+from citations import hub_cache, http_cache, openalex_records
 
 
 class CacheProtocolTests(unittest.TestCase):
@@ -184,7 +184,7 @@ class HubCacheGoesThroughTheSeamTests(unittest.TestCase):
             directory = Path(tmp)
             self._page(directory, "a.json", ["W1"], 18904)
             hub_cache.batch_counts(http_cache.DiskCache(directory))
-            sidecar = directory / openalex_client.sidecar_name("a.json")
+            sidecar = directory / openalex_records.sidecar_name("a.json")
             self.assertTrue(sidecar.is_file())
 
     def test_the_package_writes_the_tree_only_through_a_seam(self):

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from citation_vocab import WorkKind
-from .openalex_client import restore_abstract, short_id
+from .openalex_records import restore_abstract, short_id
 
 ID_FIELDS = ("openalex", "doi", "mag", "pmid", "pmcid")
 

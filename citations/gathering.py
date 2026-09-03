@@ -17,7 +17,7 @@ the caller frees what the filter dropped.
 from __future__ import annotations
 
 from citation_vocab import Relation
-from .openalex_client import short_id
+from .openalex_records import short_id
 
 
 def without_references(record: dict) -> dict:

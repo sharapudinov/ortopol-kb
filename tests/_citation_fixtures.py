@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import _pathfix  # noqa: F401
 from citations.crawl import Snowball
-from citations.openalex_client import batched, short_id
+from citations.openalex_client import batched
+from citations.openalex_records import short_id
 
 DIMS = 1024
 
