@@ -44,10 +44,12 @@ CREATE TABLE IF NOT EXISTS citation.work (
     --   works", not "we happened to read this one too").
     -- excluded: considered and rejected by the crawl filter.
     -- The same four values are declared once on the Python side, in
-    -- citation_vocab.WorkKind; tests/test_citation_vocab.py compares this
-    -- CHECK against them in both directions, so an extra, missing or
-    -- renamed value fails there rather than at a COPY.
-    kind              TEXT NOT NULL CHECK (kind IN ('our-document', 'external-skeleton', 'indexed', 'excluded')),
+    -- citation_vocab.WorkKind. The CHECK that mirrors them is NOT here: an
+    -- inline one cannot be widened on a table that already exists, and
+    -- CREATE TABLE IF NOT EXISTS makes every existing instance exactly that
+    -- case. It is applied as the named work_kind_check by
+    -- pg_schema_citation_constraints.sql, which compares before it replaces.
+    kind              TEXT NOT NULL,
     -- ON DELETE: nothing, deliberately -- NOT the SET NULL this column
     -- carried. Under SET NULL the two constraints on this table could not
     -- both hold: deleting a corpus.documents row UPDATEs the referencing
@@ -234,7 +236,11 @@ CREATE INDEX IF NOT EXISTS crawl_step_node_key_idx ON citation.crawl_step (node_
 -- work.kind and crawl_step.action follow, and the same live comparison
 -- against pg_get_constraintdef() holds the two halves together
 -- (tests/test_citation_vocab.py). deploy/manifest_contract.CitationMode
--- extends that class rather than restating its values.
+-- extends that class rather than restating its values. The CHECK itself is
+-- the named public_policy_mode_check applied by
+-- pg_schema_citation_constraints.sql, for the reason work.kind's is: this
+-- table exists on every instance, so an inline CHECK could never be
+-- widened again.
 --
 -- No default row is inserted here, and none may be inserted anywhere but by
 -- the owner: absence of a row is the same UNCLASSIFIED_FAILS_BUILD refusal
@@ -245,7 +251,7 @@ CREATE INDEX IF NOT EXISTS crawl_step_node_key_idx ON citation.crawl_step (node_
 -- names third-party titles, abstracts and citation edges.
 CREATE TABLE IF NOT EXISTS citation.public_policy (
     id          SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    mode        TEXT NOT NULL CHECK (mode IN ('full-skeleton', 'topology-only', 'none')),
+    mode        TEXT NOT NULL,
     note        TEXT NOT NULL,
     decided_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );

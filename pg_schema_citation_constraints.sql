@@ -29,9 +29,9 @@
 -- was never the gap; the gap was paying a full validation scan to arrive at
 -- the constraint that was already there.
 --
--- One function for two columns rather than one DO block each: the second
--- copy of a comparison this subtle is the place the next vocabulary gets
--- widened wrongly.
+-- One function for all four vocabularies rather than one DO block each: the
+-- second copy of a comparison this subtle is the place the next vocabulary
+-- gets widened wrongly.
 CREATE OR REPLACE FUNCTION citation.ensure_vocabulary_check(
     qualified_table text, column_name text, constraint_name text, wanted text[])
 RETURNS void LANGUAGE plpgsql AS $ensure_vocabulary$
@@ -91,6 +91,37 @@ DO $relation_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
     'citation.crawl_step', 'relation', 'crawl_step_relation_check',
     ARRAY['cites', 'referenced']);
 END $relation_check$;
+
+-- kind: what a node in the graph IS to this corpus. Here rather than inline
+-- on the column for the reason action and relation are here: citation.work
+-- exists on every instance this schema is ever applied to, so an inline
+-- CHECK is a constraint that can never be corrected. Left inline it was a
+-- shared mechanism deployed to half the vocabularies it exists for, and the
+-- half it skipped failed in the worst place: adding a WorkKind and its SQL
+-- literal would have passed every offline test (they read the schema FILE)
+-- and been a silent no-op on the database the crawl and the packager run
+-- against, surfacing as a CHECK violation mid-COPY -- all-or-nothing, so
+-- the whole batch.
+--
+-- citation_vocab.WorkKind is its single Python declaration; the name is the
+-- one Postgres gave the inline column CHECK, so an instance created before
+-- this file is compared, found equal and left alone.
+DO $kind_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+    'citation.work', 'kind', 'work_kind_check',
+    ARRAY['our-document', 'external-skeleton', 'indexed', 'excluded']);
+END $kind_check$;
+
+-- mode: how much of the citation schema a PUBLIC artifact carries. The
+-- OWNER writes this column and the packager reads it
+-- (CITATION_POLICY_IS_DATA), which is exactly why the vocabulary has to be
+-- correctable on a live instance: a mode nobody can record is a decision
+-- nobody can take. citation_vocab.PublicPolicyMode is its single Python
+-- declaration, and deploy/manifest_contract.CitationMode extends that class
+-- rather than restating the values.
+DO $mode_check$ BEGIN PERFORM citation.ensure_vocabulary_check(
+    'citation.public_policy', 'mode', 'public_policy_mode_check',
+    ARRAY['full-skeleton', 'topology-only', 'none']);
+END $mode_check$;
 
 -- citation.work.document_id: ON DELETE NO ACTION, migrated onto instances
 -- created while it was ON DELETE SET NULL.

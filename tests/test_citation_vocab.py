@@ -1,8 +1,10 @@
 """The closed DB vocabularies, held to one declaration.
 
-citation_vocab.py spells citation.work.kind, citation.crawl_step.action and
-citation.public_policy.mode once on the Python side; pg_schema_citation.sql
-spells them once on the SQL side. Two spellings in two languages hold
+citation_vocab.py spells citation.work.kind, citation.crawl_step.action/
+relation and citation.public_policy.mode once on the Python side;
+pg_schema_citation_constraints.sql spells each once on the SQL side, as the
+wanted array of an idempotent named-constraint migration (an inline CHECK on
+a table that already exists can never be widened again). Two spellings in two languages hold
 together only if something compares them, so:
 
 - an AST scan over every module that talks to the citation schema refuses a
@@ -56,22 +58,23 @@ VOCAB_FILE = Path(citation_vocab.__file__).resolve()
 SCHEMA_FILE = kb_root() / "pg_schema_citation.sql"
 CONSTRAINTS_FILE = kb_root() / "pg_schema_citation_constraints.sql"
 
-# Each vocabulary as the schema FILES spell it, and WHICH file spells it.
-# kind and mode are inline CHECKs on their column, in the data definition;
-# action lives in the constraints file, as the wanted array handed to the
-# function that widens a named constraint without a validation scan (an
-# inline CHECK cannot be widened on a table that already exists). Anchored on
-# the column name -- or, in the constraints file, on the constraint name --
-# so a clause elsewhere cannot stand in for a missing one, and a clause that
-# stops matching is a failure here rather than a silently empty comparison
-# (test_every_vocabulary_is_found_and_is_not_empty).
+# Each vocabulary as the schema FILES spell it. All four live in the
+# constraints file now, as the wanted array handed to the function that
+# widens a NAMED constraint without a validation scan: an inline CHECK
+# cannot be widened on a table that already exists, and CREATE TABLE IF NOT
+# EXISTS makes every deployed instance exactly that case. Anchored on the
+# constraint name, so a clause elsewhere cannot stand in for a missing one,
+# and a clause that stops matching is a failure here rather than a silently
+# empty comparison (test_every_vocabulary_is_found_and_is_not_empty).
+def _wanted_array(constraint: str) -> re.Pattern:
+    return re.compile(rf"'{constraint}',\s*ARRAY\[([^\]]*)\]", re.S)
+
+
 SQL_CLAUSES = {
-    "kind": (SCHEMA_FILE, re.compile(r"CHECK \(kind IN \(([^)]*)\)\)")),
-    "action": (CONSTRAINTS_FILE,
-               re.compile(r"'crawl_step_action_check',\s*ARRAY\[([^\]]*)\]", re.S)),
-    "relation": (CONSTRAINTS_FILE,
-                 re.compile(r"'crawl_step_relation_check',\s*ARRAY\[([^\]]*)\]", re.S)),
-    "mode": (SCHEMA_FILE, re.compile(r"CHECK \(mode IN \(([^)]*)\)\)")),
+    "kind": (CONSTRAINTS_FILE, _wanted_array("work_kind_check")),
+    "action": (CONSTRAINTS_FILE, _wanted_array("crawl_step_action_check")),
+    "relation": (CONSTRAINTS_FILE, _wanted_array("crawl_step_relation_check")),
+    "mode": (CONSTRAINTS_FILE, _wanted_array("public_policy_mode_check")),
 }
 PYTHON_VOCABULARIES = {
     "kind": WorkKind.ALL,
@@ -342,6 +345,18 @@ class VocabularyMatchesTheSchemaFileTests(unittest.TestCase):
     def test_every_vocabulary_is_found_and_is_not_empty(self):
         for column in SQL_CLAUSES:
             self.assertTrue(self._literals(column), column)
+
+    def test_no_vocabulary_is_left_as_an_inline_check(self):
+        """An inline CHECK is unwidenable on every instance that already has
+        the table, so the whole point of the shared migrator is that all four
+        vocabularies go through it. Two of them stayed inline, and the
+        offline tests above could not see the difference: they read the
+        schema FILE, which an inline CHECK satisfies exactly as well.
+        """
+        definition = SCHEMA_FILE.read_text(encoding="utf-8")
+        for column in SQL_CLAUSES:
+            with self.subTest(column=column):
+                self.assertNotRegex(definition, rf"CHECK \({column} IN \(")
 
     def test_the_work_kinds_are_the_ones_the_file_allows(self):
         self.assertEqual(self._literals("kind"), set(WorkKind.ALL))
